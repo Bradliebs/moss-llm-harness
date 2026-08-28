@@ -42,7 +42,20 @@ afterEach(() => {
 });
 
 describe("web_search", () => {
-  it("parses DuckDuckGo result anchors and snippets, unwrapping redirects", async () => {
+  it("parses Bing result blocks and unwraps encoded redirects", async () => {
+    const target = "https://example.com/world-news";
+    const encoded = Buffer.from(target).toString("base64url");
+    const html = `<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?u=a1${encoded}">World News</a></h2><p>Today's headlines.</p></li>`;
+    mockFetch(html);
+
+    const res = await webSearchTool.execute({ query: "world news" }, ctx());
+    expect(res.ok).toBe(true);
+    expect(res.content).toContain("1. World News");
+    expect(res.content).toContain(target);
+    expect(res.content).toContain("Today's headlines.");
+  });
+
+  it("falls back to DuckDuckGo when Bing has no parseable results", async () => {
     const html = `
       <div class="result">
         <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&amp;rut=x">First &amp; Best</a>
@@ -52,7 +65,9 @@ describe("web_search", () => {
         <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fb">Second Result</a>
         <a class="result__snippet">Second snippet.</a>
       </div>`;
-    mockFetch(html);
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => "<div>no Bing results</div>" })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => html }));
 
     const res = await webSearchTool.execute({ query: "example" }, ctx());
     expect(res.ok).toBe(true);
@@ -83,10 +98,28 @@ describe("web_search", () => {
     const res = await webSearchTool.execute({ query: "zzz" }, ctx());
     expect(res.ok).toBe(true);
     expect(res.content).toContain("No results");
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache empty results", async () => {
+    mockFetch("<div>nothing here</div>");
+    await webSearchTool.execute({ query: "retry me" }, ctx());
+    await webSearchTool.execute({ query: "retry me" }, ctx());
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not treat DuckDuckGo's HTTP 202 challenge as empty results", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "unavailable" })
+      .mockResolvedValueOnce({ ok: true, status: 202, text: async () => "challenge" }));
+    const res = await webSearchTool.execute({ query: "news" }, ctx());
+    expect(res.ok).toBe(false);
+    expect(res.content).toContain("Bing HTTP 503");
+    expect(res.content).toContain("DuckDuckGo HTTP 202");
   });
 
   it("serves a repeat query from cache without re-fetching", async () => {
-    const html = `<a class="result__a" href="https://e1.com">R1</a><a class="result__snippet">s1</a>`;
+    const html = `<li class="b_algo"><h2><a href="https://e1.com">R1</a></h2><p>s1</p></li>`;
     mockFetch(html);
     const first = await webSearchTool.execute({ query: "cached" }, ctx());
     const second = await webSearchTool.execute({ query: "cached" }, ctx());

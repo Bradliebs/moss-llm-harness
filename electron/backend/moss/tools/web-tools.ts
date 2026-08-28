@@ -10,8 +10,8 @@ import { fetchPublicUrl } from "./outbound-http";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
-const SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/";
-const SEARCH_HOST = "html.duckduckgo.com";
+const BING_SEARCH_ENDPOINT = "https://www.bing.com/search";
+const DUCKDUCKGO_SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/";
 const FETCH_CAP = 100_000;
 const FETCH_TIMEOUT_MS = 20_000;
 const DEFAULT_RESULTS = 5;
@@ -110,6 +110,21 @@ function unwrapRedirect(href: string): string {
   }
 }
 
+/** Bing wraps result links in /ck/a URLs whose `u` parameter is `a1` plus a
+ * base64url-encoded target. Return the target when it can be decoded. */
+function unwrapBingRedirect(href: string): string {
+  const normalized = decodeEntities(href);
+  try {
+    const url = new URL(normalized);
+    const encoded = url.hostname.endsWith("bing.com") ? url.searchParams.get("u") : null;
+    if (!encoded?.startsWith("a1")) return normalized;
+    const target = Buffer.from(encoded.slice(2), "base64url").toString("utf8");
+    return /^https?:\/\//i.test(target) ? target : normalized;
+  } catch {
+    return normalized;
+  }
+}
+
 function parseResults(html: string, limit: number): SearchHit[] {
   const hits: SearchHit[] = [];
   // Each result anchor: <a ... class="result__a" href="...">Title</a>
@@ -135,10 +150,46 @@ function parseResults(html: string, limit: number): SearchHit[] {
   return hits;
 }
 
+function parseBingResults(html: string, limit: number): SearchHit[] {
+  const hits: SearchHit[] = [];
+  const block = /<li\b[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>([\s\S]*?)<\/li>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = block.exec(html)) !== null && hits.length < limit) {
+    const title = /<h2\b[^>]*>\s*<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i.exec(match[1]);
+    if (!title) continue;
+    const url = unwrapBingRedirect(title[1]);
+    const text = stripTags(title[2]);
+    if (!text || !/^https?:\/\//i.test(url)) continue;
+    const snippet = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(match[1]);
+    hits.push({ title: text, url, snippet: snippet ? stripTags(snippet[1]) : "" });
+  }
+  return hits;
+}
+
+async function searchBing(query: string, limit: number, signal: AbortSignal): Promise<SearchHit[]> {
+  const url = `${BING_SEARCH_ENDPOINT}?${new URLSearchParams({ q: query }).toString()}`;
+  await throttleHost("www.bing.com", signal);
+  const response = await fetch(url, { headers: { "User-Agent": UA }, signal });
+  if (!response.ok) throw new Error(`Bing HTTP ${response.status}`);
+  return parseBingResults(await response.text(), limit);
+}
+
+async function searchDuckDuckGo(query: string, limit: number, signal: AbortSignal): Promise<SearchHit[]> {
+  await throttleHost("html.duckduckgo.com", signal);
+  const response = await fetch(DUCKDUCKGO_SEARCH_ENDPOINT, {
+    method: "POST",
+    headers: { "User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ q: query }).toString(),
+    signal,
+  });
+  if (response.status !== 200) throw new Error(`DuckDuckGo HTTP ${response.status}`);
+  return parseResults(await response.text(), limit);
+}
+
 export const webSearchTool: Tool = {
   name: "web_search",
   description:
-    "Search the web with DuckDuckGo and return the top results as title, URL, and snippet. Use fetch_url to read a result in full.",
+    "Search the web and return the top results as title, URL, and snippet. Use fetch_url to read a result in full.",
   parameters: {
     type: "object",
     properties: {
@@ -163,27 +214,23 @@ export const webSearchTool: Tool = {
     const cached = cacheGet(cacheKey);
     if (cached !== null) return { ok: true, content: cached };
 
-    const body = new URLSearchParams({ q: query }).toString();
-    let res: Response;
+    let hits: SearchHit[] = [];
+    const failures: string[] = [];
     try {
-      await throttleHost(SEARCH_HOST, ctx.signal);
-      res = await fetch(SEARCH_ENDPOINT, {
-        method: "POST",
-        headers: { "User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded" },
-        body,
-        signal: ctx.signal,
-      });
+      hits = await searchBing(query, limit, ctx.signal);
     } catch (e) {
-      return { ok: false, content: `Search request failed: ${(e as Error).message}` };
+      failures.push((e as Error).message);
     }
-    if (!res.ok) return { ok: false, content: `Search failed with HTTP ${res.status}` };
-
-    const html = await res.text();
-    const hits = parseResults(html, limit);
     if (hits.length === 0) {
-      const empty = `No results for "${query}".`;
-      cacheSet(cacheKey, empty);
-      return { ok: true, content: empty };
+      try {
+        hits = await searchDuckDuckGo(query, limit, ctx.signal);
+      } catch (e) {
+        failures.push((e as Error).message);
+      }
+    }
+    if (hits.length === 0) {
+      if (failures.length === 2) return { ok: false, content: `Search failed: ${failures.join("; ")}` };
+      return { ok: true, content: `No results for "${query}".` };
     }
 
     const formatted = hits

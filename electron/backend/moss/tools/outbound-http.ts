@@ -162,7 +162,13 @@ function requestPinned(url: URL, address: ResolvedAddress, signal: AbortSignal):
         Accept: "text/html,application/xhtml+xml,text/plain",
       },
       signal,
-      lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
+      lookup: (_hostname, options, callback) => {
+        if (typeof options === "object" && options.all) {
+          callback(null, [{ address: address.address, family: address.family }]);
+          return;
+        }
+        callback(null, address.address, address.family);
+      },
     }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
