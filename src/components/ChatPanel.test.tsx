@@ -30,11 +30,12 @@ const mockContinueInNewSession = vi.fn();
 const mockSummarize = vi.fn();
 const mockMissionAuthorize = vi.fn();
 const mockMissionCapabilities = vi.fn();
+const mockSetSessionTaskId = vi.fn();
 
 // Holds the session ChatPanel renders; tests override `value.messages` to drive
 // messagesToItems (e.g. multi-round turns) and beforeEach resets it to empty.
 const mockSession = vi.hoisted(() => ({
-  value: { id: "s1", title: "New chat", messages: [], createdAt: 0, updatedAt: 0 },
+  value: { id: "s1", title: "New chat", messages: [], createdAt: 0, updatedAt: 0, ...({} as { taskId?: string }) },
 }));
 
 // Drives the header tool-activity badge and audit popover; reset in beforeEach.
@@ -95,6 +96,7 @@ vi.mock("../lib/sessions", () => ({
   setSessionPersonality: vi.fn(),
   setSessionMessages: (...args: unknown[]) => mockSetSessionMessages(...args),
   setSessionTitle: vi.fn(),
+  setSessionTaskId: (...args: unknown[]) => mockSetSessionTaskId(...args),
   clearSession: (...args: unknown[]) => mockClearSession(...args),
   continueInNewSession: (...args: unknown[]) => mockContinueInNewSession(...args),
   sessionTokenUsage: () => ({ inputTokens: 0, outputTokens: 0 }),
@@ -189,6 +191,7 @@ beforeEach(() => {
       },
       tool: { approve: vi.fn() },
       task: {
+        get: vi.fn(async () => null),
         resume: vi.fn(async () => taskSnapshot("executing")),
         cancel: vi.fn(async () => taskSnapshot("cancelled")),
         history: vi.fn(async () => []),
@@ -321,6 +324,34 @@ describe("ChatPanel", () => {
 
     expect(screen.getByLabelText("Task status").textContent).toContain("completed");
     expect(screen.getByLabelText("Task status").textContent).toContain("Complete the durable task");
+    expect(mockSetSessionTaskId).toHaveBeenCalledWith("s1", "task-1");
+  });
+
+  it("restores a paused task after remount without resuming automatically", async () => {
+    mockSession.value.taskId = "task-1";
+    vi.mocked(window.moss.task.get).mockResolvedValue(taskSnapshot("paused"));
+    render(<Harness />);
+
+    await screen.findByRole("button", { name: "Resume", exact: true });
+    expect(window.moss.task.get).toHaveBeenCalledWith("task-1");
+    expect(screen.getByLabelText("Task status").textContent).toContain("paused");
+    expect(window.moss.task.resume).not.toHaveBeenCalled();
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
+  });
+
+  it("ignores a restored task after switching to another conversation", async () => {
+    let resolveTask!: (task: TaskSnapshot) => void;
+    mockSession.value.taskId = "task-1";
+    vi.mocked(window.moss.task.get).mockReturnValue(new Promise((resolve) => { resolveTask = resolve; }));
+    const view = render(<Harness />);
+    mockSession.value = { ...mockSession.value, id: "s2", taskId: undefined };
+    view.rerender(<Harness />);
+
+    await act(async () => { resolveTask(taskSnapshot("paused")); });
+
+    expect(screen.queryByLabelText("Task status")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Resume", exact: true })).toBeNull();
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
   });
 
   it("resumes and cancels a blocked durable task", async () => {
@@ -1333,6 +1364,24 @@ describe("ChatPanel", () => {
       { role: "assistant", content: "partial" },
     ]);
     expect(screen.getByText("Aborted")).toBeDefined();
+  });
+
+  it.each([
+    { event: { type: "turn-aborted", messages: [] } as MossEvent, status: "Aborted" },
+    { event: { type: "turn-error", message: "boom", messages: [] } as MossEvent, status: "Error: boom" },
+  ])("clears $status when switching conversations", ({ event, status }) => {
+    const { rerender } = render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, event);
+    expect(screen.getByText(status)).toBeDefined();
+
+    mockSession.value = { ...mockSession.value, id: "s2", title: "Other conversation" };
+    rerender(<Harness />);
+
+    expect(screen.queryByText(status)).toBeNull();
+    expect(mockSetSessionMessages).toHaveBeenCalledTimes(1);
+    expect(mockSetSessionMessages.mock.calls[0][0]).toBe("s1");
+    expect(window.moss.chat.send).toHaveBeenCalledTimes(1);
   });
 
   it("aborts the active turn from the Stop button", () => {

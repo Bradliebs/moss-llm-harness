@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { buildDockerArgs, DockerEvalSandboxBackend, SandboxCleanupError } from "./sandbox-backend";
 
@@ -24,17 +27,20 @@ describe("DockerEvalSandboxBackend", () => {
       "--cpus", "0.5",
       "--workdir", "/workspace",
       image,
-      "--entrypoint", "/bin/sh", "-lc", "npm test",
+      "--entrypoint", "node", "-e", "--", "npm test",
     ]));
-    expect(args.join(" ")).toContain("target=/workspace");
+    expect(args.join(" ")).toContain("target=/input,readonly,bind-recursive=disabled");
+    expect(args).toContain("/workspace:rw,exec,nosuid,nodev,size=33554432,nr_inodes=20001");
   });
 
   it("uses an argument-vector process runner without a host shell", async () => {
-    const processRunner = vi.fn(async () => ({ exitCode: 0, stdout: "ok", stderr: "", timedOut: false }));
+    const processRunner = vi.fn(async () => ({ exitCode: 0, stdout: JSON.stringify({ schemaVersion: 1, exitCode: 0, stdout: "ok", stderr: "", entries: [] }), stderr: "", timedOut: false }));
     const backend = new DockerEvalSandboxBackend({ image, processRunner });
-
-    await expect(backend.run(request)).resolves.toMatchObject({ exitCode: 0, stdout: "ok" });
-    expect(processRunner).toHaveBeenCalledWith("docker", expect.arrayContaining(["create", "--network", "none"]), request);
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "moss-sandbox-backend-"));
+    try {
+      await expect(backend.run({ ...request, workspaceRoot })).resolves.toMatchObject({ exitCode: 0, stdout: "ok" });
+    } finally { rmSync(workspaceRoot, { recursive: true, force: true }); }
+    expect(processRunner).toHaveBeenCalledWith("docker", expect.arrayContaining(["create", "--network", "none"]), { ...request, workspaceRoot, timeoutMs: 30_000 });
     expect(processRunner.mock.calls).toHaveLength(3);
     expect(processRunner).toHaveBeenLastCalledWith("docker", ["rm", "--force", expect.stringMatching(/^moss-eval-/)], expect.objectContaining({ timeoutMs: 30_000 }));
   });

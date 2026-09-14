@@ -6,9 +6,9 @@ import type { EvalSandboxBackend } from "./sandbox-backend";
 
 const HOST_TOOLS = new Set(["read_file", "write_file", "edit_file", "move_file", "list_dir", "glob_files", "search_files", "plan"]);
 
-export function validateTurnEvalCapabilities(capabilities: readonly string[]): void {
+export function validateTurnEvalCapabilities(capabilities: readonly string[], trustedCapabilities: readonly string[] = []): void {
   for (const capability of capabilities) {
-    if (capability !== "run_command" && !HOST_TOOLS.has(capability)) {
+    if (capability !== "run_command" && !HOST_TOOLS.has(capability) && !trustedCapabilities.includes(capability)) {
       throw new Error(`Tool '${capability}' has no sandbox adapter`);
     }
   }
@@ -36,8 +36,8 @@ export function assertSandboxWorkspace(root: string): void {
   }
 }
 
-export function createSandboxTools(tools: Tool[], backend: EvalSandboxBackend, root: string, allowNetwork = false) {
-  validateTurnEvalCapabilities(tools.map((tool) => tool.name));
+export function createSandboxTools(tools: Tool[], backend: EvalSandboxBackend, root: string, allowNetwork = false, trustedCapabilities: readonly string[] = []) {
+  validateTurnEvalCapabilities(tools.map((tool) => tool.name), trustedCapabilities);
   let failure: unknown;
   const assertHealthy = (): void => {
     if (failure) throw failure;

@@ -13,9 +13,11 @@ import * as sandboxBackend from "./sandbox-backend";
 import * as sandboxTools from "./sandbox-tools";
 import * as executionSelection from "./execution-selection";
 import * as splitPolicy from "./split-policy";
+import * as trustedScenarioTools from "./trusted-scenario-tools";
 
 const streamChat = vi.fn(async function* (): AsyncIterable<ProviderStreamEvent> { yield { type: "text-delta", text: "done" }; });
 const hostCommand = vi.fn(async () => ({ ok: true, content: "unexpected host execution" }));
+const providerConstructed = vi.fn();
 const modules: Record<string, unknown> = {
   "pilot-cases.js": pilotCases,
   "representative-corpus.js": representativeCorpus,
@@ -25,7 +27,11 @@ const modules: Record<string, unknown> = {
   "sandbox-tools.js": sandboxTools,
   "execution-selection.js": executionSelection,
   "split-policy.js": splitPolicy,
+  "trusted-scenario-tools.js": trustedScenarioTools,
   "openai-compatible.js": { OpenAiCompatibleProvider: class {
+    constructor(baseUrl: string, apiKey?: string, options?: { reasoningEffort?: "none" }) {
+      providerConstructed(baseUrl, apiKey, options);
+    }
     kind = "deterministic";
     listModels = async () => [];
     streamChat = streamChat;
@@ -49,7 +55,35 @@ function loadConfig(env: Record<string, string> = {}): HarnessEvalConfig {
 afterEach(() => vi.restoreAllMocks());
 
 describe("pilot configuration execution selection", () => {
-  it.each([["pilot", 4, 1], ["representative", 26, 2]])("defaults %s to Docker-free cases while retaining corpus health", (corpus, total, excluded) => {
+  it("compares runtime variants through explicit approval without changing the approval experiment", () => {
+    const config = loadConfig({ MOSS_EVAL_EXPERIMENT: "phase5-runtime" });
+    expect(config.variants.map((variant) => variant.id)).toEqual(["phase5-baseline-gated", "phase5-candidate-gated"]);
+    expect(config.variants.every((variant) => variant.autoApprove === false)).toBe(true);
+    expect(loadConfig().variants.map((variant) => variant.autoApprove)).toEqual([true, false]);
+  });
+
+  it("records opt-in inference settings in the target and configures the provider from that target", () => {
+    const defaults = loadConfig();
+    expect(defaults.targets[0].generation).toBeUndefined();
+    const candidate = loadConfig({ MOSS_EVAL_REASONING_EFFORT: "none" });
+    expect(candidate.targets[0].id).not.toBe(defaults.targets[0].id);
+    expect(candidate.targets[0].generation).toEqual({ reasoningEffort: "none" });
+    candidate.createExecutor(candidate.targets[0], candidate.variants[0], "");
+    expect(providerConstructed).toHaveBeenLastCalledWith("http://localhost:11434/v1", undefined, { reasoningEffort: "none" });
+    candidate.createExecutor(defaults.targets[0], candidate.variants[0], "");
+    expect(providerConstructed).toHaveBeenLastCalledWith("http://localhost:11434/v1", undefined, { reasoningEffort: undefined });
+    expect(() => loadConfig({ MOSS_EVAL_REASONING_EFFORT: "low" })).toThrow("must be none or unset");
+  });
+
+  it("fingerprints the compiled runtime and executor configuration in addition to graders", () => {
+    const config = loadConfig();
+    expect(config.evaluatorArtifacts).toEqual(expect.arrayContaining([
+      `${process.cwd()}/dist-electron`, `${process.cwd()}/scripts/eval-pilots.cjs`,
+      `${process.cwd()}/package-lock.json`,
+    ]));
+  });
+
+  it.each([["pilot", 4, 1], ["representative", 30, 6]])("defaults %s to Docker-free cases while retaining corpus health", (corpus, total, excluded) => {
     const config = loadConfig({ MOSS_EVAL_CORPUS: String(corpus) });
     expect(() => config.validateExecution?.()).not.toThrow();
     const splitExcluded = config.healthCases!.filter((testCase) => testCase.split !== "development").length;
@@ -68,7 +102,7 @@ describe("pilot configuration execution selection", () => {
     expect(promotion.cases.every((testCase) => testCase.split === "validation")).toBe(true);
     expect(() => loadConfig({ MOSS_EVAL_PURPOSE: "release" })).toThrow("named measurement");
     const release = loadConfig({ MOSS_EVAL_CORPUS: "representative", MOSS_EVAL_EXECUTION: "full", MOSS_EVAL_PURPOSE: "release", MOSS_EVAL_MEASUREMENT: "release-1" });
-    expect(release.cases).toHaveLength(26);
+    expect(release.cases).toHaveLength(30);
     expect(release.executionCoverage?.excluded).toEqual([]);
   });
 
@@ -86,7 +120,7 @@ describe("pilot configuration execution selection", () => {
     const config = loadConfig({ MOSS_EVAL_EXECUTION: "full", MOSS_EVAL_CORPUS: "representative", MOSS_EVAL_SUITES: "regression" });
     expect(config.executionCoverage?.excluded.length).toBeGreaterThan(0);
     expect(config.executionCoverage?.excluded.every((entry) => entry.reason === "suite-filter")).toBe(true);
-    expect(config.healthCases).toHaveLength(26);
+    expect(config.healthCases).toHaveLength(30);
   });
 
   it("rejects unknown selections", () => {

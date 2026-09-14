@@ -47,6 +47,27 @@ const VARIANTS: HarnessVariant[] = [
 ];
 
 describe("HarnessMatrixRunner", () => {
+  it.each([
+    { history: null },
+    { history: {} },
+    { history: [null] },
+    { history: [{ runId: "", completedAt: "2026-01-01T00:00:00.000Z" }] },
+    { history: [{ runId: "prior", completedAt: "invalid" }] },
+    { history: [{ runId: "prior", completedAt: "9999-01-01T00:00:00.000Z" }] },
+    { history: [{ runId: "prior", completedAt: "2026-01-01T00:00:00.000Z", diagnostics: { schemaVersion: 1, sha256: "../outside" } }] },
+    { history: [{ runId: "prior", completedAt: "2026-01-01T00:00:00.000Z" }, { runId: "prior", completedAt: "2026-01-01T00:00:00.000Z" }] },
+    { history: [{ runId: "later", completedAt: "2026-01-02T00:00:00.000Z" }, { runId: "earlier", completedAt: "2026-01-01T00:00:00.000Z" }] },
+  ])("rejects malformed retry history before executing: $history", async ({ history }) => {
+    let progress: HarnessMatrixProgress | undefined;
+    const progressStore = { load: async () => progress, save: async (value: HarnessMatrixProgress) => { progress = structuredClone(value); } };
+    let calls = 0;
+    const createExecutor = () => async () => { calls++; throw new Error("engine unavailable"); };
+    await new HarnessMatrixRunner(createExecutor, { progressStore }).run([TEST_CASE], [TARGET], [VARIANTS[0]]);
+    Object.assign(progress!.cells[0], { infrastructureRetries: history });
+    await expect(new HarnessMatrixRunner(createExecutor, { progressStore, retryInfrastructureFailures: true })
+      .run([TEST_CASE], [TARGET], [VARIANTS[0]])).rejects.toThrow("Invalid infrastructure retry");
+    expect(calls).toBe(1);
+  });
   it("requires the full declared corpus and keeps release measurement identity on resume", async () => {
     const coverage = { selection: "local" as const, corpusCaseIds: [TEST_CASE.id, "excluded"], excluded: [{ caseId: "excluded", reason: "split-filter" as const }] };
     expect(() => buildHarnessManifest([TEST_CASE], [TARGET], [VARIANTS[0]], undefined, [], coverage)).toThrow("complete declared source corpus");
@@ -147,6 +168,23 @@ describe("HarnessMatrixRunner", () => {
       ...TARGET,
       generation: { maxOutputTokens: 0 },
     }], [VARIANTS[0]])).toThrow("invalid max output token limit");
+  });
+  it("accepts opt-in no-thinking only for compatible targets and rejects unsupported values", () => {
+    expect(() => validateHarnessMatrix([TEST_CASE], [{
+      ...TARGET,
+      providerKind: "anthropic",
+      generation: { reasoningEffort: "none" },
+    }], [VARIANTS[0]])).toThrow("unsupported reasoning effort configuration");
+    expect(() => validateHarnessMatrix([TEST_CASE], [{
+      ...TARGET,
+      providerKind: "openai-compatible",
+      generation: JSON.parse('{"reasoningEffort":"low"}'),
+    }], [VARIANTS[0]])).toThrow("unsupported reasoning effort configuration");
+    expect(() => validateHarnessMatrix([TEST_CASE], [{
+      ...TARGET,
+      providerKind: "openai-compatible",
+      generation: { reasoningEffort: "none" },
+    }], [VARIANTS[0]])).not.toThrow();
   });
   it("rejects compact context without an effective positive limit", () => {
     expect(() => validateHarnessMatrix([TEST_CASE], [TARGET], [{

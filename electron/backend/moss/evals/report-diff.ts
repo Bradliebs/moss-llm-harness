@@ -10,6 +10,7 @@ import type {
 import type { EvalSuitePurpose } from "../../../../common/evals";
 import { pairedNonInferiority } from "./statistics";
 import { validateExecutionCoverage } from "./execution-selection";
+import { validateInfrastructureRetries } from "./matrix-runner";
 
 export interface HarnessRegressionThresholds {
   requireFullCoverage?: boolean;
@@ -109,6 +110,7 @@ export function diffHarnessReports(
 export function assertHarnessReportSchema(report: HarnessMatrixReport): void {
   if (report.schemaVersion !== 1) throw new Error("Unsupported harness report schema version");
   if (report.manifest.executionCoverage) validateExecutionCoverage(report.manifest.executionCoverage, report.manifest.caseIds);
+  for (const cell of report.cells) validateInfrastructureRetries(cell);
 }
 
 export function assertHarnessManifestCompatible(
@@ -432,6 +434,7 @@ export function assertHarnessReportPolicySupport(
   report: HarnessMatrixReport,
   policy: HarnessRegressionThresholds,
 ): void {
+  assertHarnessReportSchema(report);
   assertFullCoverage(report, policy);
   assertPolicySampleSupport(report, report, policy);
 }

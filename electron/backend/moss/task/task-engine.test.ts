@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TaskEvidence, TaskMissionPlan, TaskSpec, TaskStep } from "../../../../common/types";
 import { TaskEngine } from "./task-engine";
@@ -118,6 +118,57 @@ describe("TaskEngine", () => {
     });
 
     await expect(engine.complete("task-1")).rejects.toThrow("Tests pass");
+  });
+
+  it("settles concurrent pause requests without a duplicate transition", async () => {
+    await engine.create(SPEC, "task-1");
+    await engine.setPlan("task-1", PLAN);
+    const executing = await engine.start("task-1");
+    const transition = store.transition.bind(store);
+    let arrivals = 0;
+    let releaseTransitions!: () => void;
+    const bothArrived = new Promise<void>((resolve) => { releaseTransitions = resolve; });
+    const transitionSpy = vi.spyOn(store, "transition").mockImplementation(async (...args) => {
+      arrivals += 1;
+      if (arrivals === 2) releaseTransitions();
+      await bothArrived;
+      return transition(...args);
+    });
+
+    const results = await Promise.allSettled([
+      engine.pause("task-1", "First worker interrupted"),
+      engine.pause("task-1", "Second worker interrupted"),
+    ]);
+    transitionSpy.mockRestore();
+
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    const paused = await store.get("task-1");
+    expect(paused).toMatchObject({ state: "paused", revision: executing.revision + 1 });
+    for (const result of results) {
+      if (result.status === "fulfilled") expect(result.value).toEqual(paused);
+    }
+    expect(await engine.pause("task-1", "Repeated pause")).toEqual(paused);
+  });
+
+  it("propagates pause persistence failures when the task is not paused", async () => {
+    await engine.create(SPEC, "task-1");
+    await engine.setPlan("task-1", PLAN);
+    const executing = await engine.start("task-1");
+    const failure = new Error("Task write failed");
+    const transitionSpy = vi.spyOn(store, "transition").mockRejectedValueOnce(failure);
+
+    await expect(engine.pause("task-1", "Interrupted")).rejects.toBe(failure);
+    transitionSpy.mockRestore();
+
+    expect(await store.get("task-1")).toEqual(executing);
+  });
+
+  it("does not turn a cancelled task into a successful pause", async () => {
+    await engine.create(SPEC, "task-1");
+    const cancelled = await engine.cancel("task-1");
+
+    await expect(engine.pause("task-1", "Interrupted")).rejects.toThrow("Invalid task transition: cancelled -> paused");
+    expect(await store.get("task-1")).toEqual(cancelled);
   });
 
   it("pauses when an action budget is reached", async () => {

@@ -72,6 +72,35 @@ export interface HarnessMatrixProgressStore {
   save(progress: HarnessMatrixProgress): Promise<void>;
 }
 
+export function validateInfrastructureRetries(cell: HarnessMatrixCellResult): void {
+  if (cell.infrastructureRetries === undefined) return;
+  const history: unknown = cell.infrastructureRetries;
+  if (!Array.isArray(history)) throw new Error("Invalid infrastructure retry history");
+  const current = cell.result.observation;
+  const runIds = new Set([current.runId]);
+  let previousTime = -Infinity;
+  const completedTime = Date.parse(current.completedAt);
+  if (!Number.isFinite(completedTime)) throw new Error("Invalid infrastructure retry completion time");
+  for (const entry of history) {
+    if (!entry || typeof entry !== "object"
+      || typeof entry.runId !== "string" || !entry.runId.trim() || runIds.has(entry.runId)
+      || typeof entry.completedAt !== "string") {
+      throw new Error("Invalid infrastructure retry identity");
+    }
+    const time = Date.parse(entry.completedAt);
+    if (!Number.isFinite(time) || time < previousTime || time > completedTime) {
+      throw new Error("Invalid infrastructure retry ordering");
+    }
+    if (entry.diagnostics !== undefined && (!entry.diagnostics || typeof entry.diagnostics !== "object"
+      || entry.diagnostics.schemaVersion !== 1 || typeof entry.diagnostics.sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(entry.diagnostics.sha256))) {
+      throw new Error("Invalid infrastructure retry diagnostic reference");
+    }
+    runIds.add(entry.runId);
+    previousTime = time;
+  }
+}
+
 /** Expands model, harness, case, and repetition axes into isolated executions. */
 export class HarnessMatrixRunner {
   private readonly temporaryRoot: string;
@@ -144,6 +173,7 @@ export class HarnessMatrixRunner {
     const jobKeys = new Set(jobs.map(matrixJobKey));
     const cellsByKey = new Map<string, HarnessMatrixCellResult>();
     for (const cell of resumed?.cells ?? []) {
+      validateInfrastructureRetries(cell);
       const key = matrixCellKey(cell);
       if (!jobKeys.has(key) || cellsByKey.has(key)) {
         throw new Error("Harness progress contains an invalid or duplicate matrix cell");
@@ -151,6 +181,9 @@ export class HarnessMatrixRunner {
       if (this.diagnosticsStore) {
         if (!cell.diagnostics) throw new Error("Resumed cell has no diagnostic artifact; use a fresh run for capture");
         this.diagnosticsStore.read(cell.diagnostics);
+        for (const attempt of cell.infrastructureRetries ?? []) {
+          if (attempt.diagnostics) this.diagnosticsStore.read(attempt.diagnostics);
+        }
       }
       cellsByKey.set(key, cell);
     }
@@ -364,6 +397,10 @@ export function validateHarnessMatrix(
     if (target.generation?.maxOutputTokens !== undefined
       && (!Number.isInteger(target.generation.maxOutputTokens) || target.generation.maxOutputTokens < 1)) {
       throw new Error(`Model target '${target.id}' has an invalid max output token limit`);
+    }
+    if (target.generation?.reasoningEffort !== undefined
+      && (target.generation.reasoningEffort !== "none" || target.providerKind !== "openai-compatible")) {
+      throw new Error(`Model target '${target.id}' has an unsupported reasoning effort configuration`);
     }
   }
   for (const variant of variants) {

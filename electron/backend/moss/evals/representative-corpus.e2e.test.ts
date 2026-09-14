@@ -16,7 +16,7 @@ class CorpusProvider implements ChatProvider {
   private round = 0;
 
   constructor(
-    private readonly calls: Array<{ name: string; arguments: Record<string, unknown> }>,
+    private readonly calls: Array<{ name: string; arguments: Record<string, unknown> } | null>,
   ) {}
 
   async *streamChat(): AsyncIterable<ProviderStreamEvent> {
@@ -69,6 +69,25 @@ describe("representative corpus production execution", () => {
     } else {
       await expect(readFile(join(workspaceRoot, "answer.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     }
+  });
+
+  it.each(["tool-recovery-canonical", "tool-recovery-perturbed"])("blocks a wrapped payload and permits correction within the existing budget for %s", async (caseId) => {
+    const testCase = findCase(caseId);
+    const source = await readFile(join(testCase.fixture!.workspaceTemplate!, "scenario.json"), "utf8");
+    const answer = JSON.stringify(JSON.parse(source).payload);
+    const calls = [
+      { name: "read_file", arguments: { path: "scenario.json" } },
+      { name: "write_file", arguments: { path: "answer.json", content: source } },
+      null,
+      { name: "write_file", arguments: { path: "answer.json", content: answer } },
+    ];
+
+    const { execution, report, workspaceRoot } = await executeCorpusCase(testCase, new CorpusProvider(calls), temporaryRoots);
+
+    expect(report.overall).toMatchObject({ runs: 1, successes: 1 });
+    expect(execution.trace?.toolCalls.filter((call) => call.name === "write_file")).toHaveLength(2);
+    expect(execution.trace?.toolCalls.length).toBeLessThanOrEqual(testCase.task.budget!.maxActions!);
+    await expect(readFile(join(workspaceRoot, "answer.json"), "utf8")).resolves.toBe(answer);
   });
 
   it("delivers the transient read failure, recovers, and passes the hidden artifact contract", async () => {

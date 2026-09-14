@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { EvalAdmission, EvalCase, EvalExecutionObservation, EvalScenarioDisturbance, HarnessDiagnosticReview, HarnessVariant } from "../../../../common/evals";
+import type { EvalAdmission, EvalCase, EvalExecutionObservation, EvalScenarioDisturbance, HarnessDiagnosticReview, HarnessExecutionTrace, HarnessVariant } from "../../../../common/evals";
 import type { AgentMessage, MossEvent, TokenUsage, ToolApprovalResponse } from "../../../../common/types";
 import { runTurn } from "../agent-runner";
 import { ProviderError, type ChatProvider, type ProviderStreamEvent } from "../providers/types";
@@ -10,8 +10,11 @@ import type { EvalExecutionResult, EvalExecutor } from "./eval-runner";
 import { HarnessTraceCollector } from "./trace-collector";
 import type { HarnessDiagnosticCapture } from "./diagnostic-artifact-store";
 import { DockerEvalSandboxBackend, type EvalSandboxBackend } from "./sandbox-backend";
-import { createSandboxTools, validateTurnEvalCapabilities } from "./sandbox-tools";
+import { createSandboxTools } from "./sandbox-tools";
+import { createTrustedScenarioTools, validateEvalCaseCapabilities } from "./trusted-scenario-tools";
 import { requiresEvalSandbox } from "./execution-selection";
+import type { VerifyResult } from "../verify/verifier";
+import { createContextScenarioSetup, createResumeScenarioSetup } from "./context-scenario";
 
 export interface TurnEvalExecutorOptions {
   provider: ChatProvider;
@@ -31,7 +34,7 @@ export interface TurnEvalExecutorOptions {
   sandboxBackend?: EvalSandboxBackend;
 }
 
-const DEFAULT_PROMPT_PROFILE = "deterministic-production-v1";
+const DEFAULT_PROMPT_PROFILE = "deterministic-production-v2";
 
 /** Adapt the production agent loop to the provider-neutral evaluation runner. */
 export function createTurnEvalExecutor(options: TurnEvalExecutorOptions): EvalExecutor {
@@ -41,7 +44,7 @@ export function createTurnEvalExecutor(options: TurnEvalExecutorOptions): EvalEx
   }
   const now = options.now ?? (() => new Date());
   return async (testCase, repetition): Promise<EvalExecutionResult> => {
-    validateTurnEvalCapabilities(testCase.allowedCapabilities);
+    const trustedCapabilities = validateEvalCaseCapabilities(testCase);
     const workspaceRoot = await options.workspaceRoot(testCase, repetition);
     const startedAtDate = now();
     const promptDate = options.promptNow?.() ?? startedAtDate;
@@ -64,7 +67,7 @@ export function createTurnEvalExecutor(options: TurnEvalExecutorOptions): EvalEx
           query: testCase.task.objective,
           now: () => promptDate,
         }),
-        { role: "user", content: testCase.task.objective },
+        { role: "user", content: JSON.stringify(testCase.task) },
       ];
     for (const disturbance of testCase.scenario?.disturbances ?? []) {
       if (disturbance.type !== "context-pressure") continue;
@@ -75,6 +78,8 @@ export function createTurnEvalExecutor(options: TurnEvalExecutorOptions): EvalEx
       messages = [messages[0], ...pressureMessages, ...messages.slice(1)];
       deliverDisturbance(disturbance);
     }
+    const contextSetup = createContextScenarioSetup(testCase, messages);
+    if (contextSetup) messages = contextSetup.messages;
     const promptProvenance = {
       profile: options.variant?.promptProfile ?? (options.messages ? "custom" : DEFAULT_PROMPT_PROFILE),
       seededMessagesHash: createHash("sha256").update(JSON.stringify(messages)).digest("hex"),
@@ -83,8 +88,9 @@ export function createTurnEvalExecutor(options: TurnEvalExecutorOptions): EvalEx
     const requiresSandbox = requiresEvalSandbox(testCase, options.variant);
     const backend = options.sandboxBackend ?? (requiresSandbox
       ? new DockerEvalSandboxBackend({ image: options.variant?.sandbox?.image ?? "" }) : undefined);
-    const selectedTools = [...options.toolRegistry.values()].filter((tool) => allowed.has(tool.name));
-    const sandbox = backend ? createSandboxTools(selectedTools, backend, workspaceRoot, options.variant?.sandbox?.allowNetwork) : undefined;
+    const trustedTools = await createTrustedScenarioTools(testCase, workspaceRoot);
+    const selectedTools = (trustedTools ?? [...options.toolRegistry.values()]).filter((tool) => allowed.has(tool.name));
+    const sandbox = backend ? createSandboxTools(selectedTools, backend, workspaceRoot, options.variant?.sandbox?.allowNetwork, trustedCapabilities) : undefined;
     const tools = sandbox?.tools ?? selectedTools;
     const toolInvocations = new Map<string, number>();
     const toolRegistry = new Map(tools.map((tool) => [tool.name, {
@@ -98,7 +104,7 @@ export function createTurnEvalExecutor(options: TurnEvalExecutorOptions): EvalEx
         > =>
           candidate.type === "tool-failure"
           && candidate.capability === tool.name
-          && candidate.invocation === invocation);
+          && (candidate.invocation === invocation || (candidate.persistent === true && invocation > candidate.invocation)));
         if (!disturbance) return tool.execute(...args);
         deliverDisturbance(disturbance);
         return {
@@ -128,6 +134,7 @@ export function createTurnEvalExecutor(options: TurnEvalExecutorOptions): EvalEx
     let actionCount = 0;
     let responseText = "";
     let outcome: EvalExecutionObservation["outcome"] = "failed";
+    let verificationDirty = false;
     const startedAt = startedAtDate.toISOString();
 
     const exhaustBudget = (
@@ -255,27 +262,71 @@ export function createTurnEvalExecutor(options: TurnEvalExecutorOptions): EvalEx
         }
       },
     };
+    const verification = testCase.scenario?.verification;
+    let verificationCycles = 0;
+    let verificationStopped = false;
+    let latestVerification: VerifyResult | undefined;
+    const recordVerification = (result: VerifyResult): void => {
+      options.diagnostics?.append("verification-details", result);
+      latestVerification = result;
+      verificationDirty = false;
+      verificationCycles++;
+      if (verification && !result.ok && verificationCycles >= verification.maxCycles) {
+        verificationStopped = true;
+        controller.abort();
+      }
+    };
+    const runScenarioVerification = async (): Promise<void> => {
+      if (!verification || !sandbox) throw new Error("Scenario verification requires a container backend");
+      const result = await sandbox.verify(verification.commands, workspaceRoot, controller.signal, { commandTimeoutMs: options.variant?.toolTimeoutMs });
+      recordVerification(result);
+      onEvent({ type: "verification", ok: result.ok, checkCount: result.results.length });
+    };
+    let resumeSetup: Awaited<ReturnType<typeof createResumeScenarioSetup>>;
     try {
-      await runTurn({
+      resumeSetup = await createResumeScenarioSetup(testCase, workspaceRoot, messages);
+      if (resumeSetup) messages = resumeSetup.messages;
+      if (verification) {
+        await runScenarioVerification();
+        const cadence = options.variant?.runtime?.verificationCadence === "terminal"
+          ? "when you return a final response"
+          : "after successful file mutations";
+        messages.push({ role: "user", content: `Runtime verification: The host runs the configured checks ${cadence} and gates completion on a current passing result. Use only the provided tools; do not request an unavailable command tool to run these checks.\nInitial verification: ${JSON.stringify(latestVerification)}` });
+      }
+      promptProvenance.seededMessagesHash = createHash("sha256").update(JSON.stringify(messages)).digest("hex");
+      if (!verificationStopped) await runTurn({
         provider,
         model: options.model,
         messages,
+        jsonArtifactRequirements: testCase.task.jsonArtifactRequirements,
         tools: tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
         toolRegistry,
         workspaceRoot,
         signal: controller.signal,
-        onEvent,
+        onEvent: (event) => {
+          if (event.type === "tool-result" && event.ok && ["write_file", "edit_file", "move_file", "run_command"].includes(event.name)) verificationDirty = true;
+          onEvent(event);
+        },
         requestApproval,
         autoApprove: hasApprovalScenario ? false : options.variant?.autoApprove ?? options.autoApprove,
         injectionMode: options.variant?.injectionMode,
-        contextLimit: options.variant?.runtime?.contextStrategy === "full" ? 0 : options.variant?.contextLimit,
+        contextLimit: contextSetup?.options.contextLimit ?? (options.variant?.runtime?.contextStrategy === "full" ? 0 : options.variant?.contextLimit),
         maxRounds: options.variant?.maxRounds,
         maxOutputTokens: options.maxOutputTokens,
         toolTimeoutMs: options.variant?.toolTimeoutMs,
         verify: options.variant?.runtime?.verificationCadence === "terminal"
           ? { enabled: false, commands: [] }
-          : options.variant?.verify,
-        ...(options.diagnostics ? { onVerification: (result) => options.diagnostics!.append("verification-details", result) } : {}),
+          : verification ? { enabled: true, commands: verification.commands, maxCycles: verification.maxCycles - verificationCycles } : options.variant?.verify,
+        onVerification: recordVerification,
+        ...(verification ? { completionGuard: async () => {
+          if (verificationDirty && verificationCycles < verification.maxCycles) await runScenarioVerification();
+          if (verificationDirty && verificationCycles >= verification.maxCycles) {
+            verificationStopped = true;
+            controller.abort();
+          }
+          if (latestVerification?.ok !== true || verificationDirty || verificationStopped) return { accept: false, feedback: "Completion requires a current passing verification result." };
+          return { accept: true };
+        } } : resumeSetup ? { completionGuard: resumeSetup.options.completionGuard } : {}),
         ...(sandbox ? { verificationRunner: sandbox.verify } : {}),
         planningPolicy: options.variant?.runtime?.planningPolicy,
         recoveryMode: options.variant?.runtime?.recoveryPolicy,
@@ -284,11 +335,17 @@ export function createTurnEvalExecutor(options: TurnEvalExecutorOptions): EvalEx
     } finally {
       if (durationTimer) clearTimeout(durationTimer);
       options.signal?.removeEventListener("abort", cancelFromParent);
+      await resumeSetup?.dispose();
       sandbox?.assertHealthy();
     }
 
     if (budgetReason) outcome = "budget-exhausted";
     if (budgetReason) traceCollector.markBudgetExhausted();
+    if (verificationStopped && !budgetReason && !failureSource) {
+      outcome = "blocked";
+      failureReason = "Verification cycle budget exhausted";
+      traceCollector.markBlocked();
+    }
     for (const disturbance of testCase.scenario?.disturbances ?? []) {
       if (!deliveredDisturbances.has(disturbance.id)) {
         traceCollector.recordScenarioDisturbance(disturbance.id, disturbance.type, "undelivered");
@@ -301,7 +358,7 @@ export function createTurnEvalExecutor(options: TurnEvalExecutorOptions): EvalEx
     const trace = traceCollector.snapshot();
     options.diagnostics?.append("assistant-response", responseText);
     const diagnosticReview = options.variant?.runtime?.reviewerPass === "diagnostic"
-      ? await runDiagnosticReview(options, testCase, responseText, controller.signal)
+      ? await runDiagnosticReview(options, testCase, responseText, trace, controller.signal)
       : undefined;
 
     return {
@@ -332,34 +389,64 @@ async function runDiagnosticReview(
   options: TurnEvalExecutorOptions,
   testCase: EvalCase,
   responseText: string,
+  trace: HarnessExecutionTrace,
   signal: AbortSignal,
 ): Promise<HarnessDiagnosticReview> {
   const startedAt = Date.now();
   const usage: TokenUsage = {};
   let text = "";
+  const controller = new AbortController();
+  let stopReason: "reviewer-timeout" | "reviewer-cancelled" | undefined;
+  let rejectStopped!: (reason: Error) => void;
+  const stopped = new Promise<never>((_resolve, reject) => { rejectStopped = reject; });
+  const stop = (reason: "reviewer-timeout" | "reviewer-cancelled"): void => {
+    if (stopReason) return;
+    stopReason = reason;
+    rejectStopped(new Error(reason));
+    controller.abort();
+  };
+  const cancel = (): void => stop("reviewer-cancelled");
+  const timer = setTimeout(() => stop("reviewer-timeout"), 30_000);
+  signal.addEventListener("abort", cancel, { once: true });
+  options.signal?.addEventListener("abort", cancel, { once: true });
   try {
-    const stream = options.provider.streamChat({
-      model: options.model,
-      messages: [
-        {
-          role: "system",
-          content: "You are a diagnostic reviewer. Do not propose actions. Return only JSON: {\"label\":\"pass|fail|unknown\",\"reasonCode\":\"kebab-case\"}.",
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            objective: testCase.task.objective,
-            acceptanceCriteria: testCase.task.acceptanceCriteria.map(({ id, description }) => ({ id, description })),
-            assistantResponse: responseText,
-          }),
-        },
-      ],
-      tools: [],
-    }, signal);
-    for await (const event of stream) {
-      if (event.type === "text-delta") text += event.text;
-      else if (event.type === "usage") Object.assign(usage, event.usage);
-    }
+    const consume = async (): Promise<void> => {
+      if (signal.aborted || options.signal?.aborted) {
+        cancel();
+        return;
+      }
+      const stream = options.provider.streamChat({
+        model: options.model,
+        messages: [
+          {
+            role: "system",
+            content: "You are a diagnostic reviewer. Do not propose actions. Judge only the supplied observations, not unobserved artifact state. Tool invocation and approval evidence comes from observedExecution, not from claims or omissions in the assistant response. Return unknown when evidence is insufficient. Return only JSON: {\"label\":\"pass|fail|unknown\",\"reasonCode\":\"kebab-case\"}.",
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              objective: testCase.task.objective,
+              acceptanceCriteria: testCase.task.acceptanceCriteria.map(({ id, description }) => ({ id, description })),
+              assistantResponse: responseText,
+              observedExecution: {
+                terminalState: trace.terminalState,
+                toolCalls: trace.toolCalls.map(({ name, ok, approvalRequested, autoApproved, risk }) => ({
+                  name, ok, approvalRequested, autoApproved, risk,
+                })),
+              },
+            }),
+          },
+        ],
+        tools: [],
+        maxTokens: 256,
+      }, controller.signal);
+      for await (const event of stream) {
+        if (controller.signal.aborted) return;
+        if (event.type === "text-delta") text += event.text;
+        else if (event.type === "usage") Object.assign(usage, event.usage);
+      }
+    };
+    await Promise.race([stopped, consume()]);
     const parsed = JSON.parse(text) as { label?: unknown; reasonCode?: unknown };
     const label = parsed.label === "pass" || parsed.label === "fail" || parsed.label === "unknown"
       ? parsed.label
@@ -379,10 +466,14 @@ async function runDiagnosticReview(
     return {
       diagnostic: true,
       label: "unknown",
-      reasonCode: "reviewer-error",
+      reasonCode: stopReason ?? "reviewer-error",
       usage,
       estimatedCostUsd: options.estimateCostUsd?.(usage) ?? 0,
       durationMs: Date.now() - startedAt,
     };
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", cancel);
+    options.signal?.removeEventListener("abort", cancel);
   }
 }

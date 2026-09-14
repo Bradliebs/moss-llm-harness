@@ -80,7 +80,7 @@ export function findDuplicateWarnings(cases: readonly EvalCase[], threshold = 0.
   const warnings: EvalDuplicateWarning[] = [];
   for (let leftIndex = 0; leftIndex < cases.length; leftIndex++) {
     for (let rightIndex = leftIndex + 1; rightIndex < cases.length; rightIndex++) {
-      if (cases[leftIndex].family === cases[rightIndex].family) continue;
+      if (cases[leftIndex].family && cases[leftIndex].family === cases[rightIndex].family) continue;
       const similarity = jaccard(tokens(cases[leftIndex].task.objective), tokens(cases[rightIndex].task.objective));
       if (similarity >= threshold) {
         warnings.push({
@@ -114,11 +114,11 @@ function caseContentHash(testCase: EvalCase): string {
 }
 
 function tokens(value: string): Set<string> {
-  return new Set(value.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+  return new Set(value.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
 }
 
 function jaccard(left: Set<string>, right: Set<string>): number {
-  if (left.size === 0 && right.size === 0) return 1;
+  if (left.size === 0 && right.size === 0) return 0;
   const intersection = [...left].filter((token) => right.has(token)).length;
   return intersection / new Set([...left, ...right]).size;
 }

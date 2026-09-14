@@ -87,6 +87,15 @@ function report(overrides: Partial<HarnessMatrixReport> = {}): HarnessMatrixRepo
 }
 
 describe("diffHarnessReports", () => {
+  it("rejects retry history that reuses the current run identity", () => {
+    const candidate = report();
+    candidate.cells[0].infrastructureRetries = [{
+      runId: "run-a", completedAt: "2026-07-17T07:59:59.000Z",
+    }];
+    expect(() => diffHarnessReports(report(), candidate)).toThrow("Invalid infrastructure retry identity");
+    expect(() => assertHarnessReportPolicySupport(candidate, {})).toThrow("Invalid infrastructure retry identity");
+  });
+
   it("allows partial comparisons but rejects partial or undeclared release coverage", () => {
     const partial = report();
     partial.manifest.executionCoverage = { selection: "local", corpusCaseIds: ["case-a", "command"],

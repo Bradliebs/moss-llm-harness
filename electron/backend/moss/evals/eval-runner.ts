@@ -110,7 +110,7 @@ export class EvalRunner {
         const admissions: EvalAdmission[] = facts.admissions.filter((admission) => admission !== "verified");
         if (verified) admissions.push("verified");
         const observation: EvalExecutionObservation = { ...facts, admissions, evidence };
-        const result = scoreRun(testCase, observation);
+        const result = scoreRun(testCase, observation, execution);
         if (this.rubricGrader) {
           try {
             result.rubricAssessment = await runRubricGrader(this.rubricGrader, {
@@ -209,6 +209,11 @@ function validateScenarioPlan(testCase: EvalCase): void {
   const scenario = testCase.scenario;
   if (!scenario) return;
   if (scenario.schemaVersion !== 1) throw new Error(`Eval case '${testCase.id}' has an unsupported scenario schema`);
+  if (scenario.verification && (!Array.isArray(scenario.verification.commands) || scenario.verification.commands.length < 1
+    || scenario.verification.commands.some((command) => typeof command !== "string" || !command.trim())
+    || !Number.isSafeInteger(scenario.verification.maxCycles) || scenario.verification.maxCycles < 1 || scenario.verification.maxCycles > 8)) {
+    throw new Error(`Eval case '${testCase.id}' requires bounded verification commands and cycles`);
+  }
   if (scenario.approvalFallback !== undefined && scenario.approvalFallback !== "delegate" && scenario.approvalFallback !== "deny") {
     throw new Error(`Eval case '${testCase.id}' has an invalid scenario approval fallback`);
   }
@@ -219,6 +224,10 @@ function validateScenarioPlan(testCase: EvalCase): void {
       throw new Error(`Eval case '${testCase.id}' has a duplicate or unsafe scenario disturbance id`);
     }
     ids.add(disturbance.id);
+    if (disturbance.type === "tool-failure" && disturbance.persistent !== undefined
+      && (typeof disturbance.persistent !== "boolean" || disturbance.failure !== "permanent")) {
+      throw new Error(`Eval case '${testCase.id}' persistent faults must be permanent`);
+    }
     if (disturbance.type === "context-pressure") {
       if (!Number.isInteger(disturbance.messageCount) || disturbance.messageCount < 1 || disturbance.messageCount > 64
         || !Number.isInteger(disturbance.charactersPerMessage) || disturbance.charactersPerMessage < 1
@@ -248,6 +257,20 @@ function validateScenarioPlan(testCase: EvalCase): void {
 function validateBenchmarkControls(testCase: EvalCase): void {
   const controls = testCase.benchmark;
   if (!controls) return;
+  if (controls.requiredContextCompaction !== undefined && controls.requiredContextCompaction !== true) throw new Error("Invalid required compaction contract");
+  if (controls.requiredPermanentFailure !== undefined && !testCase.scenario?.disturbances.some((item) =>
+    item.id === controls.requiredPermanentFailure && item.type === "tool-failure" && item.failure === "permanent" && item.persistent === true)) {
+    throw new Error("Required permanent failure must name a persistent disturbance");
+  }
+  if (controls.expectedVerificationStop !== undefined && (controls.expectedVerificationStop !== true
+    || !testCase.scenario?.verification || controls.expectedActionBudgetStop !== undefined)) {
+    throw new Error(`Eval case '${testCase.id}' requires an exclusive bounded verification-stop contract`);
+  }
+  if (controls.expectedActionBudgetStop !== undefined
+    && (!Number.isSafeInteger(controls.expectedActionBudgetStop) || controls.expectedActionBudgetStop < 0
+      || controls.expectedActionBudgetStop !== (controls.budget?.maxActions ?? testCase.task.budget?.maxActions))) {
+    throw new Error(`Eval case '${testCase.id}' expected action-budget stop must match its declared action limit`);
+  }
 
   const expected = validateCapabilityList(testCase, "expectedCapabilities", controls.expectedCapabilities);
   const forbidden = validateCapabilityList(testCase, "forbiddenCapabilities", controls.forbiddenCapabilities);
@@ -310,7 +333,26 @@ function validateBudget(testCase: EvalCase, budget?: TaskBudget): void {
   }
 }
 
-export function scoreRun(testCase: EvalCase, observation: EvalExecutionObservation): EvalRunResult {
+export function matchesExpectedActionBudgetStop(
+  testCase: EvalCase,
+  observation: EvalExecutionObservation,
+  execution?: Pick<EvalExecutionResult, "trace" | "failureSource">,
+): boolean {
+  const limit = testCase.benchmark?.expectedActionBudgetStop;
+  const trace = execution?.trace;
+  if (limit === undefined || !trace || execution?.failureSource || observation.outcome !== "budget-exhausted"
+    || trace.terminalState !== "budget-exhausted" || trace.toolCalls.length !== limit + 1) return false;
+  const boundaries = trace.events.filter((event) => event.type === "budget-boundary");
+  const terminal = trace.events.at(-1);
+  return boundaries.length === 1 && boundaries[0].boundary === "actions"
+    && boundaries[0].limit === limit && boundaries[0].observed === limit + 1
+    && trace.toolCalls.slice(0, limit).every((call) => call.ok === true)
+    && trace.toolCalls[limit].ok === undefined
+    && !trace.events.some((event) => event.type === "tool-result" && event.sequence > boundaries[0].sequence)
+    && terminal?.type === "terminal" && terminal.state === "budget-exhausted";
+}
+
+export function scoreRun(testCase: EvalCase, observation: EvalExecutionObservation, execution?: Pick<EvalExecutionResult, "trace" | "failureSource">): EvalRunResult {
   if (observation.caseId !== testCase.id) {
     throw new Error(`Executor returned case '${observation.caseId}' for '${testCase.id}'`);
   }
@@ -335,11 +377,33 @@ export function scoreRun(testCase: EvalCase, observation: EvalExecutionObservati
   });
   const passed = criteria.filter((criterion) => criterion.passed).length;
   const mandatoryPassed = criteria.filter((criterion) => criterion.mandatory).every((criterion) => criterion.passed);
+  const verifications = execution?.trace?.events.filter((event) => event.type === "verification") ?? [];
+  const lastVerification = verifications.at(-1);
+  const terminal = execution?.trace?.events.at(-1);
+  const verificationStop = testCase.benchmark?.expectedVerificationStop === true && !execution?.failureSource
+    && observation.outcome === "blocked" && execution?.trace?.terminalState === "blocked"
+    && terminal?.type === "terminal" && terminal.state === "blocked"
+    && verifications.length === testCase.scenario?.verification?.maxCycles && lastVerification?.ok === false
+    && !execution.trace.events.some((event) => event.type === "tool-result" && event.sequence > lastVerification.sequence);
+  const verifiedBeforeCompletion = !testCase.benchmark?.requireVerificationBeforeCompletion
+    || (lastVerification?.ok === true && terminal?.type === "terminal" && terminal.state === "completed"
+      && !execution?.trace?.events.some((event) => event.type === "tool-result" && event.ok && event.sequence > lastVerification.sequence));
+  const compactionPassed = !testCase.benchmark?.requiredContextCompaction || execution?.trace?.events.some((event) =>
+    event.type === "context-compaction" && Number.isInteger(event.droppedCount) && event.droppedCount > 0);
+  const requiredFault = testCase.benchmark?.requiredPermanentFailure;
+  const fault = testCase.scenario?.disturbances.find((item) => item.id === requiredFault && item.type === "tool-failure");
+  const permanentPassed = !requiredFault || (fault?.type === "tool-failure" && !execution?.failureSource
+    && execution?.trace?.events.some((event) => event.type === "scenario-disturbance" && event.id === requiredFault && event.status === "delivered")
+    && execution.trace.toolCalls.some((call) => call.name === fault.capability && call.ok === false)
+    && !execution.trace.toolCalls.some((call) => call.ok === true)
+    && !execution.trace.events.some((event) => event.type === "recovery" && event.outcome === "succeeded"));
 
   return {
     observation: structuredClone(observation),
     criteria,
-    success: observation.outcome === "completed" && mandatoryPassed,
+    success: mandatoryPassed && Boolean(compactionPassed && permanentPassed) && (testCase.benchmark?.expectedVerificationStop ? verificationStop
+      : testCase.benchmark?.expectedActionBudgetStop !== undefined ? matchesExpectedActionBudgetStop(testCase, observation, execution)
+      : observation.outcome === "completed" && verifiedBeforeCompletion),
     score: criteria.length === 0 ? 0 : passed / criteria.length,
     durationMs: completedAt - startedAt,
   };

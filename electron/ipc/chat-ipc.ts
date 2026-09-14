@@ -317,6 +317,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
   const broker = new ApprovalBroker();
   const durableTaskId = req.taskSpec ? req.taskId ?? req.turnId : undefined;
   let preserveTaskOnAbort = false;
+  let rendererUnavailable = false;
   let pendingDurableApproval: { callId: string; persisted: Promise<TaskSnapshot> } | undefined;
 
   let terminalEvent: Extract<MossEvent, { type: "turn-complete" | "turn-aborted" | "turn-error" }> | undefined;
@@ -326,7 +327,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       terminalEvent = mossEvent;
     }
     if (mossEvent.type === "tool-approval-request") approvalEvents.set(mossEvent.callId, mossEvent);
-    if (!event.sender.isDestroyed()) {
+    if (!rendererUnavailable && !event.sender.isDestroyed()) {
       event.sender.send(IPC.chatEvent, { turnId: req.turnId, event: mossEvent });
     }
   };
@@ -334,7 +335,8 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
   inflight.set(req.turnId, inflightEntry);
   const handleRendererDestroyed = () => {
     const entry = inflight.get(req.turnId);
-    if (entry !== inflightEntry) return;
+    if (entry !== inflightEntry || rendererUnavailable) return;
+    rendererUnavailable = true;
     entry.controller.abort();
     const callId = entry.broker.pendingCallId() ?? pendingDurableApproval?.callId;
     if (entry.taskId && callId) {
@@ -350,7 +352,12 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       entry.broker.denyAll("Renderer closed");
     }
   };
+  const handleRendererNavigation = (details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>) => {
+    if (details.isMainFrame && !details.isSameDocument) handleRendererDestroyed();
+  };
   event.sender.once("destroyed", handleRendererDestroyed);
+  event.sender.once("render-process-gone", handleRendererDestroyed);
+  event.sender.on("did-start-navigation", handleRendererNavigation);
 
   try {
     const baseProvider = createProvider(req.config);
@@ -595,6 +602,8 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     });
   } finally {
     event.sender.removeListener("destroyed", handleRendererDestroyed);
+    event.sender.removeListener("render-process-gone", handleRendererDestroyed);
+    event.sender.removeListener("did-start-navigation", handleRendererNavigation);
     if (inflight.get(req.turnId) === inflightEntry) inflight.delete(req.turnId);
   }
 }

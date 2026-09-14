@@ -24,6 +24,7 @@ import {
   sessionToolAudit,
   setSessionMessages,
   setSessionPersonality,
+  setSessionTaskId,
   setSessionTitle,
   useSessions,
 } from "../lib/sessions";
@@ -482,10 +483,13 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
 
   const turnIdRef = useRef<string | null>(null);
   const taskTurnIdRef = useRef<string | null>(null);
+  const taskSessionRef = useRef<string | null>(null);
   const turnSessionRef = useRef<string | null>(null);
   const turnBaseRef = useRef<AgentMessage[]>([]);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const currentSessionIdRef = useRef(current?.id);
+  currentSessionIdRef.current = current?.id;
   // The event feed is subscribed once, so its handler closes over first-render
   // state. Hold the pending user message in a ref (like the base) so the commit
   // paths read the current value instead of a stale null.
@@ -517,6 +521,24 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [history, activity, pendingUser]);
+
+  useEffect(() => {
+    setStatus("");
+  }, [current?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setTask((previous) => previous?.id === current?.taskId ? previous : null);
+    if (current?.taskId) {
+      void window.moss.task.get(current.taskId).then((snapshot) => {
+        if (cancelled) return;
+        setTask((previous) => previous && snapshot && previous.id === snapshot.id && previous.revision > snapshot.revision ? previous : snapshot);
+      }).catch((error: unknown) => {
+        if (!cancelled) setStatus(`Could not restore task: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+    return () => { cancelled = true; };
+  }, [current?.id, current?.taskId]);
 
   useEffect(() => {
     if (!slashMatch || !window.moss.skills?.list) return;
@@ -625,7 +647,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   function handleEvent(payload: ChatEventPayload): void {
     const ev = payload.event;
     if (ev.type === "task-state") {
-      setTask(ev.task);
+      const sessionId = taskSessionRef.current;
+      if (sessionId) setSessionTaskId(sessionId, ev.task.id);
+      if (sessionId === currentSessionIdRef.current) setTask(ev.task);
       if (["completed", "failed", "cancelled"].includes(ev.task.state)) taskTurnIdRef.current = null;
     } else if (ev.type === "text-delta") {
       setActivity((prev) => {
@@ -716,6 +740,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     const turnId = crypto.randomUUID();
     turnIdRef.current = turnId;
     taskTurnIdRef.current = turnId;
+    taskSessionRef.current = sessionId;
     turnSessionRef.current = sessionId;
     turnBaseRef.current = base;
     turnPendingUserRef.current = userMsg;

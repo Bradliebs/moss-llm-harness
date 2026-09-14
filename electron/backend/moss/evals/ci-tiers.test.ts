@@ -10,6 +10,9 @@ function workflow(name: string): Workflow {
   return parse(readFileSync(`.github/workflows/${name}.yml`, "utf8")) as Workflow;
 }
 describe("evaluation CI tiers", () => {
+  it("runs on master pushes and pull requests", () => {
+    expect(workflow("ci").on).toEqual({ pull_request: null, push: { branches: ["master"] } });
+  });
   it("keeps PR checks scripted, nightly repeated, and release gated without diagnostics uploads", () => {
     const checks = workflow("ci").jobs.deterministic.steps.map((step) => step.run ?? "").join("\n");
     expect(checks).toContain("representative-corpus.e2e.test.ts");

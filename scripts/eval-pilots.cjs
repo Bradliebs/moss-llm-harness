@@ -10,7 +10,7 @@ const {
 const { createRepresentativeGraderHealthProbes } = require("../dist-electron/electron/backend/moss/evals/grader-health.js");
 const { createTurnEvalExecutor } = require("../dist-electron/electron/backend/moss/evals/turn-eval-executor.js");
 const { DockerEvalSandboxBackend } = require("../dist-electron/electron/backend/moss/evals/sandbox-backend.js");
-const { validateTurnEvalCapabilities } = require("../dist-electron/electron/backend/moss/evals/sandbox-tools.js");
+const { validateEvalCaseCapabilities } = require("../dist-electron/electron/backend/moss/evals/trusted-scenario-tools.js");
 const { selectExecutionCases, requiresEvalSandbox } = require("../dist-electron/electron/backend/moss/evals/execution-selection.js");
 const { allowedExecutionSplits, validateSplitExecution } = require("../dist-electron/electron/backend/moss/evals/split-policy.js");
 const { OpenAiCompatibleProvider } = require("../dist-electron/electron/backend/moss/providers/openai-compatible.js");
@@ -19,6 +19,10 @@ const { TOOL_REGISTRY } = require("../dist-electron/electron/backend/moss/tools/
 const baseUrl = process.env.MOSS_EVAL_BASE_URL || "http://localhost:11434/v1";
 const model = process.env.MOSS_EVAL_MODEL || "qwen3:8b";
 const apiKey = process.env.MOSS_EVAL_API_KEY;
+const reasoningEffort = process.env.MOSS_EVAL_REASONING_EFFORT;
+if (reasoningEffort !== undefined && reasoningEffort !== "none") {
+  throw new Error("MOSS_EVAL_REASONING_EFFORT must be none or unset");
+}
 const repetitions = Number(process.env.MOSS_EVAL_REPETITIONS || "1");
 const corpus = process.env.MOSS_EVAL_CORPUS || "pilot";
 const experiment = process.env.MOSS_EVAL_EXPERIMENT || "approval";
@@ -62,7 +66,7 @@ const suiteCases = requestedSuites.length > 0
   ? allCases.filter((testCase) => requestedSuites.includes(testCase.suite))
   : allCases;
 const splitCases = suiteCases.filter((testCase) => allowedSplits.includes(testCase.split || "development"));
-for (const testCase of allCases) validateTurnEvalCapabilities(testCase.allowedCapabilities);
+for (const testCase of allCases) validateEvalCaseCapabilities(testCase);
 function validateExecution() {
   validateSplitExecution(selected.cases, executionPolicy, allCases);
   if (selected.cases.some((testCase) => config.variants.some((variant) => requiresEvalSandbox(testCase, variant))) && !sandboxImage) {
@@ -75,9 +79,14 @@ const config = {
   executionPolicy,
   validateExecution,
   evaluatorVersion: "moss-harness-v1",
-  evaluatorArtifacts: corpus === "representative"
-    ? getRepresentativeEvaluatorArtifacts(process.cwd())
-    : getOfflinePilotEvaluatorArtifacts(process.cwd()),
+  evaluatorArtifacts: [
+    ...(corpus === "representative"
+      ? getRepresentativeEvaluatorArtifacts(process.cwd())
+      : getOfflinePilotEvaluatorArtifacts(process.cwd())),
+    `${process.cwd()}/dist-electron`,
+    `${process.cwd()}/scripts/eval-pilots.cjs`,
+    `${process.cwd()}/package-lock.json`,
+  ],
   healthCases: allCases,
   corpusPolicy: fullRepresentativeCorpus ? REPRESENTATIVE_CORPUS_POLICY : undefined,
   graderHealthProbes: fullRepresentativeCorpus
@@ -90,18 +99,19 @@ const config = {
   },
   targets: [{
     schemaVersion: 1,
-    id: "local-openai-compatible",
+    id: reasoningEffort ? "local-openai-compatible-reasoning-none" : "local-openai-compatible",
     providerId: baseUrl,
     providerKind: "openai-compatible",
     model,
+    ...(reasoningEffort ? { generation: { reasoningEffort } } : {}),
   }],
   variants: (experiment === "phase5-runtime" ? [
     {
       schemaVersion: 1,
-      id: "phase5-baseline",
-      description: "Production-compatible runtime baseline",
-      promptProfile: "deterministic-production-v1",
-      autoApprove: true,
+      id: "phase5-baseline-gated",
+      description: "Runtime baseline with explicit fixture approval",
+      promptProfile: "deterministic-production-v2",
+      autoApprove: false,
       injectionMode: "flag",
       maxRounds: 8,
       runtime: {
@@ -114,10 +124,10 @@ const config = {
     },
     {
       schemaVersion: 1,
-      id: "phase5-candidate",
-      description: "Incremental runtime with compact context and signature-aware recovery",
-      promptProfile: "deterministic-production-v1",
-      autoApprove: true,
+      id: "phase5-candidate-gated",
+      description: "Incremental runtime with compact context, signature-aware recovery, and explicit fixture approval",
+      promptProfile: "deterministic-production-v2",
+      autoApprove: false,
       injectionMode: "flag",
       contextLimit: 4000,
       maxRounds: 8,
@@ -134,7 +144,7 @@ const config = {
       schemaVersion: 1,
       id: "auto-approved",
       description: "Automatically approve mutating tools",
-      promptProfile: "deterministic-production-v1",
+      promptProfile: "deterministic-production-v2",
       autoApprove: true,
       injectionMode: "flag",
       maxRounds: 8,
@@ -143,7 +153,7 @@ const config = {
       schemaVersion: 1,
       id: "approval-gated",
       description: "Request approval before mutating tools",
-      promptProfile: "deterministic-production-v1",
+      promptProfile: "deterministic-production-v2",
       autoApprove: false,
       injectionMode: "flag",
       maxRounds: 8,
@@ -152,7 +162,7 @@ const config = {
   createExecutor(target, variant, workspaceRoot, context) {
     validateExecution();
     return createTurnEvalExecutor({
-      provider: new OpenAiCompatibleProvider(baseUrl, apiKey),
+      provider: new OpenAiCompatibleProvider(baseUrl, apiKey, { reasoningEffort: target.generation?.reasoningEffort }),
       model: target.model,
       maxOutputTokens: target.generation?.maxOutputTokens,
       toolRegistry: TOOL_REGISTRY,

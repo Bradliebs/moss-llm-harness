@@ -381,7 +381,13 @@ export class TaskEngine {
       resumable: true,
       createdAt: this.now().toISOString(),
     };
-    return this.store.transition(id, "paused", { blocker });
+    try {
+      return await this.store.transition(id, "paused", { blocker });
+    } catch (error) {
+      const latest = await this.requireTask(id);
+      if (latest.state === "paused") return latest;
+      throw error;
+    }
   }
 
   async requestApproval(id: string, approval: TaskApproval): Promise<TaskSnapshot> {

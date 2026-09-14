@@ -374,7 +374,7 @@ describe("MissionController", () => {
     expect(completed.steps.every((step) => !step.lease)).toBe(true);
   });
 
-  it("stops admission on abort and settles active readonly workers as interrupted", async () => {
+  it.each(["resolve", "reject"])("stops admission on abort and settles active readonly workers as interrupted when they %s", async (settlement) => {
     await engine.create(SPEC, "task-1");
     const plan: TaskMissionPlan = {
       schemaVersion: 1,
@@ -403,6 +403,7 @@ describe("MissionController", () => {
         started += 1;
         if (started === 2) notifyBothStarted();
         await workersReleased;
+        if (settlement === "reject") throw new Error("Worker aborted");
         return {
           result: {
             status: "succeeded",

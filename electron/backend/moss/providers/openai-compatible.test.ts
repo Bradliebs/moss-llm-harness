@@ -72,6 +72,32 @@ describe("OpenAiCompatibleProvider.streamChat", () => {
       stream: true,
       stream_options: { include_usage: true },
     });
+    expect(JSON.parse(String(request?.body))).not.toHaveProperty("max_tokens");
+    expect(JSON.parse(String(request?.body))).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("disables thinking only when the provider is explicitly configured to do so", async () => {
+    stubStream(sse());
+    const provider = new OpenAiCompatibleProvider("http://x/v1", undefined, { reasoningEffort: "none" });
+    for await (const event of provider.streamChat({ ...req, maxTokens: 256 }, new AbortController().signal)) {
+      expect(event).toBeUndefined();
+    }
+
+    const request = vi.mocked(fetch).mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toMatchObject({ reasoning_effort: "none", max_tokens: 256 });
+  });
+
+  it("forwards the caller's output token limit to the API", async () => {
+    stubStream(sse());
+    const provider = new OpenAiCompatibleProvider("http://x/v1");
+    const events = [];
+    for await (const event of provider.streamChat({ ...req, maxTokens: 256 }, new AbortController().signal)) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([]);
+    const request = vi.mocked(fetch).mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toMatchObject({ max_tokens: 256 });
   });
 
   it("yields text deltas from streamed content", async () => {
@@ -111,6 +137,58 @@ describe("OpenAiCompatibleProvider.streamChat", () => {
     const events = await collect(new OpenAiCompatibleProvider("http://x/v1"));
     expect(events).toEqual([
       { type: "tool-call", toolCall: { id: "t9", name: "f", arguments: "{}" } },
+    ]);
+  });
+
+  it("keeps distinct tool-call IDs separate when the server reuses an index", async () => {
+    stubStream(sse(
+      { choices: [{ delta: { tool_calls: [
+        { index: 0, id: "first", function: { name: "check", arguments: '{"name":' } },
+        { index: 0, id: "second", function: { name: "check", arguments: '{"name":"Notifications"}' } },
+      ] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "first", function: { arguments: '"Theme"}' } }] } }] },
+    ));
+    expect(await collect(new OpenAiCompatibleProvider("http://x/v1"))).toEqual([
+      { type: "tool-call", toolCall: { id: "first", name: "check", arguments: '{"name":"Theme"}' } },
+      { type: "tool-call", toolCall: { id: "second", name: "check", arguments: '{"name":"Notifications"}' } },
+    ]);
+  });
+
+  it("rejects unidentified fragments after an index collision", async () => {
+    stubStream(sse(
+      { choices: [{ delta: { tool_calls: [
+        { index: 0, id: "first", function: { name: "check", arguments: "{" } },
+        { index: 0, id: "second", function: { name: "check", arguments: "{" } },
+      ] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "}" } }] } }] },
+    ));
+    await expect(collect(new OpenAiCompatibleProvider("http://x/v1"))).rejects.toThrow("Ambiguous tool-call fragment");
+  });
+
+  it("routes ID-free fragments by distinct indices", async () => {
+    stubStream(sse(
+      { choices: [{ delta: { tool_calls: [
+        { index: 0, id: "first", function: { name: "check", arguments: '{"value":' } },
+        { index: 1, id: "second", function: { name: "check", arguments: '{"value":' } },
+      ] } }] },
+      { choices: [{ delta: { tool_calls: [
+        { index: 1, function: { arguments: "2}" } },
+        { index: 0, function: { arguments: "1}" } },
+      ] } }] },
+    ));
+    expect(await collect(new OpenAiCompatibleProvider("http://x/v1"))).toEqual([
+      { type: "tool-call", toolCall: { id: "first", name: "check", arguments: '{"value":1}' } },
+      { type: "tool-call", toolCall: { id: "second", name: "check", arguments: '{"value":2}' } },
+    ]);
+  });
+
+  it("retains fragments received before the call ID", async () => {
+    stubStream(sse(
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "check", arguments: '{"value":' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "first", function: { arguments: "1}" } }] } }] },
+    ));
+    expect(await collect(new OpenAiCompatibleProvider("http://x/v1"))).toEqual([
+      { type: "tool-call", toolCall: { id: "first", name: "check", arguments: '{"value":1}' } },
     ]);
   });
 

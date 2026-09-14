@@ -35,6 +35,15 @@ async function openedTools(driver: BrowserDriver): Promise<Tool[]> {
 }
 
 describe("browser tools", () => {
+  it("advertises only supported click targets while retaining CSS typing", () => {
+    const tools = createBrowserTools({ driverFactory: async () => fakeDriver(), allowedDomains: ["example.com"] });
+    const click = find(tools, "browser_click").parameters;
+    expect(click.required).toEqual(["taskId", "sessionId", "role", "name"]);
+    expect(click.properties).not.toHaveProperty("selector");
+    expect(click.additionalProperties).toBe(false);
+    expect(find(tools, "browser_type").parameters.properties).toHaveProperty("selector");
+  });
+
   it("enforces active sessions and URL/domain security before driver access", async () => {
     const driver = fakeDriver();
     const tools = createBrowserTools({ driverFactory: async () => driver, allowedDomains: ["example.com"] });

@@ -373,7 +373,7 @@ describe("chat IPC turn (e2e)", () => {
     }
   }, 20_000);
 
-  it("interrupts a pending durable approval when the renderer disappears", async () => {
+  it.each(["destroyed", "reload", "crashed"])("interrupts a pending durable approval when the renderer is %s", async (reason) => {
     const taskId = `renderer-loss-${crypto.randomUUID()}`;
     mockProviderRef.current = scriptedProvider([
       [{ type: "tool-call", toolCall: { id: "c1", name: "write_file", arguments: "{}" } }],
@@ -396,7 +396,15 @@ describe("chat IPC turn (e2e)", () => {
         expect((await taskStore.get(taskId))?.approval?.status).toBe("pending");
       });
 
-      lifecycle.destroy();
+      lifecycle.event.sender.emit("did-start-navigation", { isMainFrame: false, isSameDocument: false });
+      lifecycle.event.sender.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
+      await tick();
+      expect((await taskStore.get(taskId))?.approval?.status).toBe("pending");
+
+      if (reason === "destroyed") lifecycle.destroy();
+      else if (reason === "reload") lifecycle.event.sender.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+      else lifecycle.event.sender.emit("render-process-gone", {}, { reason: "crashed" });
+      lifecycle.event.sender.emit("render-process-gone", {}, { reason: "killed" });
 
       await vi.waitFor(async () => {
         expect(await taskStore.get(taskId)).toMatchObject({
@@ -404,6 +412,11 @@ describe("chat IPC turn (e2e)", () => {
           approval: { callId: "c1", status: "interrupted" },
         });
       }, { timeout: 10_000 });
+      await vi.waitFor(() => {
+        for (const name of ["destroyed", "render-process-gone", "did-start-navigation"]) {
+          expect(lifecycle.event.sender.listenerCount(name)).toBe(0);
+        }
+      });
     } finally {
       recorded.on.get(IPC.chatAbort)!(null, "t1");
       await taskStore.delete(taskId);

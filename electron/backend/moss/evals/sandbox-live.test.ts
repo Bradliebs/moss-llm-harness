@@ -59,6 +59,16 @@ describe.runIf(process.env.MOSS_EVAL_SANDBOX_LIVE === "1")("live Linux container
     expect(limits.stdout).toContain("50000 100000");
   }, 60_000);
 
+  it("enforces workspace capacity during writes and mounts host input read-only", async () => {
+    const request = fixture();
+    writeFileSync(join(request.workspaceRoot, "input.txt"), "unchanged");
+    const result = await backend.run({ ...request, command: `node -e 'const fs=require("fs");let full=false;try{const fd=fs.openSync("large.bin","w");try{for(let index=0;index<64;index++)fs.writeSync(fd,Buffer.alloc(1024*1024));}finally{fs.closeSync(fd);}}catch(error){if(error.code!=="ENOSPC")throw error;full=true;}fs.rmSync("large.bin");if(!full)throw Error("quota not enforced");try{fs.writeFileSync("/input/input.txt","changed");throw Error("input writable");}catch(error){if(error.code!=="EROFS"&&error.code!=="EACCES")throw error;}process.stdout.write("quota enforced");'` });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("quota enforced");
+    expect(readFileSync(join(request.workspaceRoot, "input.txt"), "utf8")).toBe("unchanged");
+    expect(existsSync(join(request.workspaceRoot, "large.bin"))).toBe(false);
+  }, 60_000);
+
   it("disables external networking and removes a timed-out container", async () => {
     const request = fixture();
     const network = await backend.run({ ...request, command: `node -e 'const interfaces=Object.values(require("os").networkInterfaces()).flat();process.exit(interfaces.every(address=>address.internal)?0:1)'` });

@@ -22,5 +22,7 @@ export default defineConfig({
     // `// @vitest-environment jsdom` docblock, so the default env stays node.
     include: ["electron/**/*.test.ts", "src/**/*.test.ts", "src/**/*.test.tsx"],
     environment: "node",
+    maxWorkers: 2,
+    minWorkers: 1,
   },
 });

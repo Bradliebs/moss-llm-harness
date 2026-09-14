@@ -1,6 +1,12 @@
 <!-- markdownlint-disable-file -->
 # Moss — Chat Checkpoint (2026-06-29)
 
+> [!NOTE]
+> Historical snapshot from 2026-06-29, not current branch or release status.
+> The commit state, next steps, and unresolved issues below describe that session
+> only. See the [README](../README.md) for current contributor guidance and the
+> [harness feedback loop](harness-feedback-loop.md) for evaluation acceptance.
+
 Continuation summary for picking up in a fresh chat. Captures decisions, files
 changed, current status, next steps, and open issues.
 

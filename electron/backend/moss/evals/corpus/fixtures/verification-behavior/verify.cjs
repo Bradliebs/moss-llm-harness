@@ -1,0 +1,1 @@
+require("node:assert/strict").equal(require("./answer.cjs"), 42);

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { applySandboxSnapshot, SANDBOX_SUPERVISOR, SNAPSHOT_OUTPUT_BYTES, WORKSPACE_BYTES } from "./sandbox-snapshot";
 
 const OUTPUT_CAP = 8_000;
 
@@ -34,7 +35,7 @@ export interface EvalSandboxBackend {
 export type ContainerProcessRunner = (
   executable: string,
   args: readonly string[],
-  request: Pick<SandboxCommandRequest, "signal" | "timeoutMs">,
+  request: Pick<SandboxCommandRequest, "signal" | "timeoutMs"> & { outputLimit?: number },
 ) => Promise<SandboxCommandResult>;
 
 export interface DockerSandboxOptions {
@@ -68,14 +69,26 @@ export class DockerEvalSandboxBackend implements EvalSandboxBackend {
     args[0] = "create";
     args.splice(1, 0, "--name", name);
     try {
-      const created = await this.processRunner(this.dockerExecutable, args, request)
+      const created = await this.processRunner(this.dockerExecutable, args, { ...request, timeoutMs: 30_000 })
         .catch(() => { throw new SandboxCleanupError(name); });
       if (created.timedOut || created.exitCode === null || request.signal.aborted) throw new SandboxCleanupError(name);
       if (created.exitCode !== 0) throw new Error("Docker sandbox creation failed");
       request.signal.throwIfAborted();
-      const result = await this.processRunner(this.dockerExecutable, ["start", "--attach", name], request);
+      const result = await this.processRunner(this.dockerExecutable, ["start", "--attach", name], { ...request, outputLimit: SNAPSHOT_OUTPUT_BYTES });
       if (result.exitCode === 125) throw new Error("Docker sandbox engine failed during execution");
-      return result;
+      if (result.timedOut || request.signal.aborted) return { ...result, stdout: "", stderr: "" };
+      if (result.exitCode !== 0) throw new Error("Docker sandbox supervisor failed during execution");
+      const snapshot: unknown = JSON.parse(result.stdout);
+      if (!snapshot || typeof snapshot !== "object" || !("schemaVersion" in snapshot) || snapshot.schemaVersion !== 1) {
+        throw new Error("Invalid sandbox supervisor response");
+      }
+      if ("error" in snapshot && typeof snapshot.error === "string") throw new Error(snapshot.error.slice(0, OUTPUT_CAP));
+      if (!("exitCode" in snapshot) || (snapshot.exitCode !== null && !Number.isInteger(snapshot.exitCode))
+        || !("stdout" in snapshot) || typeof snapshot.stdout !== "string" || snapshot.stdout.length > OUTPUT_CAP
+        || !("stderr" in snapshot) || typeof snapshot.stderr !== "string" || snapshot.stderr.length > OUTPUT_CAP
+        || !("entries" in snapshot)) throw new Error("Invalid sandbox supervisor response");
+      applySandboxSnapshot(request.workspaceRoot, snapshot.entries);
+      return { exitCode: snapshot.exitCode as number | null, stdout: snapshot.stdout, stderr: snapshot.stderr, timedOut: false };
     } finally {
       const cleanup = await this.processRunner(this.dockerExecutable, ["rm", "--force", name], {
         signal: new AbortController().signal, timeoutMs: 30_000,
@@ -105,11 +118,12 @@ export function buildDockerArgs(options: DockerSandboxOptions, request: SandboxC
     "--memory", `${options.memoryMb ?? 512}m`,
     "--memory-swap", `${options.memoryMb ?? 512}m`,
     "--cpus", String(options.cpus ?? 1),
-    "--mount", `type=bind,source=${workspaceRoot},target=/workspace`,
+    "--mount", `type=bind,source=${workspaceRoot},target=/input,readonly,bind-recursive=disabled`,
+    "--tmpfs", `/workspace:rw,exec,nosuid,nodev,size=${WORKSPACE_BYTES},nr_inodes=20001`,
     "--workdir", "/workspace",
-    "--entrypoint", "/bin/sh",
+    "--entrypoint", "node",
     options.image,
-    "-lc", request.command,
+    "-e", SANDBOX_SUPERVISOR, "--", request.command,
   ];
 }
 
@@ -129,13 +143,14 @@ function validateOptions(options: DockerSandboxOptions): void {
 async function runContainerProcess(
   executable: string,
   args: readonly string[],
-  request: Pick<SandboxCommandRequest, "signal" | "timeoutMs">,
+  request: Pick<SandboxCommandRequest, "signal" | "timeoutMs"> & { outputLimit?: number },
 ): Promise<SandboxCommandResult> {
   request.signal.throwIfAborted();
   return new Promise((resolveResult, reject) => {
     const child = spawn(executable, args, { shell: false, windowsHide: true });
     let stdout = "";
     let stderr = "";
+    const outputLimit = request.outputLimit ?? OUTPUT_CAP;
     let timedOut = false;
     let settled = false;
     const finish = (result: SandboxCommandResult): void => {
@@ -152,7 +167,8 @@ async function runContainerProcess(
       child.kill("SIGKILL");
     }, request.timeoutMs ?? 180_000);
     if (request.signal.aborted) onAbort();
-    child.stdout.on("data", (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(0, OUTPUT_CAP); });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout = (stdout + chunk).slice(0, outputLimit); });
     child.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(0, OUTPUT_CAP); });
     child.on("error", (error) => {
       clearTimeout(timer);
@@ -161,7 +177,7 @@ async function runContainerProcess(
     });
     child.on("close", (exitCode) => finish({
       exitCode,
-      stdout: stdout.slice(0, OUTPUT_CAP),
+      stdout: stdout.slice(0, outputLimit),
       stderr: stderr.slice(0, OUTPUT_CAP),
       timedOut,
     }));

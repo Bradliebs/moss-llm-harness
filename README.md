@@ -2,7 +2,7 @@
 title: Moss
 description: A local-first agentic desktop harness for completing and verifying work across files, commands, browsers, and desktop applications
 author: Moss contributors
-ms.date: 2026-08-20
+ms.date: 2026-09-05
 ms.topic: overview
 keywords:
   - ai agent
@@ -82,7 +82,7 @@ After the application opens:
 1. Open **Settings**.
 2. Select Ollama, OpenAI, Anthropic, or Custom.
 3. Enter the provider URL and API key when required.
-4. Refresh the model list and select a model.
+4. Select a model from the automatically refreshed list; refresh again if needed.
 5. Choose a workspace before enabling file or command tools.
 6. Configure optional verification commands for coding tasks.
 7. Start a conversation and describe the outcome you want.
@@ -290,10 +290,12 @@ remain compact bubbles while assistant responses use a wider document layout.
 | `npm run typecheck` | Type-check the renderer and Electron projects |
 | `npm test` | Run the Vitest test suite once |
 | `npm run test:deterministic` | Run the deterministic CI test tier |
+| `npm run test:sandbox` | Run four live containment tests with a provisioned, digest-pinned Linux Node.js image |
 | `npm run eval -- dry-run scripts/eval-pilots.cjs` | Validate the evaluation matrix without invoking a model |
 | `npm run eval:health` | Validate corpus, reference solution, and grader publication health |
 | `npm run build` | Build the Electron main process and Vite renderer |
 | `npm run pack` | Create an unpacked application directory |
+| `npm run smoke:packaged` | Check the built Windows application through its packaged Electron bridge |
 | `npm run dist` | Build a Windows NSIS installer |
 
 The renderer alone expects APIs injected by `electron/preload.cjs`. Running
@@ -336,9 +338,59 @@ task recovery, verification, memory, skills, learning, and the evaluation harnes
 
 The evaluation harness runs production-loop tasks in isolated workspaces and
 grades their end state with independent validators. It supports governed corpus
-splits, repeated baseline comparisons, confidence-aware release policy,
-sanitized traces, failure attribution, resumable concurrent matrices, portable
-dataset exchange, and opt-in container execution for external terminal tasks.
+splits, matched approval and tool-recovery scenarios, mechanism-specific metrics,
+paired family-level release comparisons, and resumable concurrent matrices.
+
+The representative corpus contains 30 cases in 15 matched pairs. Budget,
+destructive-action, permanent-failure, verification, context, resume, browser,
+desktop, and MCP cases exercise their runtime mechanisms. Browser and desktop
+cases use production tools with stateful injected fakes, not live applications.
+MCP cases use the production namespaced adapter with a fake client, not network
+transport. Context cases force compaction and durable retrieval; resume cases
+seed `TaskStore` and recover through `TaskEngine.recoverInterruptedTasks`, not a
+full `MissionController` restart. Expected budget stops and verification blocks
+pass only with exact structural traces and mandatory artifact checks; evaluation
+success does not necessarily mean task completion.
+
+Default contributor runs use `MOSS_EVAL_EXECUTION=local` and
+`MOSS_EVAL_PURPOSE=iteration`: three pilot cases or 20 representative development
+cases, without Docker. Representative local iteration excludes six container
+cases and four validation cases. A named local release selects 24 of 30 cases;
+a full release with two variants and three repetitions contains 180 cells.
+Command-capable cases and enabled command verification require a digest-pinned
+Linux container; there is no host-shell fallback. The four live containment tests
+require Docker's Linux engine, cgroup v2, and `MOSS_EVAL_SANDBOX_IMAGE`.
+
+Commands run in a 32 MiB tmpfs workspace with read-only host input and validated
+snapshot copy-back. The kernel quota applies to commands, not host-side file
+tools. Snapshot replacement is not transactional under host disk failure, and
+host concurrency is trusted. This evaluation isolation does not sandbox ordinary
+desktop chat commands.
+
+Compact reports exclude raw transcripts. Rich, sanitized diagnostic capture is
+local and opt-in through `--diagnostics-dir`; review it before sharing because
+redaction cannot guarantee removal of all sensitive content. Production failures
+become draft case families that require human review and health checks before
+explicit regression promotion. Portable datasets preserve split and lineage
+metadata. Full release comparisons require complete coverage, a named release
+measurement, and a compatible reviewed baseline; passing local tests alone is
+not provider-backed release evidence.
+
+September 2026 verification includes passing deterministic tests, typechecking,
+four live containment tests, packaged startup, and scripted supervised missions
+covering approval, denial, reload interruption, and explicit resume. All 30 cases
+passed corpus health. Scripted GUI checks do not establish live-model reliability.
+
+The latest complete 180-cell cloud measurement recorded 175 task passes and
+180 security passes using explicit fixture approval in the distinct
+`phase5-baseline-gated` and `phase5-candidate-gated` variants. Five model refusals
+left the planned denial unexercised without executing any tools. All artifact
+checks passed and protected inputs remained intact. The final deterministic
+suite passed 1,325 tests with zero failures and four gated live tests skipped.
+Historical reports, including the earlier auto-approval mismatch, remain unchanged.
+Real dictation still requires a configured Whisper-compatible endpoint. Release
+acceptance and baseline promotion remain subject to the evidence and review gates.
+
 See the [harness feedback loop guide](docs/harness-feedback-loop.md) for corpus
 selection, provider runs, report inspection, resume behavior, and CI tiers.
 
@@ -395,7 +447,7 @@ the Resume action. Moss does not convert failed verification into completion.
 
 ## Additional documentation
 
-* [Chat checkpoint design](docs/chat_checkpoint.md)
+* [Historical chat checkpoint (June 2026)](docs/chat_checkpoint.md)
 * [Electron 42 GUI smoke checklist](docs/e42-gui-smoke-checklist.md)
-* [Electron Builder 26 upgrade notes](docs/electron-builder-26-upgrade.md)
+* [Planned Electron Builder 26 upgrade](docs/electron-builder-26-upgrade.md)
 * [Harness feedback loop](docs/harness-feedback-loop.md)

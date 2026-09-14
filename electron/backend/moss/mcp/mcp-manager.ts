@@ -67,6 +67,30 @@ function createTransport(config: McpServerConfig): { close(): Promise<void> } {
   });
 }
 
+export function adaptMcpTool(
+  serverId: string,
+  client: Pick<Client, "callTool">,
+  info: { name: string; description?: string; inputSchema: Record<string, unknown> },
+): Tool {
+  const name = adaptToolName(serverId, info.name);
+  const parameters = info.inputSchema && typeof info.inputSchema === "object"
+    ? info.inputSchema : { type: "object", properties: {} };
+  return {
+    name,
+    description: info.description ?? `MCP tool "${info.name}" from server "${serverId}"`,
+    parameters,
+    timeoutMs: 180_000,
+    async execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+      try {
+        const result = await client.callTool({ name: info.name, arguments: args }, undefined, { signal: ctx.signal });
+        return serializeResult(result);
+      } catch (err) {
+        return { ok: false, content: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  };
+}
+
 class McpManager {
   private connections: Connection[] = [];
   private tools: Tool[] = [];
@@ -117,7 +141,7 @@ class McpManager {
       transport = createTransport(config);
       await client.connect(transport);
       const { tools } = await client.listTools();
-      const adapted = tools.map((t) => this.adaptTool(config.id, client, t));
+      const adapted = tools.map((t) => adaptMcpTool(config.id, client, t));
       for (const tool of adapted) {
         if (this.tools.some((existing) => existing.name === tool.name)) {
           log.warn(`duplicate tool name ${tool.name} from server ${config.id} skipped`);
@@ -140,36 +164,6 @@ class McpManager {
       log.error(`server ${config.id} failed to connect:`, message);
       await client.close().catch(() => undefined);
     }
-  }
-
-  private adaptTool(
-    serverId: string,
-    client: Client,
-    info: { name: string; description?: string; inputSchema: Record<string, unknown> },
-  ): Tool {
-    const name = adaptToolName(serverId, info.name);
-    const parameters =
-      info.inputSchema && typeof info.inputSchema === "object"
-        ? info.inputSchema
-        : { type: "object", properties: {} };
-    return {
-      name,
-      description: info.description ?? `MCP tool "${info.name}" from server "${serverId}"`,
-      parameters,
-      timeoutMs: 180_000,
-      async execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-        try {
-          const result = await client.callTool(
-            { name: info.name, arguments: args },
-            undefined,
-            { signal: ctx.signal },
-          );
-          return serializeResult(result);
-        } catch (err) {
-          return { ok: false, content: err instanceof Error ? err.message : String(err) };
-        }
-      },
-    };
   }
 
   /** Tear down and reconnect a single server by id, leaving the others

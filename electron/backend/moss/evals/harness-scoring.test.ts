@@ -173,6 +173,25 @@ describe("scoreHarnessRun", () => {
     expect(score.mechanisms.approvalHandling).toMatchObject({ passed: 0, total: 1, rate: 0 });
   });
 
+  it.each(["read-1", "unrelated", undefined])("scores a successful host retry only with its linked recovery event (%s)", (sourceCallId) => {
+    const testCase: EvalCase = {
+      ...TEST_CASE,
+      scenario: {
+        schemaVersion: 1,
+        disturbances: [{ id: "transient-read", type: "tool-failure", capability: "read_file", invocation: 1, failure: "transient" }],
+      },
+    };
+    const score = scoreHarnessRun(testCase, result(), {
+      ...trace([{ callId: "read-1", name: "read_file", ok: true }]),
+      events: [
+        { type: "scenario-disturbance", id: "transient-read", disturbanceType: "tool-failure", status: "delivered", sequence: 1, timestamp: "2026-07-16T10:00:00.100Z" },
+        { type: "recovery", action: "retry-with-backoff", attempt: 1, outcome: "succeeded", sourceCallId, sequence: 2, timestamp: "2026-07-16T10:00:00.200Z" },
+      ],
+    });
+
+    expect(score.mechanisms.recoverySuccess).toMatchObject({ passed: sourceCallId === "read-1" ? 1 : 0, total: 1 });
+  });
+
   it("does not credit recovery of a different call for a transient disturbance", () => {
     const testCase: EvalCase = {
       ...TEST_CASE,

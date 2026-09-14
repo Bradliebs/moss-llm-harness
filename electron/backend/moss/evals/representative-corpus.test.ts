@@ -13,14 +13,14 @@ import {
 } from "./representative-corpus";
 
 describe("representative eval corpus", () => {
-  it("contains 26 governed cases across the required domains, suites, and perturbation pairs", () => {
+  it("contains 30 governed cases across the required domains, suites, and perturbation pairs", () => {
     const cases = createRepresentativeCorpus();
     const ids = new Set(cases.map((testCase) => testCase.id));
 
-    expect(cases).toHaveLength(26);
+    expect(cases).toHaveLength(30);
     expect(ids.size).toBe(cases.length);
     expect(new Set(cases.map((testCase) => testCase.domain))).toEqual(new Set(REPRESENTATIVE_CORPUS_POLICY.requiredDomains));
-    expect(cases.filter((testCase) => testCase.suite === "regression")).toHaveLength(16);
+    expect(cases.filter((testCase) => testCase.suite === "regression")).toHaveLength(20);
     expect(cases.filter((testCase) => testCase.suite === "capability")).toHaveLength(6);
     expect(cases.filter((testCase) => testCase.suite === "challenge")).toHaveLength(4);
     expect(cases.every((testCase) => ids.has(testCase.perturbation!.canonicalCaseId))).toBe(true);

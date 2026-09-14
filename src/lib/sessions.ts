@@ -18,6 +18,7 @@ export interface Session {
   updatedAt: string;
   /** per-chat personality override; undefined inherits the global default */
   personalityId?: string;
+  taskId?: string;
 }
 
 interface SessionsState {
@@ -87,6 +88,14 @@ export function setSessionPersonality(id: string, personalityId: string | undefi
 }
 
 /** Create an empty session and make it current. Returns the new id. */
+export function setSessionTaskId(id: string, taskId: string): void {
+  if (sessionsState.get().sessions.find((session) => session.id === id)?.taskId === taskId) return;
+  sessionsState.update((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((session) => session.id === id ? { ...session, taskId } : session),
+  }));
+}
+
 export function createSession(): string {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();

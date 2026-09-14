@@ -36,6 +36,25 @@ describe("offline pilot cases", () => {
     }
   });
 
+  it.each([
+    { project: "Project Atlas", launchDate: "2026-10-14", owner: "Mina Patel" },
+    { project: "Other", launchDate: "2026-10-14", owner: "Mina Patel" },
+    { project: "Atlas", launchDate: "2026-10-15", owner: "Mina Patel" },
+    { project: "Atlas", launchDate: "2026-10-14", owner: "Other" },
+    { project: "Atlas", launchDate: "2026-10-14", owner: "Mina Patel", extra: true },
+  ])("rejects a grounded briefing that violates the public contract: %j", async (briefing) => {
+    const testCase = createOfflinePilotCases().find((candidate) => candidate.family === "grounded-synthesis")!;
+    expect(testCase.task.constraints).toContain("For the project field, omit the Project label and copy only the project name");
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "moss-grounded-contract-"));
+    temporaryDirectories.push(workspaceRoot);
+    cpSync(testCase.fixture!.workspaceTemplate!, workspaceRoot, { recursive: true });
+    writeFileSync(join(workspaceRoot, "briefing.json"), JSON.stringify(briefing), "utf8");
+
+    const evidence = await collectEvalEvidence(testCase, workspaceRoot, new AbortController().signal);
+
+    expect(evidence).toEqual([expect.objectContaining({ passed: false })]);
+  });
+
   it("accepts independently solved fixture end states", async () => {
     const cases = createOfflinePilotCases();
     for (const testCase of cases) {

@@ -120,6 +120,10 @@ export class HarnessTraceCollector {
     this.setTerminalState("error");
   }
 
+  markBlocked(): void {
+    this.setTerminalState("blocked");
+  }
+
   recordScenarioDisturbance(
     id: string,
     disturbanceType: EvalScenarioDisturbance["type"],

@@ -6,6 +6,7 @@
 
 import { createHash } from "node:crypto";
 
+import type { JsonArtifactRequirement } from "../../../common/verification";
 import type { AgentMessage, EmailConfig, EmbedConfig, MossEvent, SttConfig, TaskExecutionGrant, TokenUsage, ToolApprovalResponse, ToolCall, ToolDefinition, VerifyConfig } from "../../../common/types";
 import type { CheckpointRecorder } from "./checkpoint/checkpoint-store";
 import { compactForOverflow, compactIfNeeded, isContextOverflowError } from "./context/compaction";
@@ -28,6 +29,7 @@ import type { Tool, ToolResult } from "./tools";
 import { PlanStore } from "./task/plan-store";
 import { RecoveryPolicy } from "./task/recovery-policy";
 import { formatVerifyReport, runVerify } from "./verify/verifier";
+import { JsonArtifactGuard } from "./verify/json-artifact-guard";
 import type { VerifyResult } from "./verify/verifier";
 
 const MAX_ROUNDS = 8;
@@ -107,6 +109,7 @@ export interface RunTurnOptions {
    *  the historical behavior; durable tasks use it to reject unsupported
    *  completion claims and drive another model round. */
   completionGuard?: (context: CompletionContext) => Promise<CompletionDecision> | CompletionDecision;
+  jsonArtifactRequirements?: readonly JsonArtifactRequirement[];
   /** Clock used to refresh trusted runtime context at the start of each turn. */
   now?: () => Date;
   /** Durable host-side store for oversized model-facing tool results. */
@@ -143,6 +146,9 @@ export interface CompletionDecision {
 
 export async function runTurn(opts: RunTurnOptions): Promise<void> {
   const { provider, model, tools, signal, onEvent } = opts;
+  const jsonArtifactGuard = opts.jsonArtifactRequirements?.length
+    ? new JsonArtifactGuard(opts.jsonArtifactRequirements, opts.workspaceRoot)
+    : undefined;
   // Seed the model-facing history from the caller, capping each prior tool
   // result so a large earlier-turn output cannot reaccumulate in the context
   // window across turns. newMessages and the renderer keep the full content.
@@ -208,6 +214,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
   let failureSource: Extract<MossEvent, { type: "turn-error" }>["source"] = "harness-orchestration";
 
   try {
+    let emptyResponseRetried = false;
     // maxRounds limits tool-execution rounds. One additional tool-disabled
     // invocation lets the model turn the final tool result into a user-facing
     // response instead of ending the turn immediately after the last tool.
@@ -317,8 +324,21 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
       pendingText = "";
 
       if (calls.length === 0) {
-        if (opts.completionGuard) {
-          const decision = await opts.completionGuard({
+        if (!assistantMsg.content.trim()) {
+          if (emptyResponseRetried || round === maxRounds) {
+            onEvent({ type: "round-end", round, toolCallCount: 0, finish: "error" });
+            onEvent({ type: "turn-error", message: "Provider returned an empty response without tool calls", messages: newMessages, source: "provider-model" });
+            return;
+          }
+          emptyResponseRetried = true;
+          conversation.push({ role: "user", content: "Your last response was empty. Complete any remaining requested actions, then provide a final response." });
+          onEvent({ type: "round-end", round, toolCallCount: 0, finish: "rejected" });
+          onEvent({ type: "notice", level: "warn", message: "Empty provider response; retrying once" });
+          continue;
+        }
+        if (opts.completionGuard || jsonArtifactGuard) {
+          const artifactDecision = await jsonArtifactGuard?.check(signal);
+          const decision = artifactDecision?.accept === false ? artifactDecision : await opts.completionGuard?.({
             assistantText: assistantMsg.content,
             successfulToolCalls,
             failedToolCalls,
@@ -326,7 +346,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
             latestVerification,
             messages: [...newMessages],
             usedToolNames: [...usedToolNames].sort(),
-          });
+          }) ?? { accept: true };
           if (!decision.accept) {
             const feedback =
               decision.feedback?.trim() ||
@@ -362,6 +382,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         if (signal.aborted) break;
         usedToolNames.add(call.name);
         onEvent({ type: "tool-call", callId: call.id, name: call.name, arguments: call.arguments });
+        if (signal.aborted) break;
         const startedAt = Date.now();
         failureSource = "tool";
         const admission = opts.toolCallGuard?.(call);
@@ -373,6 +394,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
             }
           : await executeCallWithRecovery(call, opts, failedActionSignatures, plan, delegate);
         failureSource = "harness-orchestration";
+        jsonArtifactGuard?.observe(call.name, call.arguments, result);
         const durationMs = Date.now() - startedAt;
         const toolMsg: AgentMessage = {
           role: "tool",
@@ -526,6 +548,7 @@ function makeDelegate(opts: RunTurnOptions): DelegateFn | undefined {
       checkpoint: undefined,
       verify: undefined,
       completionGuard: undefined,
+      jsonArtifactRequirements: undefined,
       plan: undefined,
       // The subagent's own rounds stay out of the parent's transcript; the
       // parent already shows the delegate call and the report it returned.
@@ -682,6 +705,7 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
   }
 
   try {
+    opts.signal.throwIfAborted();
     const execute = (signal: AbortSignal) => tool.execute(args, { workspaceRoot: opts.workspaceRoot, signal, stt: opts.stt, email: opts.email, embed: opts.embed, checkpoint: opts.checkpoint, approvalGranted, gatedMemory: opts.gatedMemory, plan, delegate });
     const timeoutMs = tool.timeoutMs === undefined ? undefined : opts.toolTimeoutMs ?? tool.timeoutMs;
     const result = timeoutMs === undefined

@@ -8,7 +8,7 @@ import type {
   ToolRisk,
   VerifyConfig,
 } from "./types";
-import type { VerificationCheck } from "./verification";
+import type { JsonArtifactRequirement, VerificationCheck } from "./verification";
 
 export type EvalProfile = "coding" | "personal" | "platform";
 export type EvalDifficulty = "smoke" | "standard" | "hard";
@@ -77,6 +77,7 @@ export interface EvalToolFailureDisturbance {
   capability: string;
   invocation: number;
   failure: "transient" | "permanent";
+  persistent?: boolean;
 }
 
 export interface EvalProviderInterruptionDisturbance {
@@ -101,6 +102,7 @@ export type EvalScenarioDisturbance =
 
 export interface EvalScenarioPlan {
   schemaVersion: 1;
+  verification?: { commands: string[]; maxCycles: number };
   approvalFallback?: "delegate" | "deny";
   disturbances: EvalScenarioDisturbance[];
 }
@@ -160,6 +162,7 @@ export interface EvalModelTarget {
   model: string;
   generation?: {
     maxOutputTokens?: number;
+    reasoningEffort?: "none";
   };
 }
 
@@ -171,6 +174,10 @@ export interface EvalSecurityPolicy {
 
 /** Optional deterministic expectations used by harness-regression scoring. */
 export interface EvalBenchmarkControls {
+  expectedActionBudgetStop?: number;
+  expectedVerificationStop?: true;
+  requiredContextCompaction?: true;
+  requiredPermanentFailure?: string;
   expectedCapabilities?: string[];
   forbiddenCapabilities?: string[];
   requireVerificationBeforeCompletion?: boolean;
@@ -178,7 +185,7 @@ export interface EvalBenchmarkControls {
   budget?: TaskBudget;
 }
 
-export type HarnessTraceTerminalState = "completed" | "aborted" | "error" | "budget-exhausted";
+export type HarnessTraceTerminalState = "completed" | "aborted" | "error" | "budget-exhausted" | "blocked";
 
 export interface HarnessTraceToolCall {
   callId: string;
@@ -298,7 +305,7 @@ export interface EvalCase {
   scenario?: EvalScenarioPlan;
   lineage?: EvalDatasetLineage;
   provenance?: EvalCaseProvenance;
-  task: TaskSpec;
+  task: TaskSpec & { jsonArtifactRequirements?: JsonArtifactRequirement[] };
   fixture?: EvalFixture;
   allowedCapabilities: string[];
   /** Independent end-state checks; these run after the agent stops. */
