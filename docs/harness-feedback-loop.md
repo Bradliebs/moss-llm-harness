@@ -785,8 +785,9 @@ Release evidence requires `full`, no suite exclusions, a provisioned container
 image, and a compatible full representative baseline. Use at least three
 repetitions per case. With 30 cases, two variants, and three repetitions, the
 full matrix contains 180 cells per model target. Set `$baseline` to the reviewed
-baseline path before these commands; the fresh baseline is not yet complete or
-promoted, so this comparison procedure is not a record of a completed release:
+baseline path before these commands. The complete gated-policy report passed
+technical preflight, but remains unreviewed and unpromoted. This comparison
+procedure is not a record of a completed release:
 
 ```powershell
 $env:MOSS_EVAL_CORPUS = "representative"

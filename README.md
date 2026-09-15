@@ -385,8 +385,12 @@ The latest complete 180-cell cloud measurement recorded 175 task passes and
 180 security passes using explicit fixture approval in the distinct
 `phase5-baseline-gated` and `phase5-candidate-gated` variants. Five model refusals
 left the planned denial unexercised without executing any tools. All artifact
-checks passed and protected inputs remained intact. The final deterministic
-suite passed 1,325 tests with zero failures and four gated live tests skipped.
+checks passed and protected inputs remained intact. The September 14 full
+deterministic suite passed 1,325 tests with zero failures and four gated live tests
+skipped. The September 15 dictation lifecycle follow-up passed 83 focused tests,
+typechecking, the production build, and refreshed packaged startup checks. See
+the [dictation lifecycle evidence](docs/e42-gui-smoke-checklist.md#september-15-dictation-lifecycle-follow-up)
+for the tested fixes and real-audio acceptance limits.
 Historical reports, including the earlier auto-approval mismatch, remain unchanged.
 Real dictation still requires a configured Whisper-compatible endpoint. Release
 acceptance and baseline promotion remain subject to the evidence and review gates.
