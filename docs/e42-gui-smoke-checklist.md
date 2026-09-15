@@ -144,6 +144,24 @@ until an endpoint is configured and the microphone workflow can be exercised;
 a mocked transcription response is not a substitute. Final refreshed-package
 startup and supervised reload/resume checks passed again after the evaluator fixes.
 
+### September 15 dictation lifecycle follow-up
+
+A regression test reproduced a microphone stream remaining open when the
+dictation hook unmounted during recording. The hook now stops recording and
+releases tracks without submitting audio on teardown. It also releases late
+permission grants, ignores late transcription results, prevents duplicate starts
+while permission is pending, and releases the stream when recorder construction
+or startup fails. An already submitted transcription request is not aborted;
+its result is ignored after unmount.
+
+All ten dictation tests and 73 neighboring chat tests passed, as did typechecking,
+the production build, refreshed unsigned packaging, and packaged startup smoke.
+These use mocked media and transcription, not real microphone acceptance.
+No transcription service was listening on the checked local ports (8000, 8001,
+8080, 9000, or 11434) during the follow-up. No audio was captured and no service
+was installed. A real endpoint and a participant for microphone testing are
+still required before closing end-to-end dictation acceptance.
+
 ### Environment
 
 - Ollama (or another OpenAI-compatible endpoint) running locally and reachable,

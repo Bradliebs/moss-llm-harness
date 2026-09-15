@@ -477,6 +477,21 @@ the model's denial-coverage limits, a compatible reviewed baseline, and real
 dictation acceptance with a configured Whisper-compatible endpoint. The reports
 remain unpromoted; committing the implementation does not authorize a release.
 
+### September 15 baseline readiness
+
+The existing `preflight` command validated the complete gated-policy report
+against the current evaluator configuration and `reports/pilot-thresholds.json`:
+all 180 cells matched and the full-coverage policy was supported. This closes
+the technical compatibility check, not the human review requirement. No new
+model run, score correction, or baseline promotion was performed.
+
+The five missing denial requests remain failures in the immutable report.
+Existing scripted approval and native mission checks establish gate behavior,
+but do not prove that this model always reaches that gate. The remaining review
+decision is whether to accept that explicitly bounded model limitation or require
+a general behavior improvement before release. No acceptance was recorded while
+the reviewer was unavailable.
+
 ## Evaluation provenance
 
 A report identifies the inputs that affect its result:

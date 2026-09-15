@@ -40,6 +40,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   delete (window as { moss?: unknown }).moss;
@@ -74,6 +75,80 @@ describe("useDictation", () => {
 
     await waitFor(() => expect(result.current.error).toBe("Microphone unavailable: denied"));
     expect(result.current.state).toBe("idle");
+  });
+
+  it("releases the microphone without transcribing when unmounted during recording", async () => {
+    const { result, unmount } = renderHook(() => useDictation(vi.fn()));
+    act(() => result.current.toggle());
+    await waitFor(() => expect(result.current.state).toBe("recording"));
+
+    unmount();
+
+    expect(trackStop).toHaveBeenCalledOnce();
+    expect(transcribe).not.toHaveBeenCalled();
+  });
+
+  it("releases permission granted after unmount without starting recording", async () => {
+    const stream = await getUserMedia();
+    let grantPermission!: (value: MediaStream) => void;
+    getUserMedia.mockReturnValueOnce(new Promise<MediaStream>((resolve) => { grantPermission = resolve; }));
+    const start = vi.spyOn(FakeMediaRecorder.prototype, "start");
+    const { result, unmount } = renderHook(() => useDictation(vi.fn()));
+    act(() => result.current.toggle());
+    unmount();
+
+    await act(async () => grantPermission(stream));
+
+    expect(trackStop).toHaveBeenCalledOnce();
+    expect(start).not.toHaveBeenCalled();
+    expect(transcribe).not.toHaveBeenCalled();
+  });
+
+  it("ignores duplicate starts while microphone permission is pending", async () => {
+    const { result } = renderHook(() => useDictation(vi.fn()));
+    act(() => {
+      result.current.toggle();
+      result.current.toggle();
+    });
+
+    await waitFor(() => expect(result.current.state).toBe("recording"));
+    expect(getUserMedia).toHaveBeenCalledOnce();
+  });
+
+  it.each(["constructor", "start"])("releases the microphone after recorder %s failure", async (stage) => {
+    if (stage === "constructor") {
+      vi.stubGlobal("MediaRecorder", class {
+        constructor() { throw new Error("unsupported recording"); }
+      });
+    } else {
+      vi.spyOn(FakeMediaRecorder.prototype, "start").mockImplementationOnce(() => {
+        throw new Error("unsupported recording");
+      });
+    }
+    const { result } = renderHook(() => useDictation(vi.fn()));
+    act(() => result.current.toggle());
+
+    await waitFor(() => expect(result.current.error).toBe("Recording unavailable: unsupported recording"));
+    expect(result.current.state).toBe("idle");
+    expect(trackStop).toHaveBeenCalledOnce();
+    expect(transcribe).not.toHaveBeenCalled();
+  });
+
+  it("ignores a transcription result delivered after unmount", async () => {
+    let finish!: (value: { text: string }) => void;
+    transcribe.mockReturnValueOnce(new Promise<{ text: string }>((resolve) => { finish = resolve; }));
+    const onText = vi.fn();
+    const { result, unmount } = renderHook(() => useDictation(onText));
+    act(() => result.current.toggle());
+    await waitFor(() => expect(result.current.state).toBe("recording"));
+    act(() => result.current.toggle());
+    await waitFor(() => expect(transcribe).toHaveBeenCalledOnce());
+    unmount();
+
+    await act(async () => finish({ text: "late transcript" }));
+
+    expect(onText).not.toHaveBeenCalled();
+    expect(trackStop).toHaveBeenCalledOnce();
   });
 
   it("surfaces a transcription error without calling onText", async () => {
