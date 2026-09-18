@@ -18,6 +18,7 @@ function scripted(rounds: ProviderStreamEvent[][], requests: ChatRequest[]): Cha
       requests.push(structuredClone(request));
       const events = rounds[Math.min(index++, rounds.length - 1)];
       for (const event of events) yield event;
+      if (!events.some((event) => event.type === "usage")) yield { type: "usage", usage: { inputTokens: 0, outputTokens: 0 } };
     },
     async listModels() { return ["fixture"]; },
   };
@@ -38,7 +39,7 @@ function order(capabilities = ["read_file"], maxActions = 2): MissionWorkOrder {
         workerRole: "researcher",
         executionLane: capabilities.includes("edit_file") ? "exclusive" : "readonly-parallel",
         acceptanceCriterionIds: [],
-        budget: { maxActions, maxTokens: 100 },
+        budget: { maxActions, maxTokens: 10_000 },
         expectedArtifacts: ["findings"],
       },
     }],
@@ -54,11 +55,42 @@ function order(capabilities = ["read_file"], maxActions = 2): MissionWorkOrder {
     step: plan.steps[0],
     acceptanceCriteria: [],
     dependencyArtifacts: [],
-    remainingTaskBudget: { maxActions: 2, maxTokens: 100 },
+    remainingTaskBudget: { maxActions: 2, maxTokens: 10_000 },
   };
 }
 
 describe("RunTurnMissionWorker", () => {
+  it("does not execute collected tool calls after a reported token overrun", async () => {
+    const read = tool("read_file");
+    const worker = new RunTurnMissionWorker({
+      provider: scripted([[{ type: "tool-call", toolCall: { id: "read", name: "read_file", arguments: "{}" } },
+        { type: "usage", usage: { inputTokens: 20_000, outputTokens: 1 } }]], []),
+      model: "fixture", tools: [read], workspaceRoot: "", requestApproval: async () => ({ approved: true }),
+    });
+    const execution = await worker.execute(order(), new AbortController().signal);
+    expect(execution.result.status).toBe("failed");
+    expect(execution.usage?.usage?.inputTokens).toBe(20_000);
+    expect(read.execute).not.toHaveBeenCalled();
+  });
+  it("aborts an active provider at the step deadline", async () => {
+    const provider: ChatProvider = {
+      kind: "fixture", listModels: async () => [],
+      async *streamChat(_request, signal) {
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        signal.throwIfAborted();
+      },
+    };
+    const worker = new RunTurnMissionWorker({ provider, model: "fixture", tools: [], workspaceRoot: "", requestApproval: async () => ({ approved: false }) });
+    const workOrder = order([]);
+    workOrder.step.mission!.budget.maxDurationMs = 20;
+    const execution = await worker.execute(workOrder, new AbortController().signal);
+    expect(execution.result.status).toBe("failed");
+    expect(execution.result.summary).toContain("aborted");
+  });
+
   it("advertises only assigned capabilities and derives usage from host events", async () => {
     const requests: ChatRequest[] = [];
     const read = tool("read_file");
@@ -86,7 +118,7 @@ describe("RunTurnMissionWorker", () => {
       result: { status: "succeeded", artifacts: [{ name: "findings", content: "inspected" }] },
       usage: { actions: 1, usage: { inputTokens: 3, outputTokens: 2 } },
     });
-    expect(requests.every((request) => request.maxTokens === 100)).toBe(true);
+    expect(requests.every((request) => request.maxTokens! > 0 && request.maxTokens! < 10_000)).toBe(true);
   });
 
   it("denies an unassigned hallucinated tool before execution", async () => {

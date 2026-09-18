@@ -5,11 +5,7 @@
 // pass/fail feedback and can self-correct. Fail-fast: the first failing command
 // stops the run, since later checks are usually noise once an earlier one fails.
 
-import { spawn } from "node:child_process";
-
-import { createLogger } from "../../../../common/logger";
-
-const log = createLogger("verifier");
+import { runShellCommand } from "../tools/shell-tool";
 
 /** Per-command output cap (characters) so a noisy failure cannot exhaust the
  *  model's context when the report is fed back. */
@@ -53,52 +49,17 @@ export async function runVerify(
     if (!res.ok) break;
   }
 
-  return { ok: results.every((r) => r.ok), results };
+  return { ok: !signal.aborted && results.every((r) => r.ok), results };
 }
 
-function runOne(
+async function runOne(
   command: string,
   cwd: string,
   signal: AbortSignal,
   timeoutMs: number,
 ): Promise<VerifyCommandResult> {
-  return new Promise<VerifyCommandResult>((resolve) => {
-    const child = spawn(command, { cwd, shell: true });
-    let out = "";
-    let err = "";
-    let settled = false;
-
-    const onAbort = (): void => {
-      child.kill();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => child.kill(), timeoutMs);
-
-    const finish = (ok: boolean, body: string): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-      resolve({ command, ok, output: body });
-    };
-
-    child.stdout.on("data", (d: Buffer) => {
-      if (out.length < OUTPUT_CAP) out += d.toString();
-    });
-    child.stderr.on("data", (d: Buffer) => {
-      if (err.length < OUTPUT_CAP) err += d.toString();
-    });
-    child.on("error", (e: Error) => {
-      log.warn(`verify command failed to start: ${command}: ${e.message}`);
-      finish(false, e.message);
-    });
-    child.on("close", (code: number | null) => {
-      const body = [out.trim(), err.trim() ? `[stderr]\n${err.trim()}` : ""]
-        .filter(Boolean)
-        .join("\n");
-      finish(code === 0, body || `(exited with code ${code})`);
-    });
-  });
+  const result = await runShellCommand(command, cwd, signal, timeoutMs, OUTPUT_CAP);
+  return { command, ok: result.ok, output: result.content };
 }
 
 /** Render a verify result into a compact report for the model, prefixed so it

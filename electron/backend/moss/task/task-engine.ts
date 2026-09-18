@@ -89,7 +89,7 @@ export class TaskEngine {
     });
   }
 
-  async recordPlanningUsage(id: string, usage: TokenUsage): Promise<TaskSnapshot> {
+  async recordPlanningUsage(id: string, usage: TokenUsage, estimatedCostUsd = 0): Promise<TaskSnapshot> {
     const timestamp = this.now().toISOString();
     const attempt: TaskAttempt = {
       id: randomUUID(),
@@ -102,10 +102,10 @@ export class TaskEngine {
         inputTokens: usage.inputTokens ?? 0,
         outputTokens: usage.outputTokens ?? 0,
       },
-      estimatedCostUsd: 0,
+      estimatedCostUsd,
     };
     return this.store.update(id, (task) => {
-      if (task.state !== "intake" && task.state !== "planning" && task.state !== "executing" && task.state !== "blocked") {
+      if (task.state !== "intake" && task.state !== "planning" && task.state !== "executing" && task.state !== "blocked" && task.state !== "cancelled" && task.state !== "paused") {
         throw new Error(`Cannot record planning usage while task is ${task.state}`);
       }
       return { ...task, attempts: [...task.attempts, attempt] };
@@ -472,7 +472,9 @@ export class TaskEngine {
   async cancel(id: string): Promise<TaskSnapshot> {
     const task = await this.requireTask(id);
     if (["completed", "failed", "cancelled"].includes(task.state)) return task;
-    return this.store.transition(id, "cancelled");
+    return this.store.transition(id, "cancelled", task.approval?.status === "pending" ? {
+      approval: { ...task.approval, status: "interrupted", respondedAt: this.now().toISOString(), comment: "Task cancelled" },
+    } : {});
   }
 
   /** Convert work that was active during shutdown into an explicit resumable

@@ -35,6 +35,24 @@ async function openedTools(driver: BrowserDriver): Promise<Tool[]> {
 }
 
 describe("browser tools", () => {
+  it("closes the driver to interrupt a pending action and prevents reuse", async () => {
+    const driver = fakeDriver();
+    let release!: () => void;
+    driver.click = vi.fn(() => new Promise<void>((resolve) => { release = resolve; }));
+    driver.close = vi.fn(async () => { release(); });
+    const tools = await openedTools(driver);
+    const controller = new AbortController();
+    const click = find(tools, "browser_click");
+    const args = { taskId: "task-1", sessionId: "session-1", role: "button", name: "Save draft" };
+    const pending = click.execute(args, { ...context(), signal: controller.signal });
+    await vi.waitFor(() => expect(driver.click).toHaveBeenCalledOnce());
+    controller.abort();
+    expect((await pending).ok).toBe(false);
+    expect(driver.close).toHaveBeenCalledOnce();
+    expect((await click.execute(args, context())).ok).toBe(false);
+    await click.dispose?.();
+    expect(driver.close).toHaveBeenCalledOnce();
+  });
   it("advertises only supported click targets while retaining CSS typing", () => {
     const tools = createBrowserTools({ driverFactory: async () => fakeDriver(), allowedDomains: ["example.com"] });
     const click = find(tools, "browser_click").parameters;

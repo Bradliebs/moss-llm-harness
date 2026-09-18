@@ -27,6 +27,8 @@ export function createWindowsUiaDriverFactory(): DesktopDriverFactory {
 }
 
 class WindowsUiaDriver implements DesktopDriver {
+  private readonly controller = new AbortController();
+  private readonly active = new Set<Promise<string>>();
   constructor(private readonly scope: DesktopDriverScope) {}
 
   inspect(): Promise<string> {
@@ -53,16 +55,21 @@ class WindowsUiaDriver implements DesktopDriver {
     return JSON.parse(await this.execute({ action: "state", selector: target })) as DesktopControlState;
   }
 
-  close(): Promise<void> {
-    return Promise.resolve();
+  async close(): Promise<void> {
+    this.controller.abort();
+    await Promise.allSettled([...this.active]);
   }
 
-  private execute(request: Omit<BridgeRequest, "processName" | "windowTitle">): Promise<string> {
-    return runBridge({ ...request, processName: this.scope.processName, windowTitle: this.scope.windowTitle });
+  private async execute(request: Omit<BridgeRequest, "processName" | "windowTitle">): Promise<string> {
+    const pending = runBridge({ ...request, processName: this.scope.processName, windowTitle: this.scope.windowTitle }, this.controller.signal);
+    this.active.add(pending);
+    try { return await pending; }
+    finally { this.active.delete(pending); }
   }
 }
 
-function runBridge(request: BridgeRequest): Promise<string> {
+function runBridge(request: BridgeRequest, signal: AbortSignal): Promise<string> {
+  if (signal.aborted) return Promise.reject(new Error("Desktop session closed"));
   if (process.platform !== "win32") return Promise.reject(new Error("Windows UI Automation requires Windows"));
   return new Promise<string>((resolve, reject) => {
     const child = spawn(
@@ -73,17 +80,27 @@ function runBridge(request: BridgeRequest): Promise<string> {
     let output = "";
     let error = "";
     let settled = false;
+    let stopped: Error | undefined;
     const finish = (failure?: Error): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
       if (failure) reject(failure);
       else resolve(output.trim());
     };
-    const timer = setTimeout(() => {
+    const stop = (message: string) => {
+      if (settled || stopped) return;
+      stopped = new Error(message);
+      clearTimeout(timer);
       child.kill();
-      finish(new Error("Windows UI Automation operation timed out"));
-    }, BRIDGE_TIMEOUT_MS);
+      timer = setTimeout(() => finish(new Error(`${message}; bridge termination unconfirmed`)), 5_000);
+    };
+    let timer = setTimeout(() => stop("Windows UI Automation operation timed out"), BRIDGE_TIMEOUT_MS);
+    const onAbort = () => {
+      stop("Windows UI Automation operation aborted");
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (chunk: Buffer) => {
       if (output.length < OUTPUT_CAP) output += chunk.toString();
     });
@@ -92,10 +109,12 @@ function runBridge(request: BridgeRequest): Promise<string> {
     });
     child.on("error", (spawnError) => finish(spawnError));
     child.on("close", (code) => {
-      if (code === 0) finish();
+      if (stopped) finish(stopped);
+      else if (code === 0) finish();
       else finish(new Error(error.trim() || output.trim() || `Windows UI Automation exited with code ${code}`));
     });
     child.stdin.end(JSON.stringify(request));
+    if (signal.aborted) onAbort();
   });
 }
 

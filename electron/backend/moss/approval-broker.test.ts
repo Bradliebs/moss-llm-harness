@@ -8,6 +8,22 @@ import { describe, expect, it } from "vitest";
 import { ApprovalBroker } from "./approval-broker";
 
 describe("ApprovalBroker", () => {
+  it("denies requests registered after cancellation", async () => {
+    const broker = new ApprovalBroker();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(broker.request("late", controller.signal)).resolves.toMatchObject({ approved: false });
+    expect(broker.pendingCallId()).toBeUndefined();
+  });
+
+  it("releases an active wait immediately on cancellation", async () => {
+    const broker = new ApprovalBroker();
+    const controller = new AbortController();
+    const pending = broker.request("active", controller.signal);
+    controller.abort();
+    await expect(pending).resolves.toMatchObject({ approved: false });
+    expect(broker.pendingCallId()).toBeUndefined();
+  });
   it("resolves a pending request with approval", async () => {
     const broker = new ApprovalBroker();
     const pending = broker.request("call-1");

@@ -1421,6 +1421,18 @@ describe("ChatPanel", () => {
     expect(off).toHaveBeenCalledTimes(1);
   });
 
+  it("discards an interrupted follow-up when Stop is clicked", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    const composer = screen.getByPlaceholderText("Message…");
+    fireEvent.change(composer, { target: { value: "Queued follow-up" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    fireEvent.click(screen.getByText("Stop"));
+    emit(turnId, { type: "turn-aborted", messages: [] });
+    expect(window.moss.chat.send).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Queued")).toBeNull();
+  });
+
   it("hides the per-bubble Regenerate and Edit actions for an empty conversation", () => {
     render(<Harness />);
     expect(screen.queryByText("Regenerate")).toBeNull();

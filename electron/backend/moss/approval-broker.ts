@@ -13,9 +13,16 @@ export class ApprovalBroker {
     return this.pending.keys().next().value;
   }
 
-  request(callId: string): Promise<ToolApprovalResponse> {
+  request(callId: string, signal?: AbortSignal): Promise<ToolApprovalResponse> {
+    if (signal?.aborted) return Promise.resolve({ approved: false, comment: "Turn aborted" });
     return new Promise<ToolApprovalResponse>((resolve) => {
-      this.pending.set(callId, resolve);
+      const onAbort = () => this.resolve(callId, { approved: false, comment: "Turn aborted" });
+      this.pending.set(callId, (response) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(response);
+      });
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
   }
 

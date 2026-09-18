@@ -1,5 +1,6 @@
 import type { Tool, ToolContext, ToolResult } from "../tools/types";
 import { resolveInWorkspace } from "../tools/path-guard";
+import { managedTools } from "../tools/managed-tools";
 
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_INPUT_CHARS = 10_000;
@@ -121,13 +122,20 @@ async function asResult(action: () => Promise<string>): Promise<ToolResult> {
 
 export class BrowserSessionManager {
   private readonly sessions = new Map<string, BrowserDriver>();
+  private closed = false;
 
   constructor(private readonly driverFactory: BrowserDriverFactory) {}
 
   async open(taskId: string, sessionId: string): Promise<void> {
     const key = sessionKey(requiredString(taskId, "taskId"), requiredString(sessionId, "sessionId"));
     if (this.sessions.has(key)) throw new Error("Browser session is already active");
-    this.sessions.set(key, await this.driverFactory({ taskId, sessionId }));
+    if (this.closed) throw new Error("Browser sessions are closed");
+    const driver = await this.driverFactory({ taskId, sessionId });
+    if (this.closed) {
+      await driver.close();
+      throw new Error("Browser startup cancelled");
+    }
+    this.sessions.set(key, driver);
   }
 
   get(taskId: string, sessionId: string): BrowserDriver {
@@ -145,9 +153,10 @@ export class BrowserSessionManager {
   }
 
   async closeAll(): Promise<void> {
+    this.closed = true;
     const drivers = [...this.sessions.values()];
     this.sessions.clear();
-    await Promise.allSettled(drivers.map((driver) => driver.close()));
+    await Promise.all(drivers.map((driver) => driver.close()));
   }
 }
 
@@ -155,7 +164,7 @@ export function createBrowserTools(options: BrowserToolsOptions): Tool[] {
   const manager = new BrowserSessionManager(options.driverFactory);
   const allowedDomains = new Set(options.allowedDomains.map(normalizeDomain).filter(Boolean));
 
-  return [
+  return managedTools([
     {
       name: "browser_open_session",
       description: "Open a task-owned browser session before using it. Close it when finished.",
@@ -304,5 +313,5 @@ export function createBrowserTools(options: BrowserToolsOptions): Tool[] {
         return "Browser session closed";
       }),
     },
-  ];
+  ], () => manager.closeAll());
 }

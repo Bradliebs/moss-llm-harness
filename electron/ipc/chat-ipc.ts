@@ -32,6 +32,7 @@ import type {
 import { runTurn } from "../backend/moss/agent-runner";
 import type { CompletionContext } from "../backend/moss/agent-runner";
 import { ApprovalBroker } from "../backend/moss/approval-broker";
+import { MissionBudgetProvider } from "../backend/moss/task/mission-budget";
 import { createBrowserTools } from "../backend/moss/browser/browser-tools";
 import { createPlaywrightDriverFactory } from "../backend/moss/browser/playwright-driver";
 import { routeLiveCapabilities } from "../backend/moss/capabilities/live-capabilities";
@@ -65,7 +66,7 @@ import { transcribeAudio } from "../backend/moss/stt";
 import { buildSystemMessage } from "../backend/moss/system-prompt";
 import { classifyTool } from "../backend/moss/permission";
 import { MissionAuthorityBroker, validateMissionAuthorizationRequest } from "../backend/moss/task/mission-authority";
-import { MissionController } from "../backend/moss/task/mission-controller";
+import { MissionController, remainingBudget } from "../backend/moss/task/mission-controller";
 import { MissionPlanner } from "../backend/moss/task/mission-planner";
 import { taskArtifactStore } from "../backend/moss/task/task-artifact-store";
 import { taskEngine } from "../backend/moss/task/task-engine";
@@ -128,15 +129,7 @@ export function registerChatIpc(): void {
     const entry = inflight.get(turnId);
     if (entry) {
       entry.controller.abort();
-      if (entry.taskId) {
-        void taskEngine
-          .resolveApproval(entry.taskId, entry.broker.pendingCallId() ?? "", false, "Turn aborted")
-          .then((task) => entry.send({ type: "task-state", task }))
-          .catch(() => undefined)
-          .finally(() => entry.broker.denyAll("Turn aborted"));
-      } else {
-        entry.broker.denyAll("Turn aborted");
-      }
+      entry.broker.denyAll("Turn aborted");
     }
   });
 
@@ -193,7 +186,16 @@ export function registerChatIpc(): void {
   ipcMain.handle(IPC.taskStart, (_event, id: string) => taskEngine.start(id));
   ipcMain.handle(IPC.taskPause, (_event, id: string, summary: string) => taskEngine.pause(id, summary));
   ipcMain.handle(IPC.taskResume, (_event, id: string) => taskEngine.start(id));
-  ipcMain.handle(IPC.taskCancel, (_event, id: string) => taskEngine.cancel(id));
+  ipcMain.handle(IPC.taskCancel, async (_event, id: string) => {
+    const active = [...inflight.values()].filter((entry) => entry.taskId === id);
+    for (const entry of active) {
+      entry.controller.abort();
+      entry.broker.denyAll("Task cancelled");
+    }
+    const task = await taskEngine.cancel(id);
+    for (const entry of active) entry.send({ type: "task-state", task });
+    return task;
+  });
 
   ipcMain.handle(IPC.providerListModels, async (_event, config: ChatStartRequest["config"]) => {
     const provider = createProvider(config);
@@ -315,6 +317,7 @@ export function registerChatIpc(): void {
 async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): Promise<void> {
   const controller = new AbortController();
   const broker = new ApprovalBroker();
+  const disposers = new Set<() => Promise<void>>();
   const durableTaskId = req.taskSpec ? req.taskId ?? req.turnId : undefined;
   let preserveTaskOnAbort = false;
   let rendererUnavailable = false;
@@ -325,6 +328,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
   const send = (mossEvent: MossEvent) => {
     if (mossEvent.type === "turn-complete" || mossEvent.type === "turn-aborted" || mossEvent.type === "turn-error") {
       terminalEvent = mossEvent;
+      return;
     }
     if (mossEvent.type === "tool-approval-request") approvalEvents.set(mossEvent.callId, mossEvent);
     if (!rendererUnavailable && !event.sender.isDestroyed()) {
@@ -375,6 +379,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       ? routed.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }))
       : [];
     const toolRegistry = new Map(routed.tools.map((tool) => [tool.name, tool]));
+    for (const tool of routed.tools) if (tool.dispose) disposers.add(tool.dispose);
     // Prepend a fresh system message (base instructions + skills index + memory)
     // unless the renderer already supplied one. The latest user message drives
     // query-aware memory selection.
@@ -417,8 +422,10 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       const capabilities = routed.tools.map((tool) => ({
         ...describeMissionCapability(tool.name),
       }));
+      const missionProvider = new MissionBudgetProvider(provider, remainingBudget(task, new Date()), req.modelRates);
       const planner = new MissionPlanner({
-        provider,
+        provider: missionProvider,
+        modelRates: req.modelRates,
         model: req.config.model,
         capabilities,
         ...(task.spec.budget?.maxTokens
@@ -426,7 +433,8 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
           : {}),
       });
       const worker = new RunTurnMissionWorker({
-        provider,
+        provider: missionProvider,
+        modelRates: req.modelRates,
         model: req.config.model,
         tools: routed.tools,
         workspaceRoot,
@@ -443,7 +451,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
           if (workerEvent.type === "tool-result" && workerEvent.ok) usedCapabilities.add(workerEvent.name);
           send(workerEvent);
         },
-        requestApproval: async (callId, order) => {
+        requestApproval: async (callId, order, signal) => {
           const approvalEvent = approvalEvents.get(callId);
           if (!approvalEvent) throw new Error(`Missing approval event for call '${callId}'`);
           const persisted = taskEngine.requestApproval(task!.id, {
@@ -460,7 +468,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
           const waiting = await persisted;
           send({ type: "task-state", task: waiting });
           try {
-            return await broker.request(callId);
+            return await broker.request(callId, signal);
           } finally {
             if (pendingDurableApproval?.callId === callId) pendingDurableApproval = undefined;
           }
@@ -543,7 +551,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
           send({ type: "task-state", task: waiting });
         }
         try {
-          return await broker.request(callId);
+          return await broker.request(callId, controller.signal);
         } finally {
           if (pendingDurableApproval?.callId === callId) pendingDurableApproval = undefined;
         }
@@ -601,6 +609,15 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       source: "harness-orchestration",
     });
   } finally {
+    const cleanup = await Promise.allSettled([...disposers].map((dispose) => dispose()));
+    const cleanupFailures = cleanup.filter((result) => result.status === "rejected");
+    if (cleanupFailures.length > 0) {
+      terminalEvent = { type: "turn-error", source: "harness-orchestration", messages: terminalEvent?.messages ?? [],
+        message: `Automation cleanup failed: ${cleanupFailures.map((result) => String(result.reason)).join("; ")}` };
+    }
+    if (terminalEvent && !rendererUnavailable && !event.sender.isDestroyed()) {
+      event.sender.send(IPC.chatEvent, { turnId: req.turnId, event: terminalEvent });
+    }
     event.sender.removeListener("destroyed", handleRendererDestroyed);
     event.sender.removeListener("render-process-gone", handleRendererDestroyed);
     event.sender.removeListener("did-start-navigation", handleRendererNavigation);
@@ -787,6 +804,13 @@ async function finalizeTurnTask(
     usage,
   });
 
+  const currentTask = await taskStore.get(taskId);
+  if (currentTask && ["cancelled", "failed", "completed"].includes(currentTask.state)) {
+    const settled = await taskEngine.finishAttempt(taskId, attemptId, "interrupted", "Task ended before finalization");
+    send({ type: "task-state", task: settled });
+    return;
+  }
+
   let task;
   if (terminalEvent?.type === "turn-complete" && completion) {
     task = await taskEngine.finishAttempt(taskId, attemptId, "succeeded");
@@ -806,8 +830,8 @@ async function finalizeTurnTask(
           id: evidence.checkId,
           criterionId: criterion.id,
           kind: evidence.kind === "command" ? "command" : "external",
-          passed: evidence.ok,
-          summary: evidence.details ? `${evidence.summary}\n${evidence.details}` : evidence.summary,
+          passed: false,
+          summary: `Outcome unverified: generic workspace checks are not bound to this criterion. ${evidence.details ? `${evidence.summary}\n${evidence.details}` : evidence.summary}`,
           capturedAt: evidence.timestamp,
           attemptId,
         });
@@ -817,12 +841,8 @@ async function finalizeTurnTask(
         id: randomUUID(),
         criterionId: criterion.id,
         kind: completion.latestVerification ? "command" : "model-review",
-        passed: completion.latestVerification?.ok ?? completion.failedToolCalls === 0,
-        summary: completion.latestVerification
-          ? "Configured verification completed"
-          : completion.mutations > 0
-            ? "No deterministic workspace verification command was available; completion passed model review"
-            : "Non-mutating task completed without tool or verification failures",
+        passed: false,
+        summary: "Outcome unverified: no host-owned check is explicitly bound to this acceptance criterion. Tool success, model review, and generic verification do not prove the requested outcome.",
         capturedAt: new Date().toISOString(),
         attemptId,
       });

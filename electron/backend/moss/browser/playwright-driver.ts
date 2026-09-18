@@ -13,7 +13,10 @@ export interface PlaywrightDriverOptions {
 export function createPlaywrightDriverFactory(options: PlaywrightDriverOptions = {}): BrowserDriverFactory {
   return async () => {
     const browser = await chromium.launch({ headless: options.headless ?? true });
+    try {
     const context = await browser.newContext({ acceptDownloads: false });
+    context.setDefaultTimeout(30_000);
+    context.setDefaultNavigationTimeout(30_000);
     const allowedDomains = new Set((options.allowedDomains ?? []).map(normalizeDomain).filter(Boolean));
     await context.route("**/*", async (route) => {
       const url = route.request().url();
@@ -22,6 +25,10 @@ export function createPlaywrightDriverFactory(options: PlaywrightDriverOptions =
     });
     const page = await context.newPage();
     return new PlaywrightBrowserDriver(browser, context, page);
+    } catch (error) {
+      await browser.close();
+      throw error;
+    }
   };
 }
 
@@ -65,8 +72,11 @@ class PlaywrightBrowserDriver implements BrowserDriver {
   }
 
   async close(): Promise<void> {
-    await this.context.close().catch(() => undefined);
-    await this.browser.close().catch(() => undefined);
+    try {
+      await this.context.close({ reason: "Host closed automation session" });
+    } finally {
+      await this.browser.close({ reason: "Host closed automation session" });
+    }
   }
 
   private locator(target: BrowserTarget): Locator {

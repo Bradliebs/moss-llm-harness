@@ -889,7 +889,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       queuedInterruptionRef.current = { sessionId, message: userMsg };
       setInterruptQueued(true);
       setStatus("Interrupting current response…");
-      abort();
+      if (turnIdRef.current) window.moss.chat.abort(turnIdRef.current);
       return;
     }
 
@@ -974,6 +974,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   }
 
   function abort(): void {
+    queuedInterruptionRef.current = null;
+    setInterruptQueued(false);
     if (turnIdRef.current) window.moss.chat.abort(turnIdRef.current);
   }
 
