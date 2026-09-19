@@ -1,6 +1,7 @@
 import type {
   HarnessBootstrapInterval,
   HarnessMatrixCellResult,
+  HarnessPairedNonInferiority,
   HarnessRateInterval,
   HarnessReliabilityMetrics,
 } from "../../../../common/evals";
@@ -137,4 +138,87 @@ function combinations(total: number, selected: number): number {
   let result = 1;
   for (let index = 1; index <= count; index++) result = result * (total - count + index) / index;
   return result;
+}
+
+/** Compare case-level completion rates and bootstrap whole families as correlated clusters. */
+export function pairedNonInferiority(
+  baselineCells: readonly HarnessMatrixCellResult[],
+  candidateCells: readonly HarnessMatrixCellResult[],
+  familyByCase: ReadonlyMap<string, string> = new Map(),
+  margin = 0,
+): HarnessPairedNonInferiority {
+  if (!Number.isFinite(margin) || margin < 0 || margin > 1) {
+    throw new Error("Non-inferiority margin must be between 0 and 1");
+  }
+  const baselineGroups = completionRateGroups(baselineCells);
+  const candidateGroups = completionRateGroups(candidateCells);
+  if (baselineGroups.size === 0 || baselineGroups.size !== candidateGroups.size
+    || [...baselineGroups.keys()].some((key) => !candidateGroups.has(key))) {
+    throw new Error("Paired non-inferiority requires matching non-empty case groups");
+  }
+  const pairs = [...baselineGroups].map(([key, baseline]) => {
+    const candidate = candidateGroups.get(key)!;
+    return {
+      family: familyByCase.get(baseline.caseId) ?? baseline.caseId,
+      baselineRate: baseline.rate,
+      candidateRate: candidate.rate,
+      delta: candidate.rate - baseline.rate,
+    };
+  });
+  const families = new Map<string, typeof pairs>();
+  for (const pair of pairs) {
+    const group = families.get(pair.family) ?? [];
+    group.push(pair);
+    families.set(pair.family, group);
+  }
+  const familySamples = [...families.values()];
+  const resamples = 2_000;
+  const values: number[] = [];
+  const random = seededRandom(0x4e494d47);
+  for (let iteration = 0; iteration < resamples; iteration++) {
+    const deltas: number[] = [];
+    for (let familyIndex = 0; familyIndex < familySamples.length; familyIndex++) {
+      const sampledFamily = familySamples[Math.floor(random() * familySamples.length)];
+      for (let caseIndex = 0; caseIndex < sampledFamily.length; caseIndex++) {
+        deltas.push(sampledFamily[caseIndex].delta);
+      }
+    }
+    values.push(mean(deltas));
+  }
+  values.sort((left, right) => left - right);
+  const baselinePassRate = mean(pairs.map((pair) => pair.baselineRate));
+  const candidatePassRate = mean(pairs.map((pair) => pair.candidateRate));
+  const lower = percentile(values, 0.025);
+  return {
+    pairs: pairs.length,
+    baselinePassRate,
+    candidatePassRate,
+    delta: candidatePassRate - baselinePassRate,
+    improved: pairs.filter((pair) => pair.delta > 0).length,
+    regressed: pairs.filter((pair) => pair.delta < 0).length,
+    unchanged: pairs.filter((pair) => pair.delta === 0).length,
+    confidence: 0.95,
+    lower,
+    upper: percentile(values, 0.975),
+    margin,
+    nonInferior: lower >= -margin,
+    resamples,
+    unit: families.size > 1 ? "family-case-rate" : "case-rate",
+  };
+}
+
+function completionRateGroups(
+  cells: readonly HarnessMatrixCellResult[],
+): Map<string, { caseId: string; rate: number }> {
+  const groups = new Map<string, { caseId: string; outcomes: boolean[] }>();
+  for (const cell of cells) {
+    const key = `${cell.targetId}\u0000${cell.variantId}\u0000${cell.caseId}`;
+    const group = groups.get(key) ?? { caseId: cell.caseId, outcomes: [] };
+    group.outcomes.push(cell.result.success);
+    groups.set(key, group);
+  }
+  return new Map([...groups].map(([key, group]) => [key, {
+    caseId: group.caseId,
+    rate: group.outcomes.filter(Boolean).length / group.outcomes.length,
+  }]));
 }

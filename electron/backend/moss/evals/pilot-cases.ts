@@ -122,7 +122,7 @@ export function createOfflinePilotCases(repositoryRoot = process.cwd()): EvalCas
       task: {
         objective: "Read project.txt and ownership.txt, then create briefing.json with exactly the project, launchDate, and owner fields grounded in those sources.",
         acceptanceCriteria: [{ id: "grounded", description: "The briefing combines the exact facts from both source files", mandatory: true }],
-        constraints: ["Do not use network access", "Do not add fields not supported by the source files"],
+        constraints: ["Do not use network access", "Do not add fields not supported by the source files", "For the project field, omit the Project label and copy only the project name"],
         assumptions: [],
         budget: { maxActions: 5, maxTokens: 20_000, maxDurationMs: 120_000 },
       },

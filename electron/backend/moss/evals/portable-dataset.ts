@@ -3,7 +3,10 @@ import type { TaskSpec } from "../../../../common/types";
 import type { VerificationCheck } from "../../../../common/verification";
 import { validateCase } from "./eval-runner";
 
-export interface PortableEvalCase {
+type PortableGovernance = Pick<EvalCase, "suite" | "split" | "family" | "familyRole" | "domain" | "perturbation"
+  | "scenario" | "lineage" | "benchmark" | "estimatedHumanMinutes" | "taskMessiness">;
+
+export interface PortableEvalCase extends PortableGovernance {
   id: string;
   profile: EvalProfile;
   difficulty: EvalDifficulty;
@@ -28,6 +31,7 @@ export function exportPortableDataset(cases: readonly EvalCase[]): PortableEvalD
       id: testCase.id,
       profile: testCase.profile,
       difficulty: testCase.difficulty,
+      ...portableGovernance(testCase),
       task: structuredClone(testCase.task),
       allowedCapabilities: [...testCase.allowedCapabilities],
       checks: structuredClone(testCase.checks),
@@ -56,6 +60,10 @@ export function importPortableDataset(value: unknown): EvalCase[] {
       checks: portable.checks,
       ...(portable.repetitions !== undefined ? { repetitions: portable.repetitions } : {}),
       ...(portable.tags !== undefined ? { tags: portable.tags } : {}),
+      suite: portable.suite, split: portable.split, family: portable.family, familyRole: portable.familyRole,
+      domain: portable.domain, perturbation: portable.perturbation, scenario: portable.scenario,
+      lineage: portable.lineage, benchmark: portable.benchmark,
+      estimatedHumanMinutes: portable.estimatedHumanMinutes, taskMessiness: portable.taskMessiness,
     } as EvalCase;
     validateCase(testCase);
     return structuredClone(testCase);
@@ -64,4 +72,13 @@ export function importPortableDataset(value: unknown): EvalCase[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function portableGovernance(testCase: PortableGovernance): PortableGovernance {
+  return structuredClone({
+    suite: testCase.suite, split: testCase.split, family: testCase.family, familyRole: testCase.familyRole,
+    domain: testCase.domain, perturbation: testCase.perturbation, scenario: testCase.scenario,
+    lineage: testCase.lineage, benchmark: testCase.benchmark,
+    estimatedHumanMinutes: testCase.estimatedHumanMinutes, taskMessiness: testCase.taskMessiness,
+  });
 }

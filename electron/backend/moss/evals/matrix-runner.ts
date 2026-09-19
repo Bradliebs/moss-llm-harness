@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
@@ -26,15 +26,23 @@ import {
   type EvalRubricGrader,
 } from "./rubric-grading";
 import { summarizeReliability } from "./statistics";
+import { HarnessDiagnosticArtifactStore, HarnessDiagnosticCapture } from "./diagnostic-artifact-store";
+import { DockerEvalSandboxBackend, SandboxCleanupError } from "./sandbox-backend";
+import { validateExecutionCoverage } from "./execution-selection";
+import { validateSplitExecution } from "./split-policy";
+import { summarizeCorpusDiagnostics } from "./corpus-diagnostics";
 
 export type MatrixExecutorFactory = (
   target: EvalModelTarget,
   variant: HarnessVariant,
   workspaceRoot: string,
-  context?: { signal?: AbortSignal },
+  context?: { signal?: AbortSignal; diagnostics?: HarnessDiagnosticCapture },
 ) => EvalExecutor;
 
 export interface HarnessMatrixRunnerOptions {
+  executionPolicy?: HarnessMatrixManifest["executionPolicy"];
+  corpusCases?: readonly EvalCase[];
+  executionCoverage?: HarnessMatrixManifest["executionCoverage"];
   temporaryRoot?: string;
   now?: () => Date;
   registry?: VerificationRegistry;
@@ -49,6 +57,8 @@ export interface HarnessMatrixRunnerOptions {
   providerConcurrency?: Record<string, number>;
   signal?: AbortSignal;
   progressStore?: HarnessMatrixProgressStore;
+  diagnosticsStore?: HarnessDiagnosticArtifactStore;
+  retryInfrastructureFailures?: boolean;
 }
 
 export interface HarnessMatrixProgress {
@@ -60,6 +70,35 @@ export interface HarnessMatrixProgress {
 export interface HarnessMatrixProgressStore {
   load(): Promise<HarnessMatrixProgress | undefined>;
   save(progress: HarnessMatrixProgress): Promise<void>;
+}
+
+export function validateInfrastructureRetries(cell: HarnessMatrixCellResult): void {
+  if (cell.infrastructureRetries === undefined) return;
+  const history: unknown = cell.infrastructureRetries;
+  if (!Array.isArray(history)) throw new Error("Invalid infrastructure retry history");
+  const current = cell.result.observation;
+  const runIds = new Set([current.runId]);
+  let previousTime = -Infinity;
+  const completedTime = Date.parse(current.completedAt);
+  if (!Number.isFinite(completedTime)) throw new Error("Invalid infrastructure retry completion time");
+  for (const entry of history) {
+    if (!entry || typeof entry !== "object"
+      || typeof entry.runId !== "string" || !entry.runId.trim() || runIds.has(entry.runId)
+      || typeof entry.completedAt !== "string") {
+      throw new Error("Invalid infrastructure retry identity");
+    }
+    const time = Date.parse(entry.completedAt);
+    if (!Number.isFinite(time) || time < previousTime || time > completedTime) {
+      throw new Error("Invalid infrastructure retry ordering");
+    }
+    if (entry.diagnostics !== undefined && (!entry.diagnostics || typeof entry.diagnostics !== "object"
+      || entry.diagnostics.schemaVersion !== 1 || typeof entry.diagnostics.sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(entry.diagnostics.sha256))) {
+      throw new Error("Invalid infrastructure retry diagnostic reference");
+    }
+    runIds.add(entry.runId);
+    previousTime = time;
+  }
 }
 
 /** Expands model, harness, case, and repetition axes into isolated executions. */
@@ -75,6 +114,11 @@ export class HarnessMatrixRunner {
   private readonly providerConcurrency: Record<string, number>;
   private readonly signal?: AbortSignal;
   private readonly progressStore?: HarnessMatrixProgressStore;
+  private readonly diagnosticsStore?: HarnessDiagnosticArtifactStore;
+  private readonly retryInfrastructureFailures: boolean;
+  private readonly executionCoverage?: HarnessMatrixManifest["executionCoverage"];
+  private readonly executionPolicy: NonNullable<HarnessMatrixManifest["executionPolicy"]>;
+  private readonly corpusCases?: readonly EvalCase[];
 
   constructor(
     private readonly createExecutor: MatrixExecutorFactory,
@@ -94,6 +138,11 @@ export class HarnessMatrixRunner {
     ]));
     this.signal = options.signal;
     this.progressStore = options.progressStore;
+    this.diagnosticsStore = options.diagnosticsStore;
+    this.retryInfrastructureFailures = options.retryInfrastructureFailures === true;
+    this.executionCoverage = options.executionCoverage;
+    this.executionPolicy = structuredClone(options.executionPolicy ?? { purpose: "iteration" });
+    this.corpusCases = options.corpusCases;
     if (this.rubricCalibration && !this.rubricGrader) {
       throw new Error("Rubric calibration requires a rubric grader");
     }
@@ -105,7 +154,7 @@ export class HarnessMatrixRunner {
     variants: readonly HarnessVariant[],
   ): Promise<HarnessMatrixReport> {
     validateHarnessMatrix(cases, targets, variants);
-    const manifest = buildHarnessManifest(cases, targets, variants, this.evaluatorVersion, this.evaluatorArtifacts);
+    const manifest = buildHarnessManifest(cases, targets, variants, this.evaluatorVersion, this.evaluatorArtifacts, this.executionCoverage, this.executionPolicy, this.corpusCases);
     const jobs: Array<{ testCase: EvalCase; target: EvalModelTarget; variant: HarnessVariant; repetition: number }> = [];
     for (const target of targets) {
       for (const variant of variants) {
@@ -124,23 +173,56 @@ export class HarnessMatrixRunner {
     const jobKeys = new Set(jobs.map(matrixJobKey));
     const cellsByKey = new Map<string, HarnessMatrixCellResult>();
     for (const cell of resumed?.cells ?? []) {
+      validateInfrastructureRetries(cell);
       const key = matrixCellKey(cell);
       if (!jobKeys.has(key) || cellsByKey.has(key)) {
         throw new Error("Harness progress contains an invalid or duplicate matrix cell");
       }
+      if (this.diagnosticsStore) {
+        if (!cell.diagnostics) throw new Error("Resumed cell has no diagnostic artifact; use a fresh run for capture");
+        this.diagnosticsStore.read(cell.diagnostics);
+        for (const attempt of cell.infrastructureRetries ?? []) {
+          if (attempt.diagnostics) this.diagnosticsStore.read(attempt.diagnostics);
+        }
+      }
       cellsByKey.set(key, cell);
     }
-    const pending = jobs.filter((job) => !cellsByKey.has(matrixJobKey(job)));
+    const pending = jobs.filter((job) => {
+      const previous = cellsByKey.get(matrixJobKey(job));
+      return !previous || (this.retryInfrastructureFailures
+        && previous.result.failureAttribution?.reasonCode === "matrix-cell-infrastructure-error");
+    });
     const providerLimiter = new ProviderConcurrencyLimiter(this.providerConcurrency);
     let progressSave = Promise.resolve();
+    let fatalCleanup: SandboxCleanupError | undefined;
     await mapWithConcurrency(pending, this.maxConcurrency, async (job) => {
       throwIfAborted(this.signal);
       const cell = await providerLimiter.run(job.target.providerId, async () => {
+      if (fatalCleanup) throw fatalCleanup;
+        const diagnostics = this.diagnosticsStore ? new HarnessDiagnosticCapture() : undefined;
+        diagnostics?.append("trial", { caseId: job.testCase.id, targetId: job.target.id, variantId: job.variant.id, repetition: job.repetition });
+        let completed: HarnessMatrixCellResult;
         try {
-          return await this.runCell(job.testCase, job.target, job.variant, job.repetition);
+          completed = await this.runCell(job.testCase, job.target, job.variant, job.repetition, diagnostics);
         } catch (error) {
-          return this.infrastructureFailureCell(job.testCase, job.target, job.variant, job.repetition, error);
+          if (error instanceof SandboxCleanupError) {
+            fatalCleanup = error;
+            throw error;
+          }
+          diagnostics?.append("infrastructure-error", error);
+          completed = this.infrastructureFailureCell(job.testCase, job.target, job.variant, job.repetition, error);
         }
+        const previous = cellsByKey.get(matrixJobKey(job));
+        if (previous) completed.infrastructureRetries = [
+          ...(previous.infrastructureRetries ?? []),
+          { runId: previous.result.observation.runId, completedAt: previous.result.observation.completedAt,
+            ...(previous.diagnostics ? { diagnostics: previous.diagnostics } : {}) },
+        ];
+        if (diagnostics && this.diagnosticsStore) {
+          diagnostics.append("evaluation", completed.result);
+          completed.diagnostics = this.diagnosticsStore.write(diagnostics);
+        }
+        return completed;
       });
       cellsByKey.set(matrixCellKey(cell), cell);
       if (this.progressStore) {
@@ -152,8 +234,8 @@ export class HarnessMatrixRunner {
     throwIfAborted(this.signal);
     const cells = jobs.map((job) => cellsByKey.get(matrixJobKey(job))!);
 
-    const completedManifest = buildHarnessManifest(cases, targets, variants, this.evaluatorVersion, this.evaluatorArtifacts);
-    const invariantHashes = ["evaluatorArtifactHash", "caseSetHash", "targetSetHash", "variantSetHash"] as const;
+    const completedManifest = buildHarnessManifest(cases, targets, variants, this.evaluatorVersion, this.evaluatorArtifacts, this.executionCoverage, this.executionPolicy, this.corpusCases);
+    const invariantHashes = ["evaluatorArtifactHash", "caseSetHash", "targetSetHash", "variantSetHash", "splitCorpusHash"] as const;
     const changedHash = invariantHashes.find((key) => manifest[key] !== completedManifest[key]);
     if (changedHash) {
       throw new Error(`Harness input '${changedHash}' changed during the run`);
@@ -166,7 +248,7 @@ export class HarnessMatrixRunner {
       generatedAt: this.now().toISOString(),
       manifest,
       cells,
-      summary: summarizeHarnessMatrix(cells, cases),
+      summary: summarizeHarnessMatrix(cells, cases, this.executionCoverage?.selection === "full" && this.executionCoverage.excluded.length === 0),
       ...(rubricCalibration ? { rubricCalibration } : {}),
     };
   }
@@ -188,7 +270,7 @@ export class HarnessMatrixRunner {
       result: {
         observation: {
           caseId: testCase.id,
-          runId: `${testCase.id}-${target.id}-${variant.id}-${repetition}-infrastructure-error`,
+          runId: `${testCase.id}-${target.id}-${variant.id}-${repetition}-infrastructure-error-${randomUUID()}`,
           provider: target.providerKind,
           model: target.model,
           outcome: "failed",
@@ -227,9 +309,11 @@ export class HarnessMatrixRunner {
     target: EvalModelTarget,
     variant: HarnessVariant,
     repetition: number,
+    diagnostics?: HarnessDiagnosticCapture,
   ): Promise<HarnessMatrixCellResult> {
     const workspaceRoot = mkdtempSync(join(this.temporaryRoot, "moss-eval-"));
     let execution: EvalExecutionResult | undefined;
+    let cleanupFailure: SandboxCleanupError | undefined;
     try {
       if (testCase.fixture?.workspaceTemplate) {
         cpSync(testCase.fixture.workspaceTemplate, workspaceRoot, { recursive: true });
@@ -240,30 +324,33 @@ export class HarnessMatrixRunner {
         structuredClone(target),
         structuredClone(variant),
         workspaceRoot,
-        { signal: this.signal },
+        { signal: this.signal, ...(diagnostics ? { diagnostics } : {}) },
       );
       const captureExecution: EvalExecutor = async (isolatedCase, _ignoredRepetition) => {
-        execution = await execute(isolatedCase, repetition);
+        try { execution = await execute(isolatedCase, repetition); }
+        catch (error) {
+          if (error instanceof SandboxCleanupError) cleanupFailure = error;
+          throw error;
+        }
         if (resolve(execution.workspaceRoot) !== resolve(workspaceRoot)) {
           throw new Error(`Matrix executor escaped isolated workspace for case '${testCase.id}'`);
         }
         return execution;
       };
       const report = await new EvalRunner(captureExecution, {
+        executionPolicy: this.executionPolicy,
         now: this.now,
         registry: this.registry,
         rubricGrader: this.rubricGrader,
       }).run([{ ...structuredClone(testCase), repetitions: 1 }]);
+      if (cleanupFailure) throw cleanupFailure;
       const result = report.results[0];
       if (!result || !execution) throw new Error(`Matrix cell '${testCase.id}' produced no result`);
       const protectedInputHashesAfter = hashProtectedInputs(workspaceRoot, protectedPaths);
       const protectedInputsIntact = equalHashes(protectedInputHashesBefore, protectedInputHashesAfter);
-      const harnessScore = execution.trace ? scoreHarnessRun(testCase, result, execution.trace) : undefined;
-      if (harnessScore && !protectedInputsIntact) {
-        harnessScore.securityPassed = false;
-        harnessScore.securityViolations.push("protected-input-modified");
-        harnessScore.diagnosticComposite = 0;
-      }
+      const harnessScore = execution.trace
+        ? scoreHarnessRun(testCase, result, execution.trace, protectedPaths.length > 0 ? protectedInputsIntact : undefined)
+        : undefined;
       if (harnessScore && !harnessScore.securityPassed && !result.failureAttribution) {
         result.failureAttribution = {
           category: "agent-behavior",
@@ -286,7 +373,7 @@ export class HarnessMatrixRunner {
         protectedInputsIntact,
       };
     } finally {
-      rmSync(workspaceRoot, { recursive: true, force: true });
+      if (!cleanupFailure) rmSync(workspaceRoot, { recursive: true, force: true });
     }
   }
 }
@@ -307,13 +394,30 @@ export function validateHarnessMatrix(
     if (target.schemaVersion !== 1 || !target.providerId.trim() || !target.model.trim()) {
       throw new Error(`Invalid model target '${target.id}'`);
     }
+    if (target.generation?.maxOutputTokens !== undefined
+      && (!Number.isInteger(target.generation.maxOutputTokens) || target.generation.maxOutputTokens < 1)) {
+      throw new Error(`Model target '${target.id}' has an invalid max output token limit`);
+    }
+    if (target.generation?.reasoningEffort !== undefined
+      && (target.generation.reasoningEffort !== "none" || target.providerKind !== "openai-compatible")) {
+      throw new Error(`Model target '${target.id}' has an unsupported reasoning effort configuration`);
+    }
   }
   for (const variant of variants) {
+    if (variant.sandbox) {
+      new DockerEvalSandboxBackend({ image: variant.sandbox.image });
+      if (variant.sandbox.allowNetwork !== undefined && typeof variant.sandbox.allowNetwork !== "boolean") {
+        throw new Error("Sandbox allowNetwork must be boolean");
+      }
+    }
     if (variant.schemaVersion !== 1 || !variant.description.trim()) {
       throw new Error(`Invalid harness variant '${variant.id}'`);
     }
     if (variant.promptProfile !== undefined && !/^[a-zA-Z0-9._-]{1,128}$/.test(variant.promptProfile)) {
       throw new Error(`Harness variant '${variant.id}' has an invalid prompt profile`);
+    }
+    if (variant.contextLimit !== undefined && (!Number.isInteger(variant.contextLimit) || variant.contextLimit < 1)) {
+      throw new Error(`Harness variant '${variant.id}' has an invalid context limit`);
     }
     if (variant.runtime) {
       const controls = variant.runtime;
@@ -323,6 +427,9 @@ export function validateHarnessMatrix(
         || !["standard", "signature-aware"].includes(controls.recoveryPolicy)
         || !["off", "diagnostic"].includes(controls.reviewerPass)) {
         throw new Error(`Harness variant '${variant.id}' has invalid runtime controls`);
+      }
+      if (controls.contextStrategy === "compact" && variant.contextLimit === undefined) {
+        throw new Error(`Harness variant '${variant.id}' requires a positive context limit for compact context`);
       }
     }
   }
@@ -419,20 +526,52 @@ export function buildHarnessManifest(
   variants: readonly HarnessVariant[],
   evaluatorVersion = "moss-harness-v1",
   evaluatorArtifacts: readonly string[] = [],
+  executionCoverage?: HarnessMatrixManifest["executionCoverage"],
+  executionPolicy: NonNullable<HarnessMatrixManifest["executionPolicy"]> = { purpose: "iteration" },
+  corpusCases: readonly EvalCase[] = cases,
 ): HarnessMatrixManifest {
   validateHarnessMatrix(cases, targets, variants);
+  validateSplitExecution(cases, executionPolicy, corpusCases);
+  if (executionCoverage) validateExecutionCoverage(executionCoverage, cases.map((testCase) => testCase.id));
+  if (executionCoverage && (executionCoverage.corpusCaseIds.length !== corpusCases.length
+    || corpusCases.some((testCase) => !executionCoverage.corpusCaseIds.includes(testCase.id)))) {
+    throw new Error("Split checks require the complete declared source corpus");
+  }
   if (!evaluatorVersion.trim()) throw new Error("Harness evaluator version is required");
   return {
+    ...(executionCoverage ? { executionCoverage: structuredClone(executionCoverage) } : {}),
+    executionPolicy: structuredClone(executionPolicy),
+    splitCorpusHash: stableHash(corpusCases.map((testCase) => ({
+      id: testCase.id, split: testCase.split, family: testCase.family,
+      lineage: testCase.lineage, objective: testCase.task.objective,
+    }))),
     evaluatorVersion,
     caseIds: cases.map((testCase) => testCase.id),
     caseSuites: Object.fromEntries(cases
       .filter((testCase) => testCase.suite)
       .map((testCase) => [testCase.id, testCase.suite!])),
+    caseFamilies: Object.fromEntries(cases
+      .filter((testCase) => testCase.family)
+      .map((testCase) => [testCase.id, testCase.family!])),
     targetIds: targets.map((target) => target.id),
     variantIds: variants.map((variant) => variant.id),
     promptProfiles: [...new Set(variants
       .map((variant) => variant.promptProfile)
       .filter((profile): profile is string => Boolean(profile)))],
+    targetConfigurations: structuredClone(targets),
+    variantConfigurations: structuredClone(variants),
+    scenarioPlanHash: stableHash(cases.map((testCase) => ({ id: testCase.id, scenario: testCase.scenario ?? null }))),
+    runtime: {
+      nodeVersion: process.version,
+      platform: process.platform,
+      architecture: process.arch,
+      ...(process.env.MOSS_SOURCE_REVISION || process.env.GITHUB_SHA
+        ? { sourceRevision: process.env.MOSS_SOURCE_REVISION ?? process.env.GITHUB_SHA }
+        : {}),
+    },
+    ...(process.env.MOSS_SANDBOX_IMAGE_DIGEST
+      ? { sandboxImageDigest: process.env.MOSS_SANDBOX_IMAGE_DIGEST }
+      : {}),
     evaluatorArtifactHash: fingerprintEvaluatorArtifacts(evaluatorArtifacts),
     caseSetHash: fingerprintCases(cases),
     targetSetHash: stableHash(targets),
@@ -443,6 +582,7 @@ export function buildHarnessManifest(
 export function summarizeHarnessMatrix(
   cells: readonly HarnessMatrixCellResult[],
   cases: readonly EvalCase[],
+  fullCoverage = false,
 ): HarnessMatrixReport["summary"] {
   const casesById = new Map(cases.map((testCase) => [testCase.id, testCase]));
   const familyByCase = new Map(cases
@@ -480,6 +620,7 @@ export function summarizeHarnessMatrix(
 
   return {
     overall: aggregateHarnessMetrics(cells),
+    corpusDiagnostics: summarizeCorpusDiagnostics(cells, cases, fullCoverage),
     reliability: summarizeReliability(cells, familyByCase),
     byTargetVariant,
     byProfile,
@@ -530,6 +671,9 @@ function groupMetrics(
 
 function aggregateHarnessMetrics(cells: readonly HarnessMatrixCellResult[]): HarnessAggregateMetrics {
   const scored = cells.filter((cell) => cell.harnessScore !== undefined);
+  const mechanismScores = scored
+    .map((cell) => cell.harnessScore?.mechanisms)
+    .filter((mechanisms): mechanisms is NonNullable<typeof mechanisms> => mechanisms !== undefined);
   const recoveryEvents = cells.flatMap((cell) => cell.trace?.events.filter((event) => event.type === "recovery") ?? []);
   const recoveryAttempts = recoveryEvents.filter((event) => event.outcome === "attempted").length;
   const recoverySuccesses = recoveryEvents.filter((event) => event.outcome === "succeeded").length;
@@ -551,6 +695,7 @@ function aggregateHarnessMetrics(cells: readonly HarnessMatrixCellResult[]): Har
     securityPassRate: scored.length === 0
       ? 0
       : scored.filter((cell) => cell.harnessScore?.securityPassed).length / scored.length,
+    mechanisms: aggregateMechanisms(mechanismScores),
     protectedInputsIntact: cells.filter((cell) => cell.protectedInputsIntact).length,
     averageRobustness: average(scored.map((cell) => cell.harnessScore!.process.robustness)),
     averageToolUse: average(scored.map((cell) => cell.harnessScore!.process.toolUse)),
@@ -568,6 +713,39 @@ function aggregateHarnessMetrics(cells: readonly HarnessMatrixCellResult[]): Har
     recoverySuccessRate: recoveryAttempts === 0 ? 0 : recoverySuccesses / recoveryAttempts,
     recoveriesByClassification,
     failures: countFailureAttributions(cells.map((cell) => cell.result)),
+  };
+}
+
+function aggregateMechanisms(
+  scores: readonly NonNullable<HarnessMatrixCellResult["harnessScore"]>["mechanisms"][],
+): NonNullable<HarnessAggregateMetrics["mechanisms"]> {
+  const names = [
+    "outcomeCompletion",
+    "protectedStateIntegrity",
+    "approvalHandling",
+    "recoverySuccess",
+    "verificationBeforeCompletion",
+    "budgetCompliance",
+    "forbiddenExecution",
+  ] as const;
+  const aggregate = (name: typeof names[number]) => {
+    const passed = scores.reduce((sum, score) => sum + (score?.[name].passed ?? 0), 0);
+    const total = scores.reduce((sum, score) => sum + (score?.[name].total ?? 0), 0);
+    return {
+      passed,
+      total,
+      rate: total === 0 ? null : passed / total,
+      applicable: total > 0,
+    };
+  };
+  return {
+    outcomeCompletion: aggregate("outcomeCompletion"),
+    protectedStateIntegrity: aggregate("protectedStateIntegrity"),
+    approvalHandling: aggregate("approvalHandling"),
+    recoverySuccess: aggregate("recoverySuccess"),
+    verificationBeforeCompletion: aggregate("verificationBeforeCompletion"),
+    budgetCompliance: aggregate("budgetCompliance"),
+    forbiddenExecution: aggregate("forbiddenExecution"),
   };
 }
 
@@ -620,10 +798,17 @@ function matrixJobKey(job: { testCase: EvalCase; target: EvalModelTarget; varian
 
 function compatibleProgressManifest(left: HarnessMatrixManifest, right: HarnessMatrixManifest): boolean {
   return left.evaluatorVersion === right.evaluatorVersion
+    && stableHash(left.executionCoverage ?? null) === stableHash(right.executionCoverage ?? null)
+    && stableHash(left.executionPolicy ?? null) === stableHash(right.executionPolicy ?? null)
+    && left.splitCorpusHash === right.splitCorpusHash
     && left.evaluatorArtifactHash === right.evaluatorArtifactHash
     && left.caseSetHash === right.caseSetHash
     && left.targetSetHash === right.targetSetHash
-    && left.variantSetHash === right.variantSetHash;
+    && left.variantSetHash === right.variantSetHash
+    && left.runtime?.nodeVersion === right.runtime?.nodeVersion
+    && left.runtime?.platform === right.runtime?.platform
+    && left.runtime?.architecture === right.runtime?.architecture
+    && left.sandboxImageDigest === right.sandboxImageDigest;
 }
 
 async function mapWithConcurrency<T>(
@@ -632,14 +817,21 @@ async function mapWithConcurrency<T>(
   run: (value: T) => Promise<void>,
 ): Promise<void> {
   let next = 0;
+  let failed = false;
+  let failure: unknown;
   const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
-    for (;;) {
+    while (!failed) {
       const index = next++;
       if (index >= values.length) return;
-      await run(values[index]);
+      try { await run(values[index]); }
+      catch (error) {
+        if (!failed) failure = error;
+        failed = true;
+      }
     }
   });
   await Promise.all(workers);
+  if (failed) throw failure;
 }
 
 class ProviderConcurrencyLimiter {

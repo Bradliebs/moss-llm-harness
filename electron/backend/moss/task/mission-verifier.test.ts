@@ -26,15 +26,36 @@ describe("WorkspaceMissionVerifier", () => {
     expect(evidence[0].summary).toContain("No deterministic workspace verification check");
   });
 
-  it("passes a criterion only when all detected host checks pass", async () => {
+  it("passes a criterion only when all explicitly bound host checks pass", async () => {
     const workspaceRoot = temporaryWorkspace({ scripts: { test: "vitest run", typecheck: "tsc --noEmit" } });
     const registry = new VerificationRegistry(false);
     registry.register("command", async () => ({ ok: true, summary: "passed" }));
-    const verifier = new WorkspaceMissionVerifier({ workspaceRoot, registry });
+    const verifier = new WorkspaceMissionVerifier({ workspaceRoot, registry, checks: [
+      { id: "tests", criterionId: "tests", kind: "command", command: "npm test" },
+      { id: "types", criterionId: "tests", kind: "command", command: "npm run typecheck" },
+    ] });
 
     const evidence = await verifier.verify(order(), result(), new AbortController().signal);
 
     expect(evidence).toEqual([{ criterionId: "tests", kind: "command", passed: true, summary: "passed; passed" }]);
+  });
+
+  it("does not use a passing project test as evidence for a missing requested file", async () => {
+    const workspaceRoot = temporaryWorkspace({ scripts: { test: "exit 0" } });
+    const verifier = new WorkspaceMissionVerifier({ workspaceRoot });
+    const workOrder = order();
+    workOrder.acceptanceCriteria[0].description = "requested.txt exists and contains READY";
+    expect((await verifier.verify(workOrder, result(), new AbortController().signal))[0].passed).toBe(false);
+  });
+
+  it("checks actual file content for a host-bound file criterion", async () => {
+    const workspaceRoot = temporaryWorkspace();
+    const verifier = new WorkspaceMissionVerifier({ workspaceRoot, checks: [
+      { id: "content", criterionId: "tests", kind: "file-contains", path: "requested.txt", substring: "READY" },
+    ] });
+    expect((await verifier.verify(order(), result(), new AbortController().signal))[0].passed).toBe(false);
+    writeFileSync(join(workspaceRoot, "requested.txt"), "READY");
+    expect((await verifier.verify(order(), result(), new AbortController().signal))[0].passed).toBe(true);
   });
 });
 

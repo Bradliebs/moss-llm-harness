@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { HarnessMatrixReport } from "../../../../common/evals";
-import { diffHarnessReports } from "./report-diff";
+import { assertHarnessReportPolicySupport, diffHarnessReports } from "./report-diff";
 
 function report(overrides: Partial<HarnessMatrixReport> = {}): HarnessMatrixReport {
   return {
@@ -87,6 +87,38 @@ function report(overrides: Partial<HarnessMatrixReport> = {}): HarnessMatrixRepo
 }
 
 describe("diffHarnessReports", () => {
+  it("rejects retry history that reuses the current run identity", () => {
+    const candidate = report();
+    candidate.cells[0].infrastructureRetries = [{
+      runId: "run-a", completedAt: "2026-07-17T07:59:59.000Z",
+    }];
+    expect(() => diffHarnessReports(report(), candidate)).toThrow("Invalid infrastructure retry identity");
+    expect(() => assertHarnessReportPolicySupport(candidate, {})).toThrow("Invalid infrastructure retry identity");
+  });
+
+  it("allows partial comparisons but rejects partial or undeclared release coverage", () => {
+    const partial = report();
+    partial.manifest.executionCoverage = { selection: "local", corpusCaseIds: ["case-a", "command"],
+      excluded: [{ caseId: "command", reason: "requires-container" }] };
+    expect(diffHarnessReports(partial, partial).passed).toBe(true);
+    expect(() => diffHarnessReports(partial, partial, { requireFullCoverage: true })).toThrow("full execution coverage");
+    expect(() => assertHarnessReportPolicySupport(partial, { requireFullCoverage: true })).toThrow("full execution coverage");
+    expect(() => assertHarnessReportPolicySupport(report(), { requireFullCoverage: true })).toThrow("full execution coverage");
+    const full = report();
+    full.manifest.executionCoverage = { selection: "full", corpusCaseIds: ["case-a"], excluded: [] };
+    expect(() => assertHarnessReportPolicySupport(full, { requireFullCoverage: true })).not.toThrow();
+    full.manifest.executionCoverage.corpusCaseIds.push("missing");
+    expect(() => assertHarnessReportPolicySupport(full, { requireFullCoverage: true })).toThrow("accounting");
+  });
+
+  it("rejects differing selection provenance even for the same scored cases", () => {
+    const baseline = report();
+    baseline.manifest.executionCoverage = { selection: "local", corpusCaseIds: ["case-a"], excluded: [] };
+    const candidate = structuredClone(baseline);
+    candidate.manifest.executionCoverage!.selection = "full";
+    expect(() => diffHarnessReports(baseline, candidate)).toThrow("execution coverage");
+  });
+
   it("rejects reports produced from different benchmark inputs", () => {
     const candidate = report({
       manifest: { ...report().manifest, caseSetHash: "changed-cases" },
@@ -104,6 +136,25 @@ describe("diffHarnessReports", () => {
     });
 
     expect(() => diffHarnessReports(baseline, candidate)).toThrow("evaluator artifacts");
+  });
+
+  it("rejects reports produced under different runtime provenance", () => {
+    const baseline = report({
+      manifest: {
+        ...report().manifest,
+        runtime: { nodeVersion: "v20.0.0", platform: "win32", architecture: "x64", sourceRevision: "baseline" },
+      },
+    });
+    const candidate = structuredClone(baseline);
+    candidate.manifest.runtime = {
+      ...candidate.manifest.runtime!,
+      nodeVersion: "v22.0.0",
+      sourceRevision: "candidate",
+    };
+
+    expect(() => diffHarnessReports(baseline, candidate)).toThrow("runtime");
+    candidate.manifest.runtime.nodeVersion = "v20.0.0";
+    expect(() => diffHarnessReports(baseline, candidate)).not.toThrow();
   });
 
   it("flags regressions by signal instead of hiding them in the composite", () => {
@@ -136,6 +187,13 @@ describe("diffHarnessReports", () => {
       improved: 0,
       regressed: 1,
       unchanged: 0,
+    });
+    expect(diff.pairedNonInferiority).toMatchObject({
+      pairs: 1,
+      delta: -1,
+      lower: -1,
+      upper: -1,
+      nonInferior: false,
     });
     expect(diff.regressions).toEqual(expect.arrayContaining([
       expect.stringContaining("completion"),
@@ -212,6 +270,12 @@ describe("diffHarnessReports", () => {
     expect(() => diffHarnessReports(report(), report(), {
       minimumRepetitions: 2,
     })).toThrow("policy requires 2");
+  });
+
+  it("refuses a release decision without the configured paired-case support", () => {
+    expect(() => diffHarnessReports(report(), report(), {
+      minimumPairedCases: 2,
+    })).toThrow("1 paired cases cannot support policy minimum 2");
   });
 
   it("refuses suite policy for reports without suite metadata", () => {

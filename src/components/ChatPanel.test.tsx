@@ -13,7 +13,7 @@ import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ChatEventPayload, MossEvent, TaskSnapshot, TaskState } from "@common/types";
+import type { AgentMessage, ChatEventPayload, MossEvent, TaskSnapshot, TaskState } from "@common/types";
 
 import { ChatPanel } from "./ChatPanel";
 
@@ -30,11 +30,12 @@ const mockContinueInNewSession = vi.fn();
 const mockSummarize = vi.fn();
 const mockMissionAuthorize = vi.fn();
 const mockMissionCapabilities = vi.fn();
+const mockSetSessionTaskId = vi.fn();
 
 // Holds the session ChatPanel renders; tests override `value.messages` to drive
 // messagesToItems (e.g. multi-round turns) and beforeEach resets it to empty.
 const mockSession = vi.hoisted(() => ({
-  value: { id: "s1", title: "New chat", messages: [], createdAt: 0, updatedAt: 0 },
+  value: { id: "s1", title: "New chat", messages: [] as AgentMessage[], createdAt: 0, updatedAt: 0, ...({} as { taskId?: string }) },
 }));
 
 // Drives the header tool-activity badge and audit popover; reset in beforeEach.
@@ -95,6 +96,7 @@ vi.mock("../lib/sessions", () => ({
   setSessionPersonality: vi.fn(),
   setSessionMessages: (...args: unknown[]) => mockSetSessionMessages(...args),
   setSessionTitle: vi.fn(),
+  setSessionTaskId: (...args: unknown[]) => mockSetSessionTaskId(...args),
   clearSession: (...args: unknown[]) => mockClearSession(...args),
   continueInNewSession: (...args: unknown[]) => mockContinueInNewSession(...args),
   sessionTokenUsage: () => ({ inputTokens: 0, outputTokens: 0 }),
@@ -189,6 +191,8 @@ beforeEach(() => {
       },
       tool: { approve: vi.fn() },
       task: {
+        get: vi.fn(async () => null),
+        artifact: vi.fn(async () => null),
         resume: vi.fn(async () => taskSnapshot("executing")),
         cancel: vi.fn(async () => taskSnapshot("cancelled")),
         history: vi.fn(async () => []),
@@ -212,6 +216,74 @@ afterEach(() => {
 });
 
 describe("ChatPanel", () => {
+  const questionBlock = '```moss-clarification\n{"version":1,"title":"Output details","questions":[{"id":"format","prompt":"Which format?","options":["Markdown","Text"]}]}\n```';
+
+  it("sends clarification answers as a normal turn without consuming the composer draft or launching a mission", async () => {
+    mockSession.value.messages = [{ role: "assistant", content: questionBlock }];
+    render(<Harness />);
+    fireEvent.change(screen.getByPlaceholderText("Message…"), { target: { value: "Keep this draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Mission" }));
+    await waitFor(() => expect(mockMissionCapabilities).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText("Which format?"), { target: { value: "choice-0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send answers" }));
+    const sent = vi.mocked(window.moss.chat.send).mock.calls[0][0];
+    expect(sent.messages.at(-1)).toEqual({ role: "user", content: "Answers to Output details:\n\nWhich format?\nMarkdown" });
+    expect(sent.taskSpec).toBeUndefined();
+    expect(sent.mission).toBeUndefined();
+    expect(window.moss.tool.approve).not.toHaveBeenCalled();
+    expect(mockMissionAuthorize).not.toHaveBeenCalled();
+    expect((screen.getByPlaceholderText("Message…") as HTMLTextAreaElement).value).toBe("Keep this draft");
+  });
+
+  it("does not activate questionnaires during streaming, interruption or tool calls", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "text-delta", text: questionBlock });
+    expect(screen.queryByRole("form", { name: "Clarification questions" })).toBeNull();
+    cleanup();
+    mockSession.value.messages = [{ role: "assistant", content: questionBlock, interrupted: true }];
+    render(<Harness />);
+    expect(screen.queryByRole("form", { name: "Clarification questions" })).toBeNull();
+    cleanup();
+    mockSession.value.messages = [{ role: "assistant", content: questionBlock, toolCalls: [{ id: "call-1", name: "read_file", arguments: "{}" }] }];
+    render(<Harness />);
+    expect(screen.queryByRole("form", { name: "Clarification questions" })).toBeNull();
+  });
+
+  it("keeps historical forms disabled and isolates answers across conversations", () => {
+    mockSession.value.messages = [{ role: "assistant", content: questionBlock }];
+    const { rerender } = render(<Harness />);
+    fireEvent.change(screen.getByLabelText("Which format?"), { target: { value: "choice-0" } });
+    mockSession.value = { ...mockSession.value, id: "s2" };
+    rerender(<Harness />);
+    expect((screen.getByLabelText("Which format?") as HTMLSelectElement).value).toBe("");
+    mockSession.value.messages.push({ role: "user", content: "Already answered" });
+    rerender(<Harness />);
+    fireEvent.submit(screen.getByRole("form", { name: "Clarification questions" }));
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
+  });
+
+  it("opens restored artifacts without starting tools and hides them on a conversation switch", async () => {
+    mockSession.value.taskId = "task-1";
+    const snapshot = taskSnapshot("completed");
+    const artifact = { id: "artifact-1", taskId: "task-1", planRevision: 1, stepId: "report", attemptId: "attempt-1", name: "report.md", summary: "Results", sha256: "a".repeat(64), byteLength: 10, createdAt: snapshot.createdAt };
+    snapshot.artifacts = [artifact];
+    vi.mocked(window.moss.task.get).mockResolvedValue(snapshot);
+    vi.mocked(window.moss.task.artifact).mockResolvedValue({ ...artifact, content: "# Stored report" });
+    const { rerender } = render(<Harness />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open artifacts" }));
+    await screen.findByRole("heading", { name: "Stored report" });
+    expect(window.moss.task.artifact).toHaveBeenCalledWith("task-1", "artifact-1");
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByLabelText("Artifact workspace"), { key: "Escape" });
+    expect(screen.queryByLabelText("Artifact workspace")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open artifacts" }));
+    await screen.findByRole("heading", { name: "Stored report" });
+    mockSession.value = { ...mockSession.value, id: "s2", taskId: undefined };
+    rerender(<Harness />);
+    expect(screen.queryByLabelText("Artifact workspace")).toBeNull();
+  });
+
   it("opens the compact conversation navigator from the header", () => {
     render(<Harness />);
     fireEvent.click(screen.getByLabelText("Open conversations"));
@@ -321,6 +393,34 @@ describe("ChatPanel", () => {
 
     expect(screen.getByLabelText("Task status").textContent).toContain("completed");
     expect(screen.getByLabelText("Task status").textContent).toContain("Complete the durable task");
+    expect(mockSetSessionTaskId).toHaveBeenCalledWith("s1", "task-1");
+  });
+
+  it("restores a paused task after remount without resuming automatically", async () => {
+    mockSession.value.taskId = "task-1";
+    vi.mocked(window.moss.task.get).mockResolvedValue(taskSnapshot("paused"));
+    render(<Harness />);
+
+    await screen.findByRole("button", { name: "Resume", exact: true });
+    expect(window.moss.task.get).toHaveBeenCalledWith("task-1");
+    expect(screen.getByLabelText("Task status").textContent).toContain("paused");
+    expect(window.moss.task.resume).not.toHaveBeenCalled();
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
+  });
+
+  it("ignores a restored task after switching to another conversation", async () => {
+    let resolveTask!: (task: TaskSnapshot) => void;
+    mockSession.value.taskId = "task-1";
+    vi.mocked(window.moss.task.get).mockReturnValue(new Promise((resolve) => { resolveTask = resolve; }));
+    const view = render(<Harness />);
+    mockSession.value = { ...mockSession.value, id: "s2", taskId: undefined };
+    view.rerender(<Harness />);
+
+    await act(async () => { resolveTask(taskSnapshot("paused")); });
+
+    expect(screen.queryByLabelText("Task status")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Resume", exact: true })).toBeNull();
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
   });
 
   it("resumes and cancels a blocked durable task", async () => {
@@ -1335,6 +1435,24 @@ describe("ChatPanel", () => {
     expect(screen.getByText("Aborted")).toBeDefined();
   });
 
+  it.each([
+    { event: { type: "turn-aborted", messages: [] } as MossEvent, status: "Aborted" },
+    { event: { type: "turn-error", message: "boom", messages: [] } as MossEvent, status: "Error: boom" },
+  ])("clears $status when switching conversations", ({ event, status }) => {
+    const { rerender } = render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, event);
+    expect(screen.getByText(status)).toBeDefined();
+
+    mockSession.value = { ...mockSession.value, id: "s2", title: "Other conversation" };
+    rerender(<Harness />);
+
+    expect(screen.queryByText(status)).toBeNull();
+    expect(mockSetSessionMessages).toHaveBeenCalledTimes(1);
+    expect(mockSetSessionMessages.mock.calls[0][0]).toBe("s1");
+    expect(window.moss.chat.send).toHaveBeenCalledTimes(1);
+  });
+
   it("aborts the active turn from the Stop button", () => {
     render(<Harness />);
     const turnId = startTurn();
@@ -1370,6 +1488,18 @@ describe("ChatPanel", () => {
     const { unmount } = render(<Harness />);
     unmount();
     expect(off).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards an interrupted follow-up when Stop is clicked", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    const composer = screen.getByPlaceholderText("Message…");
+    fireEvent.change(composer, { target: { value: "Queued follow-up" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    fireEvent.click(screen.getByText("Stop"));
+    emit(turnId, { type: "turn-aborted", messages: [] });
+    expect(window.moss.chat.send).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Queued")).toBeNull();
   });
 
   it("hides the per-bubble Regenerate and Edit actions for an empty conversation", () => {

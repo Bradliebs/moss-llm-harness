@@ -16,6 +16,7 @@ import { selectDependencyReadySteps } from "./progress-packet";
 import { TaskArtifactStore } from "./task-artifact-store";
 import { TaskEngine } from "./task-engine";
 import { TaskStore } from "./task-store";
+import { missionDeadline } from "./mission-budget";
 
 const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
 const REPLANNABLE_BLOCKERS = new Set<TaskBlocker["kind"]>(["external", "verification", "unavailable-service"]);
@@ -103,9 +104,12 @@ export class MissionController {
   async run(taskId: string, signal: AbortSignal): Promise<TaskSnapshot> {
     const ownerId = randomUUID();
     await this.options.engine.acquireLease(taskId, ownerId);
+    const initial = await this.requireTask(taskId);
+    const deadline = missionDeadline(signal, remainingBudget(initial, this.now()).maxDurationMs);
     try {
-      await this.runOwned(taskId, signal);
+      await this.runOwned(taskId, deadline.signal);
     } finally {
+      deadline.dispose();
       await this.options.engine.releaseLease(taskId, ownerId);
     }
     const task = await this.requireTask(taskId);
@@ -118,11 +122,14 @@ export class MissionController {
     let replans = 0;
     if (!task.missionPlan) task = await this.prepare(task, signal);
     this.options.onTaskState?.(task);
-    if (!task.missionPlan || task.state === "blocked") return;
+    if (!task.missionPlan || task.state === "blocked" || task.state === "paused" || TERMINAL_STATES.has(task.state)) return;
 
     while (!TERMINAL_STATES.has(task.state)) {
       if (signal.aborted) {
-        if (task.state !== "paused") task = await this.options.engine.pause(taskId, "Mission execution was cancelled before the next step");
+        const latest = await this.requireTask(taskId);
+        task = latest.state === "paused" || TERMINAL_STATES.has(latest.state)
+          ? latest
+          : await this.options.engine.pause(taskId, "Mission execution was cancelled before the next step");
         this.options.onTaskState?.(task);
         return;
       }
@@ -132,7 +139,7 @@ export class MissionController {
         this.options.onTaskState?.(task);
         return;
       }
-      await Promise.all(steps.map((step) => this.executeStep(task, step, signal)));
+      await Promise.all(steps.map((step) => this.executeStep(task, step, signal, steps.length)));
       task = await this.requireTask(taskId);
       this.options.onTaskState?.(task);
       if (task.state === "blocked" && replans < 1 && task.blocker && REPLANNABLE_BLOCKERS.has(task.blocker.kind)) {
@@ -166,7 +173,8 @@ export class MissionController {
     };
     try {
       const result = await this.options.planner.replan(task.spec, context, signal);
-      if (result.usage) await this.options.engine.recordPlanningUsage(task.id, result.usage);
+      if (result.usage) await this.options.engine.recordPlanningUsage(task.id, result.usage, result.estimatedCostUsd);
+      if (signal.aborted || TERMINAL_STATES.has((await this.requireTask(task.id)).state)) return this.requireTask(task.id);
       if (result.kind === "blocked") return task;
       await this.options.engine.replaceMissionPlan(task.id, result.plan, this.options.capabilities);
       return this.options.engine.start(task.id);
@@ -180,32 +188,52 @@ export class MissionController {
       throw new Error(`Cannot plan mission task '${task.id}' while it is ${task.state}`);
     }
     const result = await this.options.planner.plan(task.spec, signal, 1);
-    if (result.usage) await this.options.engine.recordPlanningUsage(task.id, result.usage);
+    if (result.usage) await this.options.engine.recordPlanningUsage(task.id, result.usage, result.estimatedCostUsd);
+    const latest = await this.requireTask(task.id);
+    if (TERMINAL_STATES.has(latest.state) || latest.state === "paused") return latest;
+    if (signal.aborted) return this.options.engine.pause(task.id, "Mission planning was aborted");
     if (result.kind === "blocked") return this.options.engine.block(task.id, result.blocker);
     return this.options.engine.setMissionPlan(task.id, result.plan, this.options.capabilities);
   }
 
-  private async executeStep(task: TaskSnapshot, step: TaskStep, signal: AbortSignal): Promise<TaskSnapshot> {
+  private async executeStep(task: TaskSnapshot, step: TaskStep, signal: AbortSignal, concurrentSteps = 1): Promise<TaskSnapshot> {
+    const deadline = missionDeadline(signal, step.mission?.budget.maxDurationMs);
+    try {
+      return await this.executeStepWithinDeadline(task, step, deadline.signal, concurrentSteps);
+    } finally { deadline.dispose(); }
+  }
+
+  private async executeStepWithinDeadline(task: TaskSnapshot, step: TaskStep, signal: AbortSignal, concurrentSteps: number): Promise<TaskSnapshot> {
+    if (signal.aborted) return this.requireTask(task.id);
     const turnId = randomUUID();
     const { attempt } = await this.options.engine.beginAttempt(task.id, step.id, turnId);
     const current = await this.requireTask(task.id);
     const order = buildWorkOrder(current, step, attempt.id, this.now());
+    for (const key of ["maxTokens", "maxActions", "maxCostUsd"] as const) {
+      const value = order.remainingTaskBudget[key];
+      if (value !== undefined) order.remainingTaskBudget[key] = key === "maxCostUsd" ? value / concurrentSteps : Math.floor(value / concurrentSteps);
+    }
     let execution: MissionWorkerExecution;
     try {
       execution = parseWorkerExecution(await this.options.worker.execute(order, signal));
     } catch (error) {
       const message = errorMessage(error);
       await this.options.engine.finishAttempt(task.id, attempt.id, signal.aborted ? "interrupted" : "failed", message);
+      const latest = await this.requireTask(task.id);
+      if (TERMINAL_STATES.has(latest.state)) return latest;
       return signal.aborted
         ? this.options.engine.pause(task.id, message)
         : this.options.engine.block(task.id, blocker("external", `Worker failed for step '${step.id}': ${message}`, this.now()));
     }
 
     const afterUsage = await this.options.engine.recordUsage(task.id, attempt.id, execution.usage ?? {});
+    if (TERMINAL_STATES.has(afterUsage.state)) {
+      return this.options.engine.finishAttempt(task.id, attempt.id, "interrupted", "Task cancelled");
+    }
     if (signal.aborted) {
       await this.options.engine.finishAttempt(task.id, attempt.id, "interrupted", "Mission worker was aborted");
       const latest = await this.requireTask(task.id);
-      return latest.state === "paused"
+      return latest.state === "paused" || TERMINAL_STATES.has(latest.state)
         ? latest
         : this.options.engine.pause(task.id, "Mission worker was aborted after active work settled");
     }
@@ -227,6 +255,10 @@ export class MissionController {
         await this.options.verifier.verify(order, execution.result, signal),
         step,
       );
+      signal.throwIfAborted();
+      if (TERMINAL_STATES.has((await this.requireTask(task.id)).state)) {
+        return this.options.engine.finishAttempt(task.id, attempt.id, "interrupted", "Task cancelled during verification");
+      }
       const failed = evidence.find((item) => !item.passed);
       if (failed) {
         await this.recordEvidence(task.id, attempt.id, evidence);
@@ -239,6 +271,9 @@ export class MissionController {
     } catch (error) {
       const message = errorMessage(error);
       await this.options.engine.finishAttempt(task.id, attempt.id, "failed", message);
+      const latest = await this.requireTask(task.id);
+      if (TERMINAL_STATES.has(latest.state)) return latest;
+      if (signal.aborted) return latest.state === "paused" ? latest : this.options.engine.pause(task.id, message);
       if (afterUsage.state === "paused") return this.requireTask(task.id);
       return this.options.engine.block(task.id, blocker("verification", `Step '${step.id}' was rejected: ${message}`, this.now()));
     }
@@ -434,7 +469,7 @@ function errorMessage(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
 
-function remainingBudget(task: TaskSnapshot, now: Date): MissionWorkOrder["remainingTaskBudget"] {
+export function remainingBudget(task: TaskSnapshot, now: Date): MissionWorkOrder["remainingTaskBudget"] {
   const budget = task.spec.budget ?? {};
   const actions = task.attempts.reduce((total, attempt) => total + attempt.actionCount, 0);
   const tokens = task.attempts.reduce(

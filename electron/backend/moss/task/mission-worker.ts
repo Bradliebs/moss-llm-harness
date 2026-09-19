@@ -10,6 +10,8 @@ import type { CheckpointRecorder } from "../checkpoint/checkpoint-store";
 import type { ChatProvider } from "../providers/types";
 import type { Tool } from "../tools";
 import type { MissionWorker, MissionWorkerExecution, MissionWorkOrder } from "./mission-controller";
+import type { ModelRate } from "../../../../common/pricing";
+import { MissionBudgetProvider, missionDeadline } from "./mission-budget";
 
 const MAX_ARTIFACT_SUMMARY_CHARS = 500;
 
@@ -18,7 +20,8 @@ export interface RunTurnMissionWorkerOptions {
   model: string;
   tools: readonly Tool[];
   workspaceRoot: string;
-  requestApproval: (callId: string, order: MissionWorkOrder) => Promise<ToolApprovalResponse>;
+  requestApproval: (callId: string, order: MissionWorkOrder, signal: AbortSignal) => Promise<ToolApprovalResponse>;
+  modelRates?: Record<string, ModelRate>;
   onEvent?: (event: MossEvent) => void;
   checkpoint?: CheckpointRecorder;
   loadArtifact?: (taskId: string, artifactId: string) => Promise<string | null>;
@@ -30,7 +33,16 @@ export interface RunTurnMissionWorkerOptions {
 export class RunTurnMissionWorker implements MissionWorker {
   constructor(private readonly options: RunTurnMissionWorkerOptions) {}
 
-  async execute(order: MissionWorkOrder, signal: AbortSignal): Promise<MissionWorkerExecution> {
+  async execute(order: MissionWorkOrder, parentSignal: AbortSignal): Promise<MissionWorkerExecution> {
+    const deadline = missionDeadline(parentSignal, boundedLimit(order.step.mission?.budget.maxDurationMs, order.remainingTaskBudget.maxDurationMs));
+    try {
+      return await this.executeWithinBudget(order, deadline.signal);
+    } finally {
+      deadline.dispose();
+    }
+  }
+
+  private async executeWithinBudget(order: MissionWorkOrder, signal: AbortSignal): Promise<MissionWorkerExecution> {
     const allowed = new Set(order.step.requiredCapabilities);
     const tools = this.options.tools.filter((tool) => allowed.has(tool.name));
     const definitions = tools.map((tool) => ({
@@ -48,6 +60,12 @@ export class RunTurnMissionWorker implements MissionWorker {
       order.remainingTaskBudget.maxTokens,
     );
     const executionGrant = scopedGrant(order, allowed);
+    const provider = new MissionBudgetProvider(this.options.provider, {
+      maxTokens: outputTokenLimit,
+      ...(order.step.mission?.budget.maxCostUsd !== undefined || order.remainingTaskBudget.maxCostUsd !== undefined
+        ? { maxCostUsd: boundedLimit(order.step.mission?.budget.maxCostUsd, order.remainingTaskBudget.maxCostUsd) }
+        : {}),
+    }, this.options.modelRates);
     let actions = 0;
     let inputTokens = 0;
     let outputTokens = 0;
@@ -55,14 +73,14 @@ export class RunTurnMissionWorker implements MissionWorker {
     let completion: CompletionContext | undefined;
 
     await runTurn({
-      provider: this.options.provider,
+      provider,
       model: this.options.model,
       messages: await workOrderMessages(order, this.options.loadArtifact),
       tools: definitions,
       toolRegistry: registry,
       workspaceRoot: this.options.workspaceRoot,
       signal,
-      requestApproval: (callId) => this.options.requestApproval(callId, order),
+      requestApproval: (callId) => this.options.requestApproval(callId, order, signal),
       autoApprove: false,
       executionGrant,
       stepCapabilities: order.step.requiredCapabilities,
@@ -102,7 +120,8 @@ export class RunTurnMissionWorker implements MissionWorker {
 
     const usage = {
       actions,
-      usage: { inputTokens, outputTokens },
+      usage: { inputTokens: Math.max(inputTokens, provider.usage.inputTokens), outputTokens: Math.max(outputTokens, provider.usage.outputTokens) },
+      estimatedCostUsd: provider.estimatedCostUsd,
     };
     if (!terminal || terminal.type !== "turn-complete" || !completion) {
       const summary = terminal?.type === "turn-error"
@@ -187,6 +206,6 @@ function finalAssistantText(messages: readonly AgentMessage[]): string {
 
 function boundedLimit(stepLimit: number | undefined, taskLimit: number | undefined): number {
   const limits = [stepLimit, taskLimit].filter((value): value is number => value !== undefined && value > 0);
-  if (taskLimit === 0) return 0;
+  if (taskLimit === 0 || stepLimit === 0) return 0;
   return limits.length > 0 ? Math.min(...limits) : Number.POSITIVE_INFINITY;
 }

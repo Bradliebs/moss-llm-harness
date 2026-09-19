@@ -15,7 +15,13 @@ import {
   type MatrixExecutorFactory,
   buildHarnessManifest,
 } from "./matrix-runner";
-import { diffHarnessReports, type HarnessRegressionThresholds } from "./report-diff";
+import {
+  assertHarnessManifestCompatible,
+  assertHarnessReportPolicySupport,
+  assertHarnessReportSchema,
+  diffHarnessReports,
+  type HarnessRegressionThresholds,
+} from "./report-diff";
 import {
   inspectHarnessTrial,
   renderTrialInspectionHtml,
@@ -26,19 +32,24 @@ import { RunJournal } from "../learning/run-journal";
 import { createEvalCandidatePackages } from "./candidate-triage";
 import { FileHarnessMatrixProgressStore } from "./matrix-progress-store";
 import { exportPortableDataset, importPortableDataset } from "./portable-dataset";
+import { HarnessDiagnosticArtifactStore } from "./diagnostic-artifact-store";
 
 export interface HarnessEvalConfig {
   cases: EvalCase[];
+  healthCases?: EvalCase[];
+  executionPolicy?: HarnessMatrixRunnerOptions["executionPolicy"];
+  executionCoverage?: HarnessMatrixRunnerOptions["executionCoverage"];
   targets: EvalModelTarget[];
   variants: HarnessVariant[];
   createExecutor: MatrixExecutorFactory;
+  validateExecution?: () => void;
   evaluatorVersion?: string;
   evaluatorArtifacts?: string[];
   corpusPolicy?: EvalCorpusPolicy;
   graderHealthProbes?: EvalGraderHealthProbe[];
   rubricGrader?: EvalRubricGrader;
   rubricCalibration?: HarnessMatrixRunnerOptions["rubricCalibration"];
-  matrix?: Pick<HarnessMatrixRunnerOptions, "maxConcurrency" | "providerConcurrency">;
+  matrix?: Pick<HarnessMatrixRunnerOptions, "maxConcurrency" | "providerConcurrency" | "retryInfrastructureFailures">;
 }
 
 export interface EvalCliIo {
@@ -63,12 +74,16 @@ export async function runEvalCli(args: string[], dependencies: EvalCliDependenci
   if (command === "dry-run") {
     requirePaths(command, paths, 1);
     const config = loadConfig(resolve(paths[0]));
+    config.validateExecution?.();
     const manifest = buildHarnessManifest(
       config.cases,
       config.targets,
       config.variants,
       config.evaluatorVersion,
       config.evaluatorArtifacts,
+      config.executionCoverage,
+      config.executionPolicy,
+      config.healthCases,
     );
     const repetitions = config.cases.reduce((sum, testCase) => sum + (testCase.repetitions ?? 1), 0);
     const cells = repetitions * config.targets.length * config.variants.length;
@@ -76,15 +91,40 @@ export async function runEvalCli(args: string[], dependencies: EvalCliDependenci
     return 0;
   }
 
+  if (command === "preflight") {
+    const preflightArgs = parsePreflightArgs(paths);
+    const config = loadConfig(resolve(preflightArgs.config));
+    config.validateExecution?.();
+    const baseline = loadReport(resolve(preflightArgs.baseline));
+    assertHarnessReportSchema(baseline);
+    const manifest = buildHarnessManifest(
+      config.cases,
+      config.targets,
+      config.variants,
+      config.evaluatorVersion,
+      config.evaluatorArtifacts,
+      config.executionCoverage,
+      config.executionPolicy,
+      config.healthCases,
+    );
+    assertHarnessManifestCompatible(baseline.manifest, manifest);
+    assertBaselineCellsMatchConfig(baseline, config);
+    if (preflightArgs.policy) {
+      assertHarnessReportPolicySupport(baseline, loadThresholds(resolve(preflightArgs.policy)));
+    }
+    io.stdout(JSON.stringify({ valid: true, cells: baseline.cells.length, manifest }, null, 2));
+    return 0;
+  }
+
   if (command === "health") {
     requirePaths(command, paths, 1);
     const config = loadConfig(resolve(paths[0]));
-    const report = await checkEvalCases(config.cases, {
+    const report = await checkEvalCases(config.healthCases ?? config.cases, {
       evaluatorArtifacts: config.evaluatorArtifacts,
       corpusPolicy: config.corpusPolicy,
       graderHealthProbes: config.graderHealthProbes,
     });
-    io.stdout(JSON.stringify(report, null, 2));
+    io.stdout(JSON.stringify({ ...report, healthScope: config.healthCases ? "corpus" : "selected-cases", executionCoverage: config.executionCoverage }, null, 2));
     return report.publicationReady ? 0 : 1;
   }
 
@@ -118,12 +158,18 @@ export async function runEvalCli(args: string[], dependencies: EvalCliDependenci
   if (command === "run") {
     const runArgs = parseRunArgs(paths);
     const config = loadConfig(resolve(runArgs.config));
+    config.validateExecution?.();
+    if (config.executionCoverage) io.stdout(JSON.stringify({ executionCoverage: config.executionCoverage }, null, 2));
     const report = await new HarnessMatrixRunner(config.createExecutor, {
+      executionPolicy: config.executionPolicy,
+      corpusCases: config.healthCases,
+      executionCoverage: config.executionCoverage,
       evaluatorVersion: config.evaluatorVersion,
       evaluatorArtifacts: config.evaluatorArtifacts,
       rubricGrader: config.rubricGrader,
       rubricCalibration: config.rubricCalibration,
       ...config.matrix,
+      ...(runArgs.diagnosticsDir ? { diagnosticsStore: new HarnessDiagnosticArtifactStore(resolve(runArgs.diagnosticsDir)) } : {}),
       ...(runArgs.resume ? { progressStore: new FileHarnessMatrixProgressStore(resolve(runArgs.resume)) } : {}),
     }).run(config.cases, config.targets, config.variants);
     writeJson(resolve(runArgs.report), report);
@@ -147,7 +193,8 @@ export async function runEvalCli(args: string[], dependencies: EvalCliDependenci
     const inspectArgs = parseInspectionArgs(paths, false);
     const report = loadReport(resolve(inspectArgs.report));
     const baseline = inspectArgs.baseline ? loadReport(resolve(inspectArgs.baseline)) : undefined;
-    const inspection = inspectHarnessTrial(report, inspectArgs.selector, baseline);
+    const inspection = inspectHarnessTrial(report, inspectArgs.selector, baseline,
+      inspectArgs.diagnosticsDir ? { store: new HarnessDiagnosticArtifactStore(resolve(inspectArgs.diagnosticsDir)) } : undefined);
     io.stdout(JSON.stringify(inspection, null, 2));
     return 0;
   }
@@ -156,7 +203,8 @@ export async function runEvalCli(args: string[], dependencies: EvalCliDependenci
     const exportArgs = parseInspectionArgs(paths, true);
     const report = loadReport(resolve(exportArgs.report));
     const baseline = exportArgs.baseline ? loadReport(resolve(exportArgs.baseline)) : undefined;
-    const inspection = inspectHarnessTrial(report, exportArgs.selector, baseline);
+    const inspection = inspectHarnessTrial(report, exportArgs.selector, baseline,
+      exportArgs.diagnosticsDir ? { store: new HarnessDiagnosticArtifactStore(resolve(exportArgs.diagnosticsDir)) } : undefined);
     const output = resolve(exportArgs.output!);
     if (exportArgs.format === "html") writeText(output, renderTrialInspectionHtml(inspection));
     else writeJson(output, inspection);
@@ -164,7 +212,7 @@ export async function runEvalCli(args: string[], dependencies: EvalCliDependenci
     return 0;
   }
 
-  io.stderr("Usage: eval <run CONFIG REPORT [--resume PROGRESS] | dry-run CONFIG | health CONFIG | triage JOURNAL_ROOT OUTPUT | dataset-export CONFIG OUTPUT | dataset-import INPUT OUTPUT | diff BASELINE CANDIDATE [OUTPUT] [--policy POLICY] | inspect REPORT [SELECTORS] | export REPORT OUTPUT [SELECTORS] [--format json|html]>");
+  io.stderr("Usage: eval <run CONFIG REPORT [--resume PROGRESS] [--diagnostics-dir DIR] | dry-run CONFIG | preflight CONFIG BASELINE [--policy POLICY] | health CONFIG | triage JOURNAL_ROOT OUTPUT | dataset-export CONFIG OUTPUT | dataset-import INPUT OUTPUT | diff BASELINE CANDIDATE [OUTPUT] [--policy POLICY] | inspect REPORT [SELECTORS] [--diagnostics-dir DIR] | export REPORT OUTPUT [SELECTORS] [--format json|html] [--diagnostics-dir DIR]>");
   return 2;
 }
 
@@ -248,24 +296,31 @@ function validateThresholdFields(value: Record<string, unknown>, path: string, a
     ...(allowResources ? resourceFields : []),
     "minimumRepetitions",
     "minimumPairedCells",
+    "minimumPairedCases",
     "confidenceLevel",
+    "nonInferiorityMargin",
     "minimumDetectableRegression",
-    ...(allowResources ? ["suites"] : []),
+    ...(allowResources ? ["suites", "requireFullCoverage"] : []),
   ]);
   for (const [key, item] of Object.entries(value)) {
     if (!allowed.has(key)) {
       throw new Error(`Invalid harness threshold policy: ${path}`);
     }
     if (key === "suites") continue;
+    if (key === "requireFullCoverage") {
+      if (typeof item !== "boolean") throw new Error(`Invalid harness threshold policy: ${path}`);
+      continue;
+    }
     if (typeof item !== "number" || !Number.isFinite(item)) throw new Error(`Invalid harness threshold policy: ${path}`);
     if (key === "minProcessDelta" && (item < -1 || item > 1)) {
       throw new Error(`Invalid harness threshold policy: ${path}`);
     }
-    if ((key === "minimumRepetitions" || key === "minimumPairedCells") && (!Number.isInteger(item) || item < 1)) {
+    if ((key === "minimumRepetitions" || key === "minimumPairedCells" || key === "minimumPairedCases")
+      && (!Number.isInteger(item) || item < 1)) {
       throw new Error(`Invalid harness threshold policy: ${path}`);
     }
     if (key === "confidenceLevel" && item !== 0.95) throw new Error(`Invalid harness threshold policy: ${path}`);
-    if (key === "minimumDetectableRegression" && (item < 0 || item > 1)) {
+    if ((key === "nonInferiorityMargin" || key === "minimumDetectableRegression") && (item < 0 || item > 1)) {
       throw new Error(`Invalid harness threshold policy: ${path}`);
     }
     if (resourceFields.includes(key) && key !== "minProcessDelta" && item < 0) {
@@ -323,6 +378,7 @@ interface InspectionCliArgs {
   report: string;
   output?: string;
   baseline?: string;
+  diagnosticsDir?: string;
   format: "json" | "html";
   selector: HarnessTrialSelector;
 }
@@ -355,17 +411,56 @@ function parseInspectionArgs(paths: string[], exporting: boolean): InspectionCli
       if (!Number.isSafeInteger(repetition) || repetition < 0) throw new Error("Invalid eval trial repetition");
       result.selector.repetition = repetition;
     } else if (flag === "--baseline") result.baseline = value;
+    else if (flag === "--diagnostics-dir") result.diagnosticsDir = value;
     else if (flag === "--format" && exporting && (value === "json" || value === "html")) result.format = value;
     else throw new Error(`Invalid arguments for eval ${exporting ? "export" : "inspect"}`);
   }
   return result;
 }
 
-function parseRunArgs(args: string[]): { config: string; report: string; resume?: string } {
-  if (args.length !== 2 && args.length !== 4) throw new Error("Invalid arguments for eval run");
-  const [config, report, flag, resume] = args;
-  if (!config?.trim() || !report?.trim() || (args.length === 4 && (flag !== "--resume" || !resume?.trim()))) {
+function parseRunArgs(args: string[]): { config: string; report: string; resume?: string; diagnosticsDir?: string } {
+  const [config, report] = args;
+  if (!config?.trim() || !report?.trim() || config.startsWith("--") || report.startsWith("--")) {
     throw new Error("Invalid arguments for eval run");
   }
-  return { config, report, ...(resume ? { resume } : {}) };
+  const result: { config: string; report: string; resume?: string; diagnosticsDir?: string } = { config, report };
+  const seen = new Set<string>();
+  for (let index = 2; index < args.length; index += 2) {
+    const flag = args[index];
+    const value = args[index + 1];
+    if (!value?.trim() || value.startsWith("--") || seen.has(flag)) throw new Error("Invalid arguments for eval run");
+    seen.add(flag);
+    if (flag === "--resume") result.resume = value;
+    else if (flag === "--diagnostics-dir") result.diagnosticsDir = value;
+    else throw new Error("Invalid arguments for eval run");
+  }
+  return result;
+}
+
+function parsePreflightArgs(paths: string[]): { config: string; baseline: string; policy?: string } {
+  if (paths.length !== 2 && paths.length !== 4) throw new Error("Invalid arguments for eval preflight");
+  const [config, baseline, flag, policy] = paths;
+  if (!config?.trim() || !baseline?.trim() || (paths.length === 4 && (flag !== "--policy" || !policy?.trim()))) {
+    throw new Error("Invalid arguments for eval preflight");
+  }
+  return { config, baseline, ...(policy ? { policy } : {}) };
+}
+
+function assertBaselineCellsMatchConfig(baseline: HarnessMatrixReport, config: HarnessEvalConfig): void {
+  const expected = new Set<string>();
+  for (const target of config.targets) {
+    for (const variant of config.variants) {
+      for (const testCase of config.cases) {
+        for (let repetition = 0; repetition < (testCase.repetitions ?? 1); repetition++) {
+          expected.add(`${target.id}\u0000${variant.id}\u0000${testCase.id}\u0000${repetition}`);
+        }
+      }
+    }
+  }
+  const actual = new Set(baseline.cells.map((cell) =>
+    `${cell.targetId}\u0000${cell.variantId}\u0000${cell.caseId}\u0000${cell.repetition}`));
+  if (actual.size !== baseline.cells.length) throw new Error("Baseline report contains duplicate matrix cells");
+  if (expected.size !== actual.size || [...expected].some((key) => !actual.has(key))) {
+    throw new Error(`Baseline report has ${actual.size} matrix cells; requested config requires ${expected.size}`);
+  }
 }

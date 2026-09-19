@@ -2,7 +2,9 @@
 //
 // Server-Sent-Events line reader over a fetch Response body. Works against the
 // undici (web) ReadableStream that Electron's global fetch returns. Yields the
-// raw payload string following each `data:` field.
+// assembled data payload from each SSE event.
+
+import { createParser } from "eventsource-parser";
 
 /** `body` is the `ReadableStream<Uint8Array>` from a fetch Response. Typed as
  *  `unknown` and narrowed via `getReader` to avoid pulling DOM lib types into
@@ -10,24 +12,45 @@
 export async function* readSSE(body: unknown, signal: AbortSignal): AsyncGenerator<string> {
   const reader = (body as { getReader: () => ReadableStreamReader }).getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
+  const events: string[] = [];
+  let trailingCarriageReturn = false;
+  const parser = createParser({
+    maxBufferSize: 1_048_576,
+    onEvent: (event) => {
+      if (event.data.length > 1_048_576) throw new Error("SSE event exceeds buffer limit");
+      events.push(event.data);
+    },
+    onError: (error) => {
+      if (error.type === "max-buffer-size-exceeded") throw error;
+    },
+  });
+  const cancel = () => { void reader.cancel?.().catch(() => undefined); };
+  signal.addEventListener("abort", cancel, { once: true });
   try {
     while (true) {
       if (signal.aborted) return;
       const { done, value } = await reader.read();
-      if (done) break;
-      if (value) buffer += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buffer.indexOf("\n\n")) !== -1) {
-        const block = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        for (const line of block.split("\n")) {
-          const trimmed = line.trimStart();
-          if (trimmed.startsWith("data:")) yield trimmed.slice(5).trim();
+      if (signal.aborted) return;
+      if (done) {
+        parser.feed(decoder.decode() + (trailingCarriageReturn ? "\n" : ""));
+        for (const event of events.splice(0)) yield event;
+        break;
+      }
+      if (value) {
+        const text = decoder.decode(value, { stream: true });
+        if (text) trailingCarriageReturn = text.endsWith("\r");
+        for (let offset = 0; offset < text.length; offset += 16_384) {
+          parser.feed(text.slice(offset, offset + 16_384));
+          for (const event of events.splice(0)) {
+            if (signal.aborted) return;
+            yield event;
+          }
         }
       }
     }
   } finally {
+    signal.removeEventListener("abort", cancel);
+    await reader.cancel?.().catch(() => undefined);
     try {
       reader.releaseLock();
     } catch {
@@ -38,5 +61,6 @@ export async function* readSSE(body: unknown, signal: AbortSignal): AsyncGenerat
 
 interface ReadableStreamReader {
   read: () => Promise<{ done: boolean; value: Uint8Array | undefined }>;
+  cancel?: () => Promise<void>;
   releaseLock: () => void;
 }

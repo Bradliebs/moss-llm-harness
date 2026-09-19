@@ -84,6 +84,7 @@ export class OpenAiCompatibleProvider implements ChatProvider {
   constructor(
     private readonly baseUrl: string,
     private readonly apiKey?: string,
+    private readonly options: { reasoningEffort?: "none" } = {},
   ) {}
 
   async *streamChat(req: ChatRequest, signal: AbortSignal): AsyncIterable<ProviderStreamEvent> {
@@ -106,6 +107,8 @@ export class OpenAiCompatibleProvider implements ChatProvider {
         messages: toOpenAiMessages(req.messages),
         stream: true,
         stream_options: { include_usage: true },
+        ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
+        ...(this.options.reasoningEffort !== undefined ? { reasoning_effort: this.options.reasoningEffort } : {}),
         ...(tools ? { tools } : {}),
       }),
       signal,
@@ -114,7 +117,10 @@ export class OpenAiCompatibleProvider implements ChatProvider {
       throw new ProviderError(`OpenAI-compatible request failed: HTTP ${res.status} ${await safeText(res)}`, res.status);
     }
 
-    const toolAcc = new Map<number, { id: string; name: string; args: string }>();
+    const toolAcc = new Set<{ id: string; name: string; args: string }>();
+    const toolsById = new Map<string, { id: string; name: string; args: string }>();
+    const toolsByIndex = new Map<number, { id: string; name: string; args: string }>();
+    const ambiguousIndices = new Set<number>();
     let flushed = false;
     const flush = (): ProviderStreamEvent[] => {
       if (flushed) return [];
@@ -148,11 +154,22 @@ export class OpenAiCompatibleProvider implements ChatProvider {
       if (delta?.tool_calls) {
         for (const d of delta.tool_calls) {
           const idx = d.index ?? 0;
-          const cur = toolAcc.get(idx) ?? { id: "", name: "", args: "" };
-          if (d.id) cur.id = d.id;
+          const indexed = toolsByIndex.get(idx);
+          if (!d.id && ambiguousIndices.has(idx)) {
+            throw new ProviderError("Ambiguous tool-call fragment: reused index requires a call ID");
+          }
+          if (d.id && indexed?.id && indexed.id !== d.id) ambiguousIndices.add(idx);
+          const cur = (d.id
+            ? toolsById.get(d.id) ?? (indexed?.id ? undefined : indexed)
+            : indexed) ?? { id: "", name: "", args: "" };
+          if (d.id) {
+            cur.id = d.id;
+            toolsById.set(d.id, cur);
+          }
           if (d.function?.name) cur.name = d.function.name;
           if (d.function?.arguments) cur.args += d.function.arguments;
-          toolAcc.set(idx, cur);
+          toolsByIndex.set(idx, cur);
+          toolAcc.add(cur);
         }
       }
       if (json.usage) {

@@ -15,7 +15,11 @@ export function buildRuntimeContext(now: () => Date = () => new Date()): string 
 
 export function withRuntimeContext(messages: AgentMessage[], now?: () => Date): AgentMessage[] {
   const context = buildRuntimeContext(now);
-  const systemIndex = messages.findIndex((message) => message.role === "system");
+  const existingContextIndex = messages.findIndex((message) =>
+    message.role === "system" && RUNTIME_CONTEXT_PATTERN.test(message.content));
+  const systemIndex = existingContextIndex >= 0
+    ? existingContextIndex
+    : messages.findIndex((message) => message.role === "system");
   if (systemIndex < 0) return [{ role: "system", content: context }, ...messages];
 
   return messages.map((message, index) => {

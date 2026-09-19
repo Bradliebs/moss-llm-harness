@@ -1,0 +1,1 @@
+No workspace changes: durable state is missing, so leave recovered-state.txt absent and protected.txt unchanged.

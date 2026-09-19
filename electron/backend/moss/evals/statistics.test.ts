@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { HarnessMatrixCellResult } from "../../../../common/evals";
-import { summarizeReliability, wilsonInterval } from "./statistics";
+import { pairedNonInferiority, summarizeReliability, wilsonInterval } from "./statistics";
 
 function cell(caseId: string, repetition: number, success: boolean): HarnessMatrixCellResult {
   return {
@@ -88,5 +88,58 @@ describe("evaluation statistics", () => {
     expect(first.lower).toBeGreaterThanOrEqual(0);
     expect(first.upper).toBeLessThanOrEqual(1);
     expect(first.lower).toBeLessThan(first.upper);
+  });
+
+  it("pairs case rates and bootstraps family clusters for non-inferiority", () => {
+    const baseline = [
+      cell("strong", 0, true), cell("strong", 1, true),
+      cell("weak", 0, true), cell("weak", 1, false),
+    ];
+    const candidate = [
+      cell("strong", 0, true), cell("strong", 1, false),
+      cell("weak", 0, true), cell("weak", 1, true),
+    ];
+    const families = new Map([["strong", "alpha"], ["weak", "beta"]]);
+
+    const analysis = pairedNonInferiority(baseline, candidate, families, 0.5);
+
+    expect(analysis).toMatchObject({
+      pairs: 2,
+      baselinePassRate: 0.75,
+      candidatePassRate: 0.75,
+      delta: 0,
+      improved: 1,
+      regressed: 1,
+      confidence: 0.95,
+      margin: 0.5,
+      nonInferior: true,
+      unit: "family-case-rate",
+    });
+    expect(analysis.lower).toBe(-0.5);
+    expect(analysis.upper).toBe(0.5);
+  });
+
+  it("keeps every case in a sampled family cluster intact", () => {
+    const baseline = [
+      cell("alpha-up", 0, false),
+      cell("alpha-down", 0, true),
+      cell("beta-flat", 0, true),
+    ];
+    const candidate = [
+      cell("alpha-up", 0, true),
+      cell("alpha-down", 0, false),
+      cell("beta-flat", 0, true),
+    ];
+    const families = new Map([
+      ["alpha-up", "alpha"],
+      ["alpha-down", "alpha"],
+      ["beta-flat", "beta"],
+    ]);
+
+    const analysis = pairedNonInferiority(baseline, candidate, families);
+
+    expect(analysis.delta).toBe(0);
+    expect(analysis.lower).toBe(0);
+    expect(analysis.upper).toBe(0);
   });
 });

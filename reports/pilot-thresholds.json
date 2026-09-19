@@ -1,9 +1,13 @@
 {
+  "requireFullCoverage": true,
   "maxTokenIncrease": 2000,
   "maxCostIncreaseUsd": 0.02,
   "maxDurationIncreaseMs": 30000,
   "maxActionIncrease": 1,
   "minProcessDelta": -0.05,
   "minimumRepetitions": 1,
-  "minimumPairedCells": 6
+  "minimumPairedCells": 6,
+  "minimumPairedCases": 6,
+  "confidenceLevel": 0.95,
+  "nonInferiorityMargin": 0.05
 }

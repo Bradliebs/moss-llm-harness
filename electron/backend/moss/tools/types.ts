@@ -49,5 +49,6 @@ export interface Tool {
   /** Cooperative execution deadline. Declaring a deadline requires execute()
    *  to observe ctx.signal and settle after cancellation. */
   timeoutMs?: number;
+  dispose?(): Promise<void>;
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }

@@ -1,14 +1,19 @@
 import type {
   HarnessCellDiff,
   HarnessMatrixCellResult,
+  HarnessMatrixManifest,
   HarnessMatrixReport,
   HarnessPairedRateDelta,
   HarnessCriterionDiff,
   HarnessReportDiff,
 } from "../../../../common/evals";
 import type { EvalSuitePurpose } from "../../../../common/evals";
+import { pairedNonInferiority } from "./statistics";
+import { validateExecutionCoverage } from "./execution-selection";
+import { validateInfrastructureRetries } from "./matrix-runner";
 
 export interface HarnessRegressionThresholds {
+  requireFullCoverage?: boolean;
   maxTokenIncrease?: number;
   maxCostIncreaseUsd?: number;
   maxDurationIncreaseMs?: number;
@@ -16,7 +21,10 @@ export interface HarnessRegressionThresholds {
   minProcessDelta?: number;
   minimumRepetitions?: number;
   minimumPairedCells?: number;
+  minimumPairedCases?: number;
   confidenceLevel?: 0.95;
+  nonInferiorityMargin?: number;
+  /** @deprecated Use nonInferiorityMargin. */
   minimumDetectableRegression?: number;
   suites?: Partial<Record<EvalSuitePurpose, HarnessSuiteReleasePolicy>>;
 }
@@ -24,7 +32,10 @@ export interface HarnessRegressionThresholds {
 export interface HarnessSuiteReleasePolicy {
   minimumRepetitions?: number;
   minimumPairedCells?: number;
+  minimumPairedCases?: number;
   confidenceLevel?: 0.95;
+  nonInferiorityMargin?: number;
+  /** @deprecated Use nonInferiorityMargin. */
   minimumDetectableRegression?: number;
 }
 
@@ -34,7 +45,11 @@ export function diffHarnessReports(
   candidate: HarnessMatrixReport,
   thresholds: HarnessRegressionThresholds = {},
 ): HarnessReportDiff {
-  assertCompatible(baseline, candidate);
+  assertHarnessReportSchema(baseline);
+  assertHarnessReportSchema(candidate);
+  assertHarnessManifestCompatible(baseline.manifest, candidate.manifest);
+  assertFullCoverage(baseline, thresholds);
+  assertFullCoverage(candidate, thresholds);
   const candidateCells = new Map(candidate.cells.map((cell) => [cellKey(cell), cell]));
   const cells: HarnessCellDiff[] = [];
   const regressions: string[] = [];
@@ -56,11 +71,20 @@ export function diffHarnessReports(
   }
   assertPolicySampleSupport(baseline, candidate, thresholds);
   const hasSuitePolicy = thresholds.suites !== undefined && Object.keys(thresholds.suites).length > 0;
-  const hasCompletionPolicy = hasSuitePolicy || thresholds.minimumDetectableRegression !== undefined;
+  const hasCompletionPolicy = hasSuitePolicy
+    || thresholds.nonInferiorityMargin !== undefined
+    || thresholds.minimumDetectableRegression !== undefined;
   gateAggregateRegressions(baseline.cells, candidate.cells, thresholds, regressions, !hasCompletionPolicy);
   if (hasSuitePolicy) gateSuiteRegressions(baseline, candidate, thresholds, regressions);
-  else if (thresholds.minimumDetectableRegression !== undefined) {
-    gateCompletionRegression("overall", baseline.cells, candidate.cells, thresholds.minimumDetectableRegression, regressions);
+  else if (hasCompletionPolicy) {
+    gateCompletionRegression(
+      "overall",
+      baseline.cells,
+      candidate.cells,
+      completionMargin(thresholds),
+      baseline.manifest.caseFamilies,
+      regressions,
+    );
   }
   for (const criterion of criteria) {
     if (criterion.delta < 0) regressions.push(`${criterion.criterion}: criterion pass rate regressed by ${criterion.delta}`);
@@ -71,26 +95,53 @@ export function diffHarnessReports(
     candidateGeneratedAt: candidate.generatedAt,
     passed: regressions.length === 0,
     pairedCompletion: pairedCompletionDelta(baseline.cells, candidateCells),
+    pairedNonInferiority: pairedNonInferiority(
+      baseline.cells,
+      candidate.cells,
+      new Map(Object.entries(baseline.manifest.caseFamilies ?? {})),
+      completionMargin(thresholds),
+    ),
     cells,
     criteria,
     regressions,
   };
 }
 
-function assertCompatible(baseline: HarnessMatrixReport, candidate: HarnessMatrixReport): void {
-  if (baseline.schemaVersion !== 1 || candidate.schemaVersion !== 1) {
-    throw new Error("Unsupported harness report schema version");
-  }
+export function assertHarnessReportSchema(report: HarnessMatrixReport): void {
+  if (report.schemaVersion !== 1) throw new Error("Unsupported harness report schema version");
+  if (report.manifest.executionCoverage) validateExecutionCoverage(report.manifest.executionCoverage, report.manifest.caseIds);
+  for (const cell of report.cells) validateInfrastructureRetries(cell);
+}
+
+export function assertHarnessManifestCompatible(
+  baseline: HarnessMatrixManifest,
+  candidate: HarnessMatrixManifest,
+): void {
   const checks: Array<[string, string, string]> = [
-    ["evaluator version", baseline.manifest.evaluatorVersion, candidate.manifest.evaluatorVersion],
-    ["evaluator artifacts", baseline.manifest.evaluatorArtifactHash ?? "", candidate.manifest.evaluatorArtifactHash ?? ""],
-    ["case set", baseline.manifest.caseSetHash, candidate.manifest.caseSetHash],
-    ["model target set", baseline.manifest.targetSetHash, candidate.manifest.targetSetHash],
-    ["harness variant set", baseline.manifest.variantSetHash, candidate.manifest.variantSetHash],
+    ["evaluator version", baseline.evaluatorVersion, candidate.evaluatorVersion],
+    ["evaluator artifacts", baseline.evaluatorArtifactHash ?? "", candidate.evaluatorArtifactHash ?? ""],
+    ["case set", baseline.caseSetHash, candidate.caseSetHash],
+    ["execution coverage", JSON.stringify(baseline.executionCoverage ?? null), JSON.stringify(candidate.executionCoverage ?? null)],
+    ["execution purpose", baseline.executionPolicy?.purpose ?? "", candidate.executionPolicy?.purpose ?? ""],
+    ["split corpus", baseline.splitCorpusHash ?? "", candidate.splitCorpusHash ?? ""],
+    ["scenario plans", baseline.scenarioPlanHash ?? "", candidate.scenarioPlanHash ?? ""],
+    ["model target set", baseline.targetSetHash, candidate.targetSetHash],
+    ["harness variant set", baseline.variantSetHash, candidate.variantSetHash],
+    ["runtime", runtimeCompatibilityKey(baseline), runtimeCompatibilityKey(candidate)],
+    ["sandbox image", baseline.sandboxImageDigest ?? "", candidate.sandboxImageDigest ?? ""],
   ];
   for (const [label, left, right] of checks) {
     if (left !== right) throw new Error(`Cannot compare reports with a different ${label}`);
   }
+}
+
+function runtimeCompatibilityKey(manifest: HarnessMatrixManifest): string {
+  if (!manifest.runtime) return "";
+  return JSON.stringify({
+    nodeVersion: manifest.runtime.nodeVersion,
+    platform: manifest.runtime.platform,
+    architecture: manifest.runtime.architecture,
+  });
 }
 
 function buildCellDiff(baseline: HarnessMatrixCellResult, candidate: HarnessMatrixCellResult): HarnessCellDiff {
@@ -318,6 +369,13 @@ function assertGroupSupport(
   if (minimumPairedCells !== undefined && baselineCells.length < minimumPairedCells) {
     throw new Error(`${label}: ${baselineCells.length} paired cells cannot support policy minimum ${minimumPairedCells}`);
   }
+  const minimumPairedCases = policy.minimumPairedCases;
+  if (minimumPairedCases !== undefined) {
+    const pairedCases = groupComparisonCells(baselineCells).size;
+    if (pairedCases < minimumPairedCases) {
+      throw new Error(`${label}: ${pairedCases} paired cases cannot support policy minimum ${minimumPairedCases}`);
+    }
+  }
   if (candidateCells.length !== baselineCells.length) throw new Error(`${label}: incompatible paired cell count`);
 }
 
@@ -333,10 +391,19 @@ function gateSuiteRegressions(
       .map(([caseId]) => caseId));
     const baselineCells = baseline.cells.filter((cell) => caseIds.has(cell.caseId));
     const candidateCells = candidate.cells.filter((cell) => caseIds.has(cell.caseId));
-    const toleratedRegression = suitePolicy.minimumDetectableRegression
+    const toleratedRegression = suitePolicy.nonInferiorityMargin
+      ?? suitePolicy.minimumDetectableRegression
+      ?? policy.nonInferiorityMargin
       ?? policy.minimumDetectableRegression
       ?? 0;
-    gateCompletionRegression(suite, baselineCells, candidateCells, toleratedRegression, regressions);
+    gateCompletionRegression(
+      suite,
+      baselineCells,
+      candidateCells,
+      toleratedRegression,
+      baseline.manifest.caseFamilies,
+      regressions,
+    );
   }
 }
 
@@ -345,11 +412,38 @@ function gateCompletionRegression(
   baselineCells: readonly HarnessMatrixCellResult[],
   candidateCells: readonly HarnessMatrixCellResult[],
   toleratedRegression: number,
+  caseFamilies: Record<string, string> | undefined,
   regressions: string[],
 ): void {
-  const delta = rate(candidateCells.map((cell) => cell.result.success))
-    - rate(baselineCells.map((cell) => cell.result.success));
-  if (delta < -toleratedRegression) {
-    regressions.push(`${label}: completion rate regressed by ${delta}; policy allows ${toleratedRegression}`);
+  const analysis = pairedNonInferiority(
+    baselineCells,
+    candidateCells,
+    new Map(Object.entries(caseFamilies ?? {})),
+    toleratedRegression,
+  );
+  if (!analysis.nonInferior) {
+    regressions.push(`${label}: completion lower bound ${analysis.lower} is below non-inferiority limit ${-toleratedRegression}`);
   }
+}
+
+function completionMargin(policy: HarnessRegressionThresholds): number {
+  return policy.nonInferiorityMargin ?? policy.minimumDetectableRegression ?? 0;
+}
+
+export function assertHarnessReportPolicySupport(
+  report: HarnessMatrixReport,
+  policy: HarnessRegressionThresholds,
+): void {
+  assertHarnessReportSchema(report);
+  assertFullCoverage(report, policy);
+  assertPolicySampleSupport(report, report, policy);
+}
+
+function assertFullCoverage(report: HarnessMatrixReport, policy: HarnessRegressionThresholds): void {
+  if (!policy.requireFullCoverage) return;
+  const coverage = report.manifest.executionCoverage;
+  if (!coverage || coverage.selection !== "full" || coverage.excluded.length > 0) {
+    throw new Error("Release policy requires full execution coverage with no excluded cases");
+  }
+  validateExecutionCoverage(coverage, report.manifest.caseIds);
 }

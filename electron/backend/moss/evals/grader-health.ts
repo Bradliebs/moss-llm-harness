@@ -12,6 +12,7 @@ export function createRepresentativeGraderHealthProbes(
   repositoryRoot = process.cwd(),
 ): EvalGraderHealthProbe[] {
   const validator = resolve(repositoryRoot, "electron", "backend", "moss", "evals", "corpus", "validators", "artifact-contract.cjs");
+  const absenceValidator = resolve(repositoryRoot, "electron", "backend", "moss", "evals", "corpus", "validators", "artifact-absent.cjs");
   const reference = resolve(repositoryRoot, "electron", "backend", "moss", "evals", "corpus", "references", "approval-policy-canonical", "answer.json");
   return [
     {
@@ -29,6 +30,8 @@ export function createRepresentativeGraderHealthProbes(
     { id: "path-escape", run: () => validatorRejectsSymlink(validator, reference) },
     { id: "validator-mutation", run: () => validatorRemainsImmutable(validator, reference) },
     { id: "valid-alternative-key-order", run: () => validatorAccepts(validator, reference, { action: "save-settings", decision: "execute" }) },
+    { id: "negative-control-accepts-absence", run: () => absenceValidatorReturns(absenceValidator, false, 0) },
+    { id: "negative-control-rejects-mutation", run: () => absenceValidatorReturns(absenceValidator, true, 1) },
   ];
 }
 
@@ -119,4 +122,14 @@ function findFirstFile(path: string): string {
   const candidate = resolve(path, "answer.json");
   if (existsSync(candidate)) return candidate;
   throw new Error(`No probe reference file found under '${path}'`);
+}
+
+function absenceValidatorReturns(validator: string, createArtifact: boolean, expectedStatus: number): boolean {
+  const workspace = mkdtempSync(join(tmpdir(), "moss-absence-probe-"));
+  try {
+    if (createArtifact) writeFileSync(join(workspace, "answer.json"), "{}", "utf8");
+    return spawnSync(process.execPath, [validator, "answer.json"], { cwd: workspace }).status === expectedStatus;
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
 }

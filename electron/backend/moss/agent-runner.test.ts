@@ -186,6 +186,52 @@ describe("runTurn", () => {
     expect(complete.messages).toEqual([{ role: "assistant", content: "Hello world" }]);
   });
 
+  it("retries an empty provider response instead of completing silently", async () => {
+    const requests: ChatRequest[] = [];
+    const provider = scriptedProvider([[], [{ type: "text-delta", text: "Finished" }]], requests);
+
+    const result = await run(provider, []);
+
+    expect(requests).toHaveLength(2);
+    expect(result.events.filter((event) => event.type === "turn-complete")).toHaveLength(1);
+    expect(result.events).toContainEqual(expect.objectContaining({ type: "round-end", round: 0, finish: "rejected" }));
+  });
+
+  it.each([
+    { events: [] },
+    { events: [{ type: "text-delta" as const, text: "  \n" }] },
+  ])("bounds empty-response recovery and reports provider failure", async ({ events }) => {
+    const requests: ChatRequest[] = [];
+    const result = await run(scriptedProvider([events], requests), []);
+
+    expect(requests).toHaveLength(2);
+    expect(result.events.some((event) => event.type === "turn-complete")).toBe(false);
+    expect(result.events).toContainEqual(expect.objectContaining({ type: "turn-error", source: "provider-model" }));
+  });
+
+  it("does not replay completed tools when recovering from an empty response", async () => {
+    const execute = vi.fn(async () => ({ ok: true, content: "saved" }));
+    const provider = scriptedProvider([
+      [call("save", "write_file")],
+      [],
+      [{ type: "text-delta", text: "Finished" }],
+    ]);
+
+    const result = await run(provider, [tool("write_file", execute)]);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(result.events.some((event) => event.type === "turn-complete")).toBe(true);
+  });
+
+  it("does not exceed the round cap to recover an empty response", async () => {
+    const requests: ChatRequest[] = [];
+    const result = await run(scriptedProvider([[]], requests), [], { maxRounds: 0 });
+
+    expect(requests).toHaveLength(1);
+    expect(result.events.some((event) => event.type === "turn-complete")).toBe(false);
+    expect(result.events).toContainEqual(expect.objectContaining({ type: "turn-error", source: "provider-model" }));
+  });
+
   it("continues when a task completion guard rejects a premature stop", async () => {
     const provider = scriptedProvider([
       [{ type: "text-delta", text: "done too early" }],

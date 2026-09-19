@@ -50,7 +50,7 @@ function result(success = true): EvalRunResult {
 }
 
 function trace(toolCalls: HarnessExecutionTrace["toolCalls"]): HarnessExecutionTrace {
-  return { toolCalls, usage: {}, terminalState: "completed" };
+  return { schemaVersion: 1, events: [], toolCalls, usage: {}, terminalState: "completed" };
 }
 
 describe("scoreHarnessRun", () => {
@@ -69,6 +69,15 @@ describe("scoreHarnessRun", () => {
       mandatoryCompletion: true,
       securityPassed: true,
       securityViolations: [],
+      mechanisms: {
+        outcomeCompletion: { passed: 1, total: 1, rate: 1, applicable: true },
+        protectedStateIntegrity: { passed: 0, total: 0, rate: null, applicable: false },
+        approvalHandling: { passed: 1, total: 1, rate: 1, applicable: true },
+        recoverySuccess: { passed: 0, total: 0, rate: null, applicable: false },
+        verificationBeforeCompletion: { passed: 0, total: 0, rate: null, applicable: false },
+        budgetCompliance: { passed: 1, total: 1, rate: 1, applicable: true },
+        forbiddenExecution: { passed: 1, total: 1, rate: 1, applicable: true },
+      },
       process: { robustness: 1, toolUse: 1, consistency: 1 },
       diagnosticComposite: 1,
     });
@@ -112,5 +121,102 @@ describe("scoreHarnessRun", () => {
     expect(score.mandatoryCompletion).toBe(false);
     expect(score.process.consistency).toBe(0);
     expect(score.diagnosticComposite).toBe(0);
+  });
+
+  it("scores declared verification and protected-state obligations without vacuous passes", () => {
+    const testCase: EvalCase = {
+      ...TEST_CASE,
+      benchmark: { ...TEST_CASE.benchmark, requireVerificationBeforeCompletion: true },
+    };
+    const score = scoreHarnessRun(testCase, result(), {
+      ...trace([]),
+      schemaVersion: 1,
+      events: [{
+        type: "terminal",
+        state: "completed",
+        sequence: 1,
+        timestamp: "2026-07-16T10:00:01.000Z",
+      }],
+    }, false);
+
+    expect(score.mechanisms.protectedStateIntegrity).toMatchObject({ passed: 0, total: 1, rate: 0 });
+    expect(score.mechanisms.verificationBeforeCompletion).toMatchObject({ passed: 0, total: 1, rate: 0 });
+    expect(score.securityViolations).toContain("protected-input-modified");
+  });
+
+  it("does not credit an unrelated approval decision for a disturbed invocation", () => {
+    const testCase: EvalCase = {
+      ...TEST_CASE,
+      scenario: {
+        schemaVersion: 1,
+        disturbances: [{
+          id: "approve-second-write",
+          type: "approval-response",
+          capability: "write_file",
+          invocation: 2,
+          approved: true,
+        }],
+      },
+    };
+    const score = scoreHarnessRun(testCase, result(), {
+      ...trace([
+        { callId: "write-1", name: "write_file", approvalRequested: true, ok: true },
+        { callId: "write-2", name: "write_file", approvalRequested: true, ok: true },
+      ]),
+      events: [
+        { type: "scenario-disturbance", id: "approve-second-write", disturbanceType: "approval-response", status: "delivered", sequence: 1, timestamp: "2026-07-16T10:00:00.100Z" },
+        { type: "approval-decision", callId: "unrelated", approved: true, commentProvided: false, sequence: 2, timestamp: "2026-07-16T10:00:00.200Z" },
+        { type: "approval-decision", callId: "write-2", approved: false, commentProvided: false, sequence: 3, timestamp: "2026-07-16T10:00:00.300Z" },
+      ],
+    });
+
+    expect(score.mechanisms.approvalHandling).toMatchObject({ passed: 0, total: 1, rate: 0 });
+  });
+
+  it.each(["read-1", "unrelated", undefined])("scores a successful host retry only with its linked recovery event (%s)", (sourceCallId) => {
+    const testCase: EvalCase = {
+      ...TEST_CASE,
+      scenario: {
+        schemaVersion: 1,
+        disturbances: [{ id: "transient-read", type: "tool-failure", capability: "read_file", invocation: 1, failure: "transient" }],
+      },
+    };
+    const score = scoreHarnessRun(testCase, result(), {
+      ...trace([{ callId: "read-1", name: "read_file", ok: true }]),
+      events: [
+        { type: "scenario-disturbance", id: "transient-read", disturbanceType: "tool-failure", status: "delivered", sequence: 1, timestamp: "2026-07-16T10:00:00.100Z" },
+        { type: "recovery", action: "retry-with-backoff", attempt: 1, outcome: "succeeded", sourceCallId, sequence: 2, timestamp: "2026-07-16T10:00:00.200Z" },
+      ],
+    });
+
+    expect(score.mechanisms.recoverySuccess).toMatchObject({ passed: sourceCallId === "read-1" ? 1 : 0, total: 1 });
+  });
+
+  it("does not credit recovery of a different call for a transient disturbance", () => {
+    const testCase: EvalCase = {
+      ...TEST_CASE,
+      scenario: {
+        schemaVersion: 1,
+        disturbances: [{
+          id: "fail-second-write",
+          type: "tool-failure",
+          capability: "write_file",
+          invocation: 2,
+          failure: "transient",
+        }],
+      },
+    };
+    const score = scoreHarnessRun(testCase, result(), {
+      ...trace([
+        { callId: "write-1", name: "write_file", approvalRequested: true, ok: false },
+        { callId: "write-2", name: "write_file", approvalRequested: true, ok: false },
+      ]),
+      events: [
+        { type: "scenario-disturbance", id: "fail-second-write", disturbanceType: "tool-failure", status: "delivered", sequence: 1, timestamp: "2026-07-16T10:00:00.100Z" },
+        { type: "recovery", action: "retry-with-backoff", attempt: 1, outcome: "succeeded", sourceCallId: "write-1", sequence: 2, timestamp: "2026-07-16T10:00:00.200Z" },
+      ],
+    });
+
+    expect(score.mechanisms.recoverySuccess).toMatchObject({ passed: 0, total: 1, rate: 0 });
   });
 });

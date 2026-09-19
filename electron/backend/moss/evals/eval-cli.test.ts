@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import type { EvalCase, EvalModelTarget, HarnessMatrixReport, HarnessVariant } from "../../../../common/evals";
 import type { HarnessEvalConfig } from "./eval-cli";
 import { runEvalCli, summarizeCaseCoverage } from "./eval-cli";
+import { buildHarnessManifest } from "./matrix-runner";
 import { createOfflinePilotCases } from "./pilot-cases";
 import { RunJournal } from "../learning/run-journal";
 
@@ -39,7 +40,58 @@ const variants: HarnessVariant[] = [
   { schemaVersion: 1, id: "two", description: "Second" },
 ];
 
+function compatibleBaseline(config: HarnessEvalConfig): HarnessMatrixReport {
+  const cells = config.targets.flatMap((modelTarget) => config.variants.flatMap((variant) =>
+    config.cases.flatMap((evalCase) => Array.from({ length: evalCase.repetitions ?? 1 }, (_, repetition) => ({
+      caseId: evalCase.id,
+      targetId: modelTarget.id,
+      variantId: variant.id,
+      repetition,
+    })))));
+  return {
+    schemaVersion: 1,
+    generatedAt: "2026-07-13T10:00:00.000Z",
+    manifest: buildHarnessManifest(config.cases, config.targets, config.variants, undefined, undefined, config.executionCoverage, config.executionPolicy, config.healthCases),
+    cells,
+    summary: {},
+  } as HarnessMatrixReport;
+}
+
 describe("runEvalCli", () => {
+  it("reports exclusions and rejects partial release preflight before execution", async () => {
+    const createExecutor = vi.fn();
+    const config: HarnessEvalConfig = { cases: [testCase], targets: [target], variants, createExecutor,
+      healthCases: [testCase, { ...testCase, id: "command", allowedCapabilities: ["run_command"] }],
+      executionCoverage: { selection: "local", corpusCaseIds: [testCase.id, "command"],
+        excluded: [{ caseId: "command", reason: "requires-container" }] } };
+    const stdout = vi.fn();
+    await runEvalCli(["dry-run", "fixture.cjs"], { loadConfig: () => config, io: { stdout, stderr: vi.fn() } });
+    expect(JSON.parse(stdout.mock.calls[0][0]).manifest.executionCoverage).toEqual(config.executionCoverage);
+    await expect(runEvalCli(["preflight", "fixture.cjs", "baseline.json", "--policy", "reports/pilot-thresholds.json"], {
+      loadConfig: () => config, readReport: () => compatibleBaseline(config), io: { stdout, stderr: vi.fn() },
+    })).rejects.toThrow("full execution coverage");
+    expect(createExecutor).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["dry-run", "fixture.cjs"],
+    ["preflight", "fixture.cjs", "baseline.json"],
+    ["run", "fixture.cjs", "output.json"],
+  ])("checks execution prerequisites for %s without starting any cells", async (...args) => {
+    const createExecutor = vi.fn();
+    const config: HarnessEvalConfig = { cases: [testCase], targets: [target], variants, createExecutor,
+      validateExecution: () => { throw new Error("pinned image missing"); } };
+    await expect(runEvalCli(args, { loadConfig: () => config })).rejects.toThrow("pinned image missing");
+    expect(createExecutor).not.toHaveBeenCalled();
+  });
+
+  it("keeps no-model health independent of execution prerequisites", async () => {
+    const validateExecution = vi.fn(() => { throw new Error("pinned image missing"); });
+    const config: HarnessEvalConfig = { cases: [testCase], targets: [target], variants, createExecutor: vi.fn(), validateExecution };
+    await runEvalCli(["health", "fixture.cjs"], { loadConfig: () => config, io: { stdout: vi.fn(), stderr: vi.fn() } });
+    expect(validateExecution).not.toHaveBeenCalled();
+  });
+
   it("dry-runs a config without invoking its executor", async () => {
     const createExecutor = vi.fn();
     const config: HarnessEvalConfig = { cases: [testCase], targets: [target], variants, createExecutor };
@@ -56,6 +108,53 @@ describe("runEvalCli", () => {
     expect(config.createExecutor).not.toHaveBeenCalled();
     expect(config.createExecutor).not.toHaveBeenCalled();
     expect(stdout).toHaveBeenCalledWith(expect.stringContaining('"metadataComplete": 0'));
+  });
+
+  it("preflights baseline compatibility without invoking the executor", async () => {
+    const createExecutor = vi.fn();
+    const config: HarnessEvalConfig = { cases: [testCase], targets: [target], variants, createExecutor };
+    const baseline = JSON.parse(readFileSync(resolve("reports/pilot-baseline.json"), "utf8")) as HarnessMatrixReport;
+    const stdout = vi.fn();
+
+    await expect(runEvalCli(["preflight", "fixture.cjs", "baseline.json"], {
+      loadConfig: () => config,
+      readReport: () => baseline,
+      io: { stdout, stderr: vi.fn() },
+    })).rejects.toThrow("case set");
+
+    expect(createExecutor).not.toHaveBeenCalled();
+    expect(stdout).not.toHaveBeenCalled();
+  });
+
+  it("accepts a complete compatible baseline without invoking the executor", async () => {
+    const createExecutor = vi.fn();
+    const config: HarnessEvalConfig = { cases: [testCase], targets: [target], variants, createExecutor };
+    const stdout = vi.fn();
+
+    const exitCode = await runEvalCli(["preflight", "fixture.cjs", "baseline.json"], {
+      loadConfig: () => config,
+      readReport: () => compatibleBaseline(config),
+      io: { stdout, stderr: vi.fn() },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(createExecutor).not.toHaveBeenCalled();
+    expect(stdout).toHaveBeenCalledWith(expect.stringContaining('"valid": true'));
+  });
+
+  it("rejects a compatible baseline with incomplete repetition coverage", async () => {
+    const createExecutor = vi.fn();
+    const config: HarnessEvalConfig = { cases: [testCase], targets: [target], variants, createExecutor };
+    const baseline = compatibleBaseline(config);
+    baseline.cells.pop();
+
+    await expect(runEvalCli(["preflight", "fixture.cjs", "baseline.json"], {
+      loadConfig: () => config,
+      readReport: () => baseline,
+      io: { stdout: vi.fn(), stderr: vi.fn() },
+    })).rejects.toThrow("requested config requires 4");
+
+    expect(createExecutor).not.toHaveBeenCalled();
   });
 
   it("summarizes case governance and evaluator coverage", () => {
@@ -232,8 +331,10 @@ describe("runEvalCli", () => {
     writeFileSync(policyPath, JSON.stringify({
       minimumRepetitions: 1,
       minimumPairedCells: 1,
+      minimumPairedCases: 1,
+      nonInferiorityMargin: 0.1,
       suites: {
-        regression: { minimumDetectableRegression: 0.1, minimumPairedCells: 1 },
+        regression: { nonInferiorityMargin: 0.1, minimumPairedCases: 1 },
       },
     }), "utf8");
     const baseline = JSON.parse(readFileSync(resolve("reports/pilot-baseline.json"), "utf8")) as HarnessMatrixReport;
@@ -245,6 +346,24 @@ describe("runEvalCli", () => {
     });
 
     expect(exitCode).toBe(0);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it.each([
+    { minimumPairedCases: 0 },
+    { minimumPairedCases: 1.5 },
+    { nonInferiorityMargin: -0.01 },
+    { nonInferiorityMargin: 1.01 },
+  ])("rejects malformed canonical non-inferiority policy %#", async (policy) => {
+    const root = mkdtempSync(resolve(tmpdir(), "moss-invalid-non-inferiority-policy-"));
+    const policyPath = resolve(root, "policy.json");
+    writeFileSync(policyPath, JSON.stringify(policy), "utf8");
+
+    await expect(runEvalCli(["diff", "baseline.json", "candidate.json", "--policy", policyPath], {
+      readReport: () => JSON.parse(readFileSync(resolve("reports/pilot-baseline.json"), "utf8")) as HarnessMatrixReport,
+      io: { stdout: vi.fn(), stderr: vi.fn() },
+    })).rejects.toThrow("Invalid harness threshold policy");
+
     rmSync(root, { recursive: true, force: true });
   });
 

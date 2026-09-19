@@ -51,6 +51,7 @@ vi.mock("../backend/moss/mcp/mcp-manager", () => ({
 
 import { registerChatIpc } from "./chat-ipc";
 import { taskStore } from "../backend/moss/task/task-store";
+import { taskEngine } from "../backend/moss/task/task-engine";
 
 function scriptedProvider(rounds: ProviderStreamEvent[][]): ChatProvider {
   let round = 0;
@@ -124,6 +125,7 @@ function request(overrides: Partial<ChatStartRequest> = {}): ChatStartRequest {
       { role: "user", content: "hi" },
     ],
     enableTools: false,
+    modelRates: { "test-model": { inputPer1M: 0, outputPer1M: 0 } },
     ...overrides,
   } as ChatStartRequest;
 }
@@ -296,7 +298,7 @@ describe("chat IPC turn (e2e)", () => {
     }
   });
 
-  it("completes a planned mission only after scoped work and deterministic verification", async () => {
+  it("does not certify a mission outcome from generic passing project tests", async () => {
     const taskId = `mission-complete-${crypto.randomUUID()}`;
     const workspaceRoot = mkdtempSync(join(tmpdir(), "moss-mission-ipc-"));
     writeFileSync(join(workspaceRoot, "package.json"), JSON.stringify({
@@ -325,12 +327,12 @@ describe("chat IPC turn (e2e)", () => {
       [{
         type: "tool-call",
         toolCall: { id: "plan-1", name: "submit_mission_plan", arguments: JSON.stringify({ plan }) },
-      }],
+      }, { type: "usage", usage: { inputTokens: 20, outputTokens: 10 } }],
       [{
         type: "tool-call",
         toolCall: { id: "read-1", name: "read_file", arguments: JSON.stringify({ path: "package.json" }) },
-      }],
-      [{ type: "text-delta", text: "Workspace inspection completed." }],
+      }, { type: "usage", usage: { inputTokens: 20, outputTokens: 10 } }],
+      [{ type: "text-delta", text: "Workspace inspection completed." }, { type: "usage", usage: { inputTokens: 20, outputTokens: 10 } }],
     ]);
     const sent: ChatEventPayload[] = [];
 
@@ -350,7 +352,7 @@ describe("chat IPC turn (e2e)", () => {
           authority: "supervised",
           requestedCapabilities: ["read_file"],
           maxAutoApprovedRisk: "readonly",
-          budget: { maxActions: 1 },
+          budget: { maxActions: 2 },
         },
       }));
 
@@ -361,10 +363,9 @@ describe("chat IPC turn (e2e)", () => {
       }, { timeout: 15_000 });
       expect(sent.find((payload) => payload.event.type === "turn-error")?.event).toBeUndefined();
       expect(await taskStore.get(taskId)).toMatchObject({
-        state: "completed",
-        steps: [{ id: "verify", state: "completed" }],
-        artifacts: [{ name: "report", stepId: "verify" }],
-        evidence: [{ criterionId: "tests", passed: true, kind: "command" }],
+        state: "blocked",
+        steps: [{ id: "verify", state: "failed" }],
+        evidence: [{ criterionId: "tests", passed: false, kind: "external" }],
       });
       expect(sent.some((payload) => payload.event.type === "tool-result" && payload.event.name === "read_file")).toBe(true);
     } finally {
@@ -373,7 +374,70 @@ describe("chat IPC turn (e2e)", () => {
     }
   }, 20_000);
 
-  it("interrupts a pending durable approval when the renderer disappears", async () => {
+  it("settles Stop while durable approval persistence is still pending", async () => {
+    const taskId = `approval-race-${crypto.randomUUID()}`;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const original = taskEngine.requestApproval.bind(taskEngine);
+    const persistence = vi.spyOn(taskEngine, "requestApproval").mockImplementation(async (...args) => {
+      await gate;
+      return original(...args);
+    });
+    mockProviderRef.current = scriptedProvider([[{ type: "tool-call", toolCall: { id: "late", name: "write_file", arguments: "{}" } }]]);
+    const sent: ChatEventPayload[] = [];
+    const event = fakeEvent(sent);
+    try {
+      recorded.on.get(IPC.chatStart)!(event, request({ enableTools: true, taskId, taskSpec: {
+        objective: "Stop during persistence", acceptanceCriteria: [{ id: "done", description: "No mutation", mandatory: true }], constraints: [], assumptions: [],
+      } }));
+      await vi.waitFor(() => expect(persistence).toHaveBeenCalledOnce());
+      recorded.on.get(IPC.chatAbort)!(null, "t1");
+      release();
+      await vi.waitFor(() => expect(event.sender.listenerCount("destroyed")).toBe(0));
+      expect(sent.some((payload) => payload.event.type === "turn-aborted")).toBe(true);
+      expect((await taskStore.get(taskId))?.state).toBe("cancelled");
+      expect(sent.some((payload) => payload.event.type === "tool-result" && payload.event.ok)).toBe(false);
+    } finally {
+      release();
+      persistence.mockRestore();
+      recorded.on.get(IPC.chatAbort)!(null, "t1");
+      await taskStore.delete(taskId);
+    }
+  });
+
+  it("task Cancel aborts the active provider before returning cancelled state", async () => {
+    const taskId = `cancel-active-${crypto.randomUUID()}`;
+    let activeSignal: AbortSignal | undefined;
+    mockProviderRef.current = {
+      kind: "fixture", listModels: async () => [],
+      async *streamChat(_request, signal) {
+        activeSignal = signal;
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        signal.throwIfAborted();
+      },
+    };
+    const sent: ChatEventPayload[] = [];
+    const event = fakeEvent(sent);
+    try {
+      recorded.on.get(IPC.chatStart)!(event, request({ taskId, taskSpec: {
+        objective: "Cancel live work", acceptanceCriteria: [{ id: "done", description: "Stopped", mandatory: true }], constraints: [], assumptions: [],
+      } }));
+      await vi.waitFor(() => expect(activeSignal).toBeDefined());
+      await recorded.handle.get(IPC.taskCancel)!(null, taskId);
+      expect(activeSignal?.aborted).toBe(true);
+      await vi.waitFor(() => expect(event.sender.listenerCount("destroyed")).toBe(0));
+      expect((await taskStore.get(taskId))?.state).toBe("cancelled");
+      expect(sent.some((payload) => payload.event.type === "turn-error")).toBe(false);
+    } finally {
+      recorded.on.get(IPC.chatAbort)!(null, "t1");
+      await taskStore.delete(taskId);
+    }
+  });
+
+  it.each(["destroyed", "reload", "crashed"])("interrupts a pending durable approval when the renderer is %s", async (reason) => {
     const taskId = `renderer-loss-${crypto.randomUUID()}`;
     mockProviderRef.current = scriptedProvider([
       [{ type: "tool-call", toolCall: { id: "c1", name: "write_file", arguments: "{}" } }],
@@ -396,7 +460,15 @@ describe("chat IPC turn (e2e)", () => {
         expect((await taskStore.get(taskId))?.approval?.status).toBe("pending");
       });
 
-      lifecycle.destroy();
+      lifecycle.event.sender.emit("did-start-navigation", { isMainFrame: false, isSameDocument: false });
+      lifecycle.event.sender.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
+      await tick();
+      expect((await taskStore.get(taskId))?.approval?.status).toBe("pending");
+
+      if (reason === "destroyed") lifecycle.destroy();
+      else if (reason === "reload") lifecycle.event.sender.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+      else lifecycle.event.sender.emit("render-process-gone", {}, { reason: "crashed" });
+      lifecycle.event.sender.emit("render-process-gone", {}, { reason: "killed" });
 
       await vi.waitFor(async () => {
         expect(await taskStore.get(taskId)).toMatchObject({
@@ -404,6 +476,11 @@ describe("chat IPC turn (e2e)", () => {
           approval: { callId: "c1", status: "interrupted" },
         });
       }, { timeout: 10_000 });
+      await vi.waitFor(() => {
+        for (const name of ["destroyed", "render-process-gone", "did-start-navigation"]) {
+          expect(lifecycle.event.sender.listenerCount(name)).toBe(0);
+        }
+      });
     } finally {
       recorded.on.get(IPC.chatAbort)!(null, "t1");
       await taskStore.delete(taskId);

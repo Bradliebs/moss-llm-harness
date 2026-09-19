@@ -1,0 +1,7 @@
+{
+  "currentTab": "tab-a",
+  "tabs": [
+    { "sessionId": "tab-a", "taskId": "task-1", "url": "https://browser.eval.test/draft", "draft": "original-a", "saved": "original-a", "open": false, "saves": 0 },
+    { "sessionId": "tab-b", "taskId": "task-2", "url": "https://browser.eval.test/draft", "draft": "original-b", "saved": "original-b", "open": false, "saves": 0 }
+  ]
+}

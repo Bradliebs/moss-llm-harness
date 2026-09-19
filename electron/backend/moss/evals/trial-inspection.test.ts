@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { HarnessDiagnosticArtifactStore, HarnessDiagnosticCapture } from "./diagnostic-artifact-store";
 
 import type { HarnessMatrixReport } from "../../../../common/evals";
 import { inspectHarnessTrial, renderTrialInspectionHtml } from "./trial-inspection";
+
+const roots: string[] = [];
+afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 function report(cost = 0.25): HarnessMatrixReport {
   const cell = {
@@ -69,6 +76,43 @@ function report(cost = 0.25): HarnessMatrixReport {
 }
 
 describe("trial inspection", () => {
+  it("loads only explicit diagnostics, escapes content, and preserves correction history without rescoring", () => {
+    const root = mkdtempSync(join(tmpdir(), "moss-inspection-"));
+    roots.push(root);
+    const store = new HarnessDiagnosticArtifactStore(root);
+    const capture = new HarnessDiagnosticCapture();
+    capture.append("tool-result", "</pre><script>alert(1)</script>");
+    const candidate = report();
+    candidate.cells[0].diagnostics = store.write(capture);
+    const correction = store.recordCorrection(candidate.cells[0].diagnostics, {
+      reviewedBy: "fixture reviewer", reason: "Outcome manually verified", success: true, score: 1,
+    });
+    const before = JSON.stringify(candidate);
+    expect(inspectHarnessTrial(candidate).diagnostics).toBeUndefined();
+    const inspection = inspectHarnessTrial(candidate, {}, undefined, { store, corrections: [correction] });
+    expect(inspection.outcome.success).toBe(false);
+    expect(inspection.corrections).toHaveLength(1);
+    expect(inspection.reviewSignals).toEqual(expect.arrayContaining([
+      expect.stringContaining("does not prove grader error"), expect.stringContaining("No provider requests captured"),
+    ]));
+    const html = renderTrialInspectionHtml(inspection);
+    expect(html).toContain("Outcome Checks");
+    expect(html).toContain("Redacted Trajectory");
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+    expect(JSON.stringify(candidate)).toBe(before);
+    const unrelated = store.write(new HarnessDiagnosticCapture());
+    const wrongCorrection = store.recordCorrection(unrelated, { reviewedBy: "reviewer", reason: "Other trial", score: 1 });
+    expect(() => inspectHarnessTrial(candidate, {}, undefined, { store, corrections: [wrongCorrection] })).toThrow("does not belong");
+    writeFileSync(join(root, `${candidate.cells[0].diagnostics.sha256}.json`), "{}");
+    expect(() => inspectHarnessTrial(candidate, {}, undefined, { store })).toThrow("digest mismatch");
+  });
+
+  it("rejects requested diagnostics when the selected trial has no capture", () => {
+    expect(() => inspectHarnessTrial(report(), {}, undefined, { store: new HarnessDiagnosticArtifactStore("unused") }))
+      .toThrow("no diagnostic artifact");
+  });
+
   it("projects timeline, evidence, protected inputs, resources, attribution, and baseline delta", () => {
     const inspection = inspectHarnessTrial(report(0.25), {}, report(0.1));
 

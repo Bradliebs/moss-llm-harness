@@ -1,0 +1,32 @@
+name: Windows sandbox containment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  containment:
+    runs-on: [self-hosted, Windows, X64, moss-eval-sandbox]
+    timeout-minutes: 15
+    env:
+      MOSS_EVAL_SANDBOX_IMAGE: ${{ vars.MOSS_EVAL_SANDBOX_IMAGE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Validate and provision the pinned test image
+        shell: pwsh
+        run: |
+          if ($env:MOSS_EVAL_SANDBOX_IMAGE -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._/:\-]*@sha256:[a-f0-9]{64}$') {
+            throw "Set MOSS_EVAL_SANDBOX_IMAGE to a pinned Linux Node.js image"
+          }
+          docker pull "$env:MOSS_EVAL_SANDBOX_IMAGE"
+          if ($LASTEXITCODE -ne 0) { throw "Sandbox image pull failed" }
+      - run: npm run test:sandbox

@@ -6,7 +6,6 @@ on:
       baseline:
         description: Repository-relative compatible baseline report
         required: true
-        default: reports/pilot-baseline.json
       repetitions:
         description: Repetitions per representative case
         required: true
@@ -17,19 +16,26 @@ permissions:
 
 jobs:
   release-eval:
-    runs-on: windows-latest
+    runs-on: [self-hosted, Windows, X64, moss-eval-sandbox]
     timeout-minutes: 180
     env:
       MOSS_EVAL_BASE_URL: ${{ vars.MOSS_EVAL_BASE_URL }}
       MOSS_EVAL_MODEL: ${{ vars.MOSS_EVAL_MODEL }}
+      MOSS_EVAL_SANDBOX_IMAGE: ${{ vars.MOSS_EVAL_SANDBOX_IMAGE }}
       MOSS_EVAL_API_KEY: ${{ secrets.MOSS_EVAL_API_KEY }}
       MOSS_EVAL_REPETITIONS: ${{ inputs.repetitions }}
       MOSS_EVAL_CORPUS: representative
+      MOSS_EVAL_EXECUTION: full
+      MOSS_EVAL_PURPOSE: release
+      MOSS_EVAL_MEASUREMENT: release-${{ github.run_id }}-${{ github.run_attempt }}
       MOSS_EVAL_EXPERIMENT: phase5-runtime
       MOSS_EVAL_CONCURRENCY: "2"
       MOSS_EVAL_PROVIDER_CONCURRENCY: "2"
+      MOSS_EVAL_BASELINE: ${{ inputs.baseline }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -37,11 +43,24 @@ jobs:
       - run: npm ci
       - name: Validate corpus before model execution
         run: npm run eval:health
+      - name: Validate baseline before model execution
+        shell: pwsh
+        run: npm run eval -- preflight scripts/eval-pilots.cjs "$env:MOSS_EVAL_BASELINE" --policy reports/pilot-thresholds.json
+      - name: Provision the pinned sandbox image
+        shell: pwsh
+        run: |
+          if ($env:MOSS_EVAL_SANDBOX_IMAGE -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._/:\-]*@sha256:[a-f0-9]{64}$') {
+            throw "Set MOSS_EVAL_SANDBOX_IMAGE to a pinned Linux Node.js image"
+          }
+          docker pull "$env:MOSS_EVAL_SANDBOX_IMAGE"
+          if ($LASTEXITCODE -ne 0) { throw "Sandbox image pull failed" }
+      - name: Validate Windows containment before provider spend
+        run: npm run test:sandbox
       - name: Run resumable release matrix
         run: npm run eval -- run scripts/eval-pilots.cjs reports/release-candidate.json --resume reports/release-candidate.progress.json
       - name: Compare compatible reports
         shell: pwsh
-        run: npm run eval -- diff "${{ inputs.baseline }}" reports/release-candidate.json reports/release-diff.json --policy reports/pilot-thresholds.json
+        run: npm run eval -- diff "$env:MOSS_EVAL_BASELINE" reports/release-candidate.json reports/release-diff.json --policy reports/pilot-thresholds.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

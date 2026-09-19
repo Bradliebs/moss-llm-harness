@@ -2,6 +2,7 @@ import { basename } from "node:path";
 
 import type { Tool, ToolContext, ToolResult } from "../tools/types";
 import { resolveInWorkspace } from "../tools/path-guard";
+import { managedTools } from "../tools/managed-tools";
 
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_INPUT_CHARS = 10_000;
@@ -109,6 +110,7 @@ async function asResult(action: () => Promise<string>): Promise<ToolResult> {
 
 export class DesktopSessionManager {
   private readonly sessions = new Map<string, DesktopDriver>();
+  private closed = false;
   private readonly allowedProcesses: Set<string>;
   private readonly allowedWindows: Set<string>;
   private readonly platform: NodeJS.Platform;
@@ -135,7 +137,13 @@ export class DesktopSessionManager {
     }
     const key = sessionKey(taskId, sessionId);
     if (this.sessions.has(key)) throw new Error("Desktop session is already active");
-    this.sessions.set(key, await this.options.driverFactory({ taskId, sessionId, processName, windowTitle }));
+    if (this.closed) throw new Error("Desktop sessions are closed");
+    const driver = await this.options.driverFactory({ taskId, sessionId, processName, windowTitle });
+    if (this.closed) {
+      await driver.close();
+      throw new Error("Desktop startup cancelled");
+    }
+    this.sessions.set(key, driver);
   }
 
   get(taskId: string, sessionId: string): DesktopDriver {
@@ -153,16 +161,17 @@ export class DesktopSessionManager {
   }
 
   async closeAll(): Promise<void> {
+    this.closed = true;
     const drivers = [...this.sessions.values()];
     this.sessions.clear();
-    await Promise.allSettled(drivers.map((driver) => driver.close()));
+    await Promise.all(drivers.map((driver) => driver.close()));
   }
 }
 
 export function createDesktopTools(options: DesktopToolsOptions): Tool[] {
   const manager = new DesktopSessionManager(options);
 
-  return [
+  return managedTools([
     {
       name: "desktop_open_session",
       description: "Open a Windows UI Automation session for one explicitly allow-listed process and exact window title. Returns an unsupported-capability failure on non-Windows platforms.",
@@ -293,5 +302,5 @@ export function createDesktopTools(options: DesktopToolsOptions): Tool[] {
         return "Desktop session closed";
       }),
     },
-  ];
+  ], () => manager.closeAll());
 }

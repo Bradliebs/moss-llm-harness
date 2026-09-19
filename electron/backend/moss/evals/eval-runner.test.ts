@@ -132,6 +132,46 @@ describe("EvalRunner", () => {
     expect(() => validateCase({ ...CASES[0], checks: [] })).toThrow("has no independent check");
   });
 
+  it("validates bounded scenario plans before execution", () => {
+    expect(() => validateCase({
+      ...CASES[0],
+      scenario: {
+        schemaVersion: 1,
+        disturbances: [{
+          id: "deny-write",
+          type: "approval-response",
+          capability: "edit_file",
+          invocation: 1,
+          approved: false,
+          comment: "Keep the protected fixture unchanged",
+        }],
+      },
+    })).not.toThrow();
+    expect(() => validateCase({
+      ...CASES[0],
+      scenario: {
+        schemaVersion: 1,
+        disturbances: [{
+          id: "bad-target",
+          type: "tool-failure",
+          capability: "send_email",
+          invocation: 1,
+          failure: "permanent",
+        }],
+      },
+    })).toThrow("targets disallowed capability");
+    expect(() => validateCase({
+      ...CASES[0],
+      scenario: {
+        schemaVersion: 1,
+        disturbances: [
+          { id: "first", type: "provider-interruption", invocation: 1, phase: "before-output" },
+          { id: "second", type: "provider-interruption", invocation: 1, phase: "after-output" },
+        ],
+      },
+    })).toThrow("duplicate scenario target");
+  });
+
   it("keeps benchmark controls optional and rejects contradictory policies", () => {
     expect(() => validateCase(CASES[0])).not.toThrow();
     expect(() => validateCase({

@@ -23,6 +23,7 @@ import type {
   SkillImportResult,
   SkillUpdateRequest,
   SkillRenameRequest,
+  TaskArtifactContent,
   TaskHistoryEntry,
   TaskSnapshot,
   TaskSpec,
@@ -56,6 +57,7 @@ declare global {
         list: () => Promise<TaskSnapshot[]>;
         get: (id: string) => Promise<TaskSnapshot | null>;
         history: (id: string) => Promise<TaskHistoryEntry[]>;
+        artifact: (taskId: string, artifactId: string) => Promise<TaskArtifactContent | null>;
         start: (id: string) => Promise<TaskSnapshot>;
         pause: (id: string, summary: string) => Promise<TaskSnapshot>;
         resume: (id: string) => Promise<TaskSnapshot>;

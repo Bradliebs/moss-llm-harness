@@ -5,9 +5,14 @@
 // adding a channel to the contract (or the renderer) but forgetting to wire its
 // main-process handler. electron is mocked with a recording ipcMain.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { IPC } from "../../common/ipc-contract";
+import type { TaskSnapshot, TaskArtifactContent } from "../../common/types";
+import { taskArtifactStore } from "../backend/moss/task/task-artifact-store";
+import { taskStore } from "../backend/moss/task/task-store";
+
+afterEach(() => vi.restoreAllMocks());
 
 const recorded = vi.hoisted(() => ({
   on: new Map<string, (...args: unknown[]) => unknown>(),
@@ -85,6 +90,26 @@ describe("resolveMissionSpec", () => {
 });
 
 describe("registerChatIpc", () => {
+  it("only returns artifacts registered to the task with matching integrity metadata", async () => {
+    registerChatIpc();
+    const record: TaskArtifactContent = {
+      id: "artifact-1", taskId: "task-1", planRevision: 1, stepId: "report", attemptId: "attempt-1",
+      name: "report.md", summary: "Report", sha256: "a".repeat(64), byteLength: 4, createdAt: "2026-09-19", content: "text",
+    };
+    vi.spyOn(taskStore, "get").mockResolvedValue({ artifacts: [record] } as TaskSnapshot);
+    const read = vi.spyOn(taskArtifactStore, "get").mockResolvedValue(record);
+    const handler = recorded.handle.get(IPC.taskArtifactGet)!;
+    expect(await handler(null, "task-1", "artifact-1")).toEqual(record);
+    expect(await handler(null, "task-2", "artifact-1")).toBeNull();
+    expect(await handler(null, "task-1", "../other")).toBeNull();
+    expect(read).toHaveBeenCalledTimes(1);
+    read.mockResolvedValueOnce({ ...record, sha256: "b".repeat(64) });
+    expect(await handler(null, "task-1", "artifact-1")).toBeNull();
+    read.mockResolvedValueOnce(null);
+    expect(await handler(null, "task-1", "artifact-1")).toBeNull();
+    await expect(handler(null, {}, "artifact-1")).rejects.toThrow("Invalid artifact request");
+  });
+
   it("reports live eligible mission capabilities with host-owned risk labels", async () => {
     recorded.on.clear();
     recorded.handle.clear();

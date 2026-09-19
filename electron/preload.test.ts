@@ -75,6 +75,9 @@ describe("preload bridge", () => {
     api.task.history("task-1");
     expect(invoke).toHaveBeenCalledWith(IPC.taskHistory, "task-1");
 
+    api.task.artifact("task-1", "artifact-1");
+    expect(invoke).toHaveBeenCalledWith(IPC.taskArtifactGet, "task-1", "artifact-1");
+
     const missionRequest = { objective: "Do work", policy: { authority: "policy-scoped" } };
     api.mission.authorize(missionRequest);
     expect(invoke).toHaveBeenCalledWith(IPC.missionAuthorize, missionRequest);

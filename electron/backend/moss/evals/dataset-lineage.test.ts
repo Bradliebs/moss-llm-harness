@@ -20,6 +20,28 @@ function governedCase(id = "case-one"): EvalCase {
 }
 
 describe("dataset lineage", () => {
+  it("detects duplicate objectives even when neither case declares a family", () => {
+    const left = governedCase("unlabeled-left");
+    const right = governedCase("unlabeled-right");
+    delete left.family;
+    delete right.family;
+    expect(findDuplicateWarnings([left, right])).toHaveLength(1);
+  });
+
+  it("normalizes Unicode objectives without treating unrelated non-ASCII text as empty", () => {
+    const left = governedCase("unicode-left");
+    const right = governedCase("unicode-right");
+    left.task.objective = "\u00e9crire le r\u00e9sum\u00e9";
+    right.task.objective = "e\u0301crire le re\u0301sume\u0301";
+    expect(findDuplicateWarnings([left, right])).toHaveLength(1);
+    left.task.objective = "\u6587\u4ef6";
+    right.task.objective = "\u7f51\u9875";
+    expect(findDuplicateWarnings([left, right])).toEqual([]);
+    left.task.objective = "...";
+    right.task.objective = "!!!";
+    expect(findDuplicateWarnings([left, right])).toEqual([]);
+  });
+
   it("creates immutable revisions linked to their parent and source run", () => {
     const first = governedCase();
     const changed = structuredClone(first);

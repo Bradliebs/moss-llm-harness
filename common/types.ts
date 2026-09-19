@@ -175,6 +175,10 @@ export interface TaskArtifactReference {
   createdAt: string;
 }
 
+export interface TaskArtifactContent extends TaskArtifactReference {
+  content: string;
+}
+
 export type TaskBlockerKind =
   | "approval"
   | "verification"

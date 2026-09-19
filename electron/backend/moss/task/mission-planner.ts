@@ -1,6 +1,8 @@
 import type { TaskArtifactReference, TaskBlocker, TaskBudget, TaskEvidence, TaskMissionPlan, TaskSpec, TaskStep, TokenUsage, ToolDefinition } from "../../../../common/types";
 import type { ChatProvider } from "../providers/types";
 import { validateMissionPlan, type MissionCapability } from "./mission-plan";
+import type { ModelRate } from "../../../../common/pricing";
+import { MissionBudgetError, MissionBudgetProvider, missionDeadline } from "./mission-budget";
 
 const SUBMIT_TOOL = "submit_mission_plan";
 const MAX_ARGUMENT_BYTES = 128 * 1024;
@@ -40,8 +42,8 @@ const SUBMIT_DEFINITION: ToolDefinition = {
 };
 
 export type MissionPlanningResult =
-  | { kind: "planned"; plan: TaskMissionPlan; attempts: 1 | 2; usage?: TokenUsage }
-  | { kind: "blocked"; blocker: TaskBlocker; attempts: 1 | 2; usage?: TokenUsage };
+  | { kind: "planned"; plan: TaskMissionPlan; attempts: 1 | 2; usage?: TokenUsage; estimatedCostUsd?: number }
+  | { kind: "blocked"; blocker: TaskBlocker; attempts: 1 | 2; usage?: TokenUsage; estimatedCostUsd?: number };
 
 export interface MissionPlanGenerator {
   plan(spec: TaskSpec, signal: AbortSignal, revision?: number): Promise<MissionPlanningResult>;
@@ -63,6 +65,7 @@ export interface MissionPlannerOptions {
   model: string;
   capabilities: readonly MissionCapability[];
   maxTokens?: number;
+  modelRates?: Record<string, ModelRate>;
   now?: () => Date;
 }
 
@@ -108,12 +111,29 @@ export class MissionPlanner implements MissionPlanGenerator {
   }
 
   private async generate(spec: TaskSpec, signal: AbortSignal, context: Record<string, unknown>): Promise<MissionPlanningResult> {
+    const budget = context.remainingBudget as TaskBudget | undefined ?? spec.budget ?? {};
+    const provider = new MissionBudgetProvider(this.options.provider, budget, this.options.modelRates);
+    const deadline = missionDeadline(signal, budget.maxDurationMs);
+    try {
+      const result = await this.generateWithinBudget(spec, deadline.signal, context, provider);
+      deadline.signal.throwIfAborted();
+      return { ...result, usage: { ...provider.usage }, estimatedCostUsd: provider.estimatedCostUsd };
+    } catch (error) {
+      if (!(error instanceof MissionBudgetError) && !deadline.signal.aborted) throw error;
+      return {
+        kind: "blocked", attempts: 1, usage: { ...provider.usage }, estimatedCostUsd: provider.estimatedCostUsd,
+        blocker: { kind: "budget", summary: error instanceof Error ? error.message : String(error), createdAt: this.now().toISOString(), resumable: true },
+      };
+    } finally { deadline.dispose(); }
+  }
+
+  private async generateWithinBudget(spec: TaskSpec, signal: AbortSignal, context: Record<string, unknown>, provider: ChatProvider): Promise<MissionPlanningResult> {
     const taskContext = JSON.stringify(context);
     let repair: { error: string; arguments: string } | undefined;
     const usage: TokenUsage = {};
 
     for (let attempt = 1 as 1 | 2; attempt <= 2; attempt = 2) {
-      const invocation = await this.invoke(taskContext, signal, repair);
+      const invocation = await this.invoke(taskContext, signal, provider, repair);
       const calls = invocation.calls;
       usage.inputTokens = (usage.inputTokens ?? 0) + (invocation.usage.inputTokens ?? 0);
       usage.outputTokens = (usage.outputTokens ?? 0) + (invocation.usage.outputTokens ?? 0);
@@ -137,6 +157,7 @@ export class MissionPlanner implements MissionPlanGenerator {
   private async invoke(
     taskContext: string,
     signal: AbortSignal,
+    provider: ChatProvider,
     repair?: { error: string; arguments: string },
   ): Promise<{ calls: Array<{ name: string; arguments: string }>; usage: TokenUsage }> {
     const calls: Array<{ name: string; arguments: string }> = [];
@@ -144,7 +165,7 @@ export class MissionPlanner implements MissionPlanGenerator {
     const repairText = repair
       ? `\nPrevious submission rejected: ${repair.error}\nPrevious arguments: ${repair.arguments}\nRepair only the rejected structure.`
       : "";
-    for await (const event of this.options.provider.streamChat({
+    for await (const event of provider.streamChat({
       model: this.options.model,
       maxTokens: this.options.maxTokens ?? 3_000,
       messages: [

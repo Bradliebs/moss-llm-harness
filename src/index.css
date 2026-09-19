@@ -206,6 +206,58 @@ body {
   accent-color: var(--response-accent);
 }
 
+.result-table {
+  min-width: 0;
+  max-width: 100%;
+  margin: 1rem 0;
+  border-block: 1px solid var(--response-line);
+}
+
+.result-table-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+}
+
+.result-table-filter {
+  display: flex;
+  flex: 1 1 9rem;
+  min-width: 0;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--response-line);
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  color: var(--response-muted);
+}
+
+.result-table-filter input {
+  width: 100%;
+  min-width: 0;
+  background: transparent;
+  color: var(--response-ink);
+  font-size: 0.8rem;
+}
+
+.result-table-count {
+  color: var(--response-muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-table-toolbar button:disabled { opacity: 0.4; cursor: default; }
+.result-table-scroll { max-height: 28rem; overflow: auto; }
+.rich-response .result-table table { display: table; margin: 0; }
+.result-table th { position: sticky; top: 0; z-index: 1; }
+.result-table-sort { display: flex; align-items: center; gap: 0.4rem; width: 100%; text-align: left; }
+.result-table-sort svg { flex-shrink: 0; }
+.rich-response .result-table-selection { min-width: 2.5rem; width: 2.5rem; }
+.rich-response .result-table-selection input { margin: 0; }
+.result-table tr[data-selected] { background: var(--response-soft); }
+.result-table-empty { padding: 0.75rem; color: var(--response-muted); font-size: 0.8rem; }
+
 .rich-response .contains-task-list {
   padding-left: 0;
   list-style: none;

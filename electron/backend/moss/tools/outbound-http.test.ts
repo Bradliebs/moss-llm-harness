@@ -1,9 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import * as https from "node:https";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { fetchPublicUrl, type OutboundHttpDependencies } from "./outbound-http";
 
+vi.mock("node:https", () => ({ request: vi.fn() }));
+
 const signal = new AbortController().signal;
 const publicAddress = { address: "93.184.216.34", family: 4 as const };
+
+afterEach(() => vi.restoreAllMocks());
 
 function dependencies(overrides: OutboundHttpDependencies = {}): OutboundHttpDependencies {
   return {
@@ -14,6 +19,20 @@ function dependencies(overrides: OutboundHttpDependencies = {}): OutboundHttpDep
 }
 
 describe("fetchPublicUrl", () => {
+  it.each([true, false])("returns the pinned lookup shape for all=%s", async (all) => {
+    const callback = vi.fn();
+    vi.mocked(https.request).mockImplementation((_url, options) => {
+      if (typeof options !== "object" || !options.lookup) throw new Error("Missing pinned lookup");
+      options.lookup("example.com", { all }, callback);
+      throw new Error("transport intercepted");
+    });
+    await expect(fetchPublicUrl("https://example.com", signal, {
+      resolve: async () => [publicAddress],
+    })).rejects.toThrow("transport intercepted");
+    if (all) expect(callback).toHaveBeenCalledWith(null, [publicAddress]);
+    else expect(callback).toHaveBeenCalledWith(null, publicAddress.address, publicAddress.family);
+  });
+
   it.each(["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "fc00::1"])(
     "rejects non-public destination %s before requesting it",
     async (address) => {

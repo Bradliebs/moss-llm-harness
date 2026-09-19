@@ -1,3 +1,10 @@
+export interface JsonArtifactRequirement {
+  sourcePath: string;
+  valuePath: string[];
+  outputPath: string;
+  onReadFailure?: "require-absent";
+}
+
 export interface VerificationCriterion {
   id: string;
   description: string;

@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [master]
 
 permissions:
   contents: read
@@ -21,6 +21,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:deterministic
+      - name: Scripted-provider behavior and sandbox routing
+        run: npm test -- --run electron/backend/moss/evals/representative-corpus.e2e.test.ts electron/backend/moss/evals/sandbox-tools.test.ts
       - run: npm run build
       - name: Validate representative corpus and graders
         shell: pwsh

@@ -1,11 +1,30 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RichResponse } from "./RichResponse";
 
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
 describe("RichResponse", () => {
+  it("activates Markdown table controls only after streaming and preserves safe cell rendering", () => {
+    const openExternal = vi.fn();
+    Object.assign(window, { moss: { shell: { openExternal } } });
+    const content = "| File | Count |\n| --- | --- |\n| **Beta** | 10 |\n| [Alpha](https://example.com) | 2 |";
+    const { rerender } = render(<RichResponse content={content} streaming onCopy={vi.fn()} />);
+    expect(screen.getByRole("table")).toBeTruthy();
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    rerender(<RichResponse content={content} onCopy={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sort by Count" }));
+    expect(screen.getAllByRole("row")[1].textContent).toContain("Alpha");
+    fireEvent.click(screen.getByRole("link", { name: "Alpha" }));
+    expect(openExternal).toHaveBeenCalledWith("https://example.com");
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "Beta" } });
+    expect(screen.queryByText("Alpha")).toBeNull();
+    expect(screen.getByText("Beta").tagName).toBe("STRONG");
+  });
+
   it("renders nested GFM and copies fenced code", () => {
     const onCopy = vi.fn();
     render(

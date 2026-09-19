@@ -77,7 +77,7 @@ describe("HarnessTraceCollector", () => {
     });
 
     expect(collector.snapshot().toolCalls[1].recoveredFromCallId).toBeUndefined();
-    expect(collector.snapshot().toolCalls[2].recoveredFromCallId).toBe("failed");
+    expect(collector.snapshot().toolCalls[2].recoveredFromCallId).toBe("call-1");
   });
 
   it("totals usage and records the terminal event", () => {
@@ -98,7 +98,7 @@ describe("HarnessTraceCollector", () => {
     collector.onEvent({ type: "round-start", round: 0, toolsEnabled: true });
     collector.onEvent({
       type: "tool-call",
-      callId: "call-secret",
+      callId: "call-1",
       name: "write_file",
       arguments: JSON.stringify({ token: "raw-secret" }),
     });
@@ -140,7 +140,7 @@ describe("HarnessTraceCollector", () => {
     expect(trace.events[0].timestamp).toBe("2026-01-01T00:00:00.000Z");
     expect(trace.events[1]).toMatchObject({
       type: "tool-call",
-      callId: "call-secret",
+      callId: "call-1",
       argumentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     const serialized = JSON.stringify(trace);
@@ -148,5 +148,6 @@ describe("HarnessTraceCollector", () => {
     expect(serialized).not.toContain("approval-secret");
     expect(serialized).not.toContain("model-output-secret");
     expect(serialized).not.toContain("assistant-secret");
+    expect(serialized).not.toContain("call-secret");
   });
 });
