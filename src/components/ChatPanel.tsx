@@ -1,10 +1,11 @@
 // src/components/ChatPanel.tsx
 
 import { useEffect, useRef, useState } from "react";
-import { Check, Copy, FileText, Menu, RefreshCw, X } from "lucide-react";
+import { Check, Copy, FileText, Menu, PanelRightOpen, RefreshCw, X } from "lucide-react";
 
 import type { AgentMessage, ChatEventPayload, ConfidenceMode, DocumentAttachment, MissionCapabilityDescriptor, MissionLaunchPolicy, Skill, TaskBudget, TaskHistoryEntry, TaskSnapshot, TaskSpec, TokenUsage } from "@common/types";
 import { PERSONALITY_PRESETS } from "@common/personalities";
+import { parseClarification } from "@common/clarification";
 
 import { useDictation } from "../lib/dictation";
 import { extractPdfText, imageAttachmentError, isLikelyVisionModel, isPdfFile, MAX_PDF_BYTES, textAttachmentError, textLanguageForFile } from "../lib/attachments";
@@ -31,8 +32,15 @@ import {
 import { modelsStore, toEmbedConfig, toProviderConfig, updateSettings, useSettings } from "../lib/settings";
 import { type ToolStatus, toolStatusColor } from "../lib/toolStatus";
 import { MossFace } from "./MossFace";
+import { ArtifactWorkspace } from "./ArtifactWorkspace";
+import { ClarificationForm } from "./ClarificationForm";
 import { RichResponse } from "./RichResponse";
 import { WelcomeScreen } from "./WelcomeScreen";
+
+const loadStoredArtifact = (taskId: string, artifactId: string) => window.moss.task.artifact(taskId, artifactId);
+async function copyArtifact(content: string): Promise<void> {
+  if (!await window.moss.clipboard.write(content)) throw new Error("Copy failed");
+}
 
 /** Short chip labels and colors for the opt-in shadow confidence indicator. */
 const CONFIDENCE_LABEL: Record<ConfidenceMode, string> = {
@@ -67,6 +75,7 @@ interface MessageView {
   images?: string[];
   documents?: DocumentAttachment[];
   interrupted?: boolean;
+  hasToolCalls?: boolean;
   usage?: TokenUsage;
   turnUsage?: TokenUsage;
   historyIndex?: number;
@@ -397,6 +406,7 @@ function messagesToItems(messages: AgentMessage[]): ViewItem[] {
           role: "assistant",
           content: m.content,
           interrupted: m.interrupted,
+          hasToolCalls: !!m.toolCalls?.length,
           usage: m.usage,
           sourceUserIndex,
           handoff: m.handoff,
@@ -455,6 +465,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const [status, setStatus] = useState("");
   const [task, setTask] = useState<TaskSnapshot | null>(null);
   const [taskHistory, setTaskHistory] = useState<TaskHistoryEntry[]>([]);
+  const [artifactSelection, setArtifactSelection] = useState<{ sessionId: string; taskId: string; id: string } | null>(null);
   const [composerMode, setComposerMode] = useState<"chat" | "mission">("chat");
   const [missionAuthority, setMissionAuthority] = useState<MissionLaunchPolicy["authority"]>("supervised");
   const [missionCapabilities, setMissionCapabilities] = useState<MissionCapabilityDescriptor[]>([]);
@@ -1095,9 +1106,16 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const currentExclusiveStep = task?.steps.find(
     (step) => step.state === "running" && step.mission?.executionLane === "exclusive",
   );
+  const selectedArtifact = artifactSelection?.sessionId === current?.id && artifactSelection?.taskId === task?.id
+    ? task?.artifacts?.find((artifact) => artifact.id === artifactSelection?.id)
+    : undefined;
+  function openArtifact(id: string): void {
+    if (current && task) setArtifactSelection({ sessionId: current.id, taskId: task.id, id });
+  }
 
   return (
-    <div className="flex h-screen min-w-0 flex-1 flex-col bg-transparent text-neutral-900 dark:text-neutral-100">
+    <div className="relative flex h-screen min-w-0 flex-1 bg-transparent text-neutral-900 dark:text-neutral-100">
+    <div className={`${selectedArtifact ? "hidden lg:flex" : "flex"} min-h-0 min-w-0 flex-1 flex-col`}>
       <header className="flex flex-wrap items-center gap-2 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-950/60 px-4 py-2 text-sm backdrop-blur-sm">
         <button
           type="button"
@@ -1309,13 +1327,17 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         <button className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600" onClick={onOpenSettings}>
           Settings
         </button>
+        {task?.artifacts?.length ? <button type="button" className="response-icon-button" title={`Open artifacts (${task.artifacts.length})`} aria-label="Open artifacts" aria-expanded={!!selectedArtifact} onClick={() => selectedArtifact ? setArtifactSelection(null) : openArtifact(task.artifacts![0].id)}><PanelRightOpen size={18} /></button> : null}
       </header>
 
       <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6">
         {showWelcome ? (
           <WelcomeScreen onPick={(text) => send(text)} needsSetup={!settings.model} onOpenSettings={onOpenSettings} />
         ) : (
-          items.map((it, i) =>
+          items.map((it, i) => {
+          const clarification = it.kind === "message" && it.role === "assistant" && !it.interrupted && !it.hasToolCalls && !(busy && i === items.length - 1)
+            ? parseClarification(it.content) : null;
+          return (
           it.kind === "message" && it.handoff && it.role === "user" ? (
             <details
               key={i}
@@ -1345,7 +1367,17 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                 <MossFace className="absolute left-0 top-0 h-8 w-8" label="Moss response" />
               ) : null}
               {it.role === "assistant" ? (
-                <RichResponse
+                clarification ? <ClarificationForm
+                  key={`${current?.id}:${i}:${it.content}`}
+                  request={clarification}
+                  disabled={busy || i !== items.length - 1 || !settings.model}
+                  onSubmit={(answer) => {
+                    if (busy || turnIdRef.current || !current || current.id !== currentSessionIdRef.current || i !== items.length - 1 || !settings.model) return false;
+                    runTurn(current.id, getSessionMessages(current.id), { role: "user", content: answer });
+                    return true;
+                  }}
+                /> : <RichResponse
+                  key={`${current?.id}:${i}`}
                   content={it.content}
                   streaming={busy && i === items.length - 1}
                   onCopy={(text) => copyToClipboard(text)}
@@ -1420,8 +1452,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
               ) : null}
               {it.role === "assistant" && it.turnId ? <TurnRevert turnId={it.turnId} /> : null}
             </div>
-          ) : <ToolCard key={i} tool={it} onApprove={approve} />,
-        ))}
+          ) : <ToolCard key={i} tool={it} onApprove={approve} />
+          );
+        }))}
       </div>
 
       {task ? (
@@ -1518,7 +1551,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                 <ul className="mt-2 space-y-1" aria-label="Mission artifacts">
                   {task.artifacts.map((artifact) => (
                     <li key={artifact.id} className="flex gap-2 text-neutral-600 dark:text-neutral-300">
-                      <span className="shrink-0 font-mono">{artifact.name}</span>
+                      <button type="button" className="min-w-0 break-words text-left font-mono underline decoration-neutral-400 underline-offset-2 hover:text-emerald-600" title={`Open ${artifact.name}`} onClick={() => openArtifact(artifact.id)}>{artifact.name}</button>
                       <span className="min-w-0 truncate text-neutral-400">{artifact.summary}</span>
                     </li>
                   ))}
@@ -1874,6 +1907,12 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           )}
         </div>
       </footer>
+    </div>
+    {selectedArtifact && task ? (
+      <div className="absolute inset-0 z-20 min-w-0 lg:static lg:z-auto lg:w-[40%] lg:max-w-[40rem] lg:shrink-0">
+        <ArtifactWorkspace key={`${current?.id}:${task.id}`} artifacts={task.artifacts ?? []} selectedId={selectedArtifact.id} onSelect={openArtifact} onClose={() => setArtifactSelection(null)} loadArtifact={loadStoredArtifact} onCopy={copyArtifact} />
+      </div>
+    ) : null}
     </div>
   );
 }

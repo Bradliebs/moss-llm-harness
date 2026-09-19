@@ -5,6 +5,7 @@
 // memory changes take effect immediately.
 
 import { getPersonalityPrompt } from "../../../common/personalities";
+import { CLARIFICATION_INSTRUCTIONS } from "../../../common/clarification";
 import type { AgentMessage } from "../../../common/types";
 import { memoryStore } from "./memory/memory-store";
 import { buildRuntimeContext } from "./runtime-context";
@@ -41,6 +42,7 @@ const CUSTOM_INSTRUCTIONS_MAX_CHARS = 2000;
 export function buildSystemMessage(opts: {
   includeSkills: boolean;
   includeMemory?: boolean;
+  includeClarification?: boolean;
   query?: string;
   customInstructions?: string;
   personalityId?: string;
@@ -48,6 +50,7 @@ export function buildSystemMessage(opts: {
   now?: () => Date;
 }): AgentMessage {
   const sections: string[] = [BASE_INSTRUCTIONS, SAFETY_INSTRUCTIONS];
+  if (opts.includeClarification) sections.push(CLARIFICATION_INSTRUCTIONS);
 
   const custom = opts.customInstructions?.trim().slice(0, CUSTOM_INSTRUCTIONS_MAX_CHARS);
   if (custom) sections.push(`Additional user instructions:\n${custom}`);

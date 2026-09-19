@@ -183,6 +183,15 @@ export function registerChatIpc(): void {
   ipcMain.handle(IPC.taskList, () => taskStore.list());
   ipcMain.handle(IPC.taskGet, (_event, id: string) => taskStore.get(id));
   ipcMain.handle(IPC.taskHistory, (_event, id: string) => taskStore.history(id));
+  ipcMain.handle(IPC.taskArtifactGet, async (_event, taskId: string, artifactId: string) => {
+    if (typeof taskId !== "string" || typeof artifactId !== "string") throw new Error("Invalid artifact request");
+    const task = await taskStore.get(taskId);
+    const reference = task?.artifacts?.find((artifact) => artifact.id === artifactId && artifact.taskId === taskId);
+    if (!reference) return null;
+    const record = await taskArtifactStore.get(taskId, artifactId);
+    if (!record || record.sha256 !== reference.sha256 || record.byteLength !== reference.byteLength || record.byteLength > 256 * 1024) return null;
+    return { ...reference, content: record.content };
+  });
   ipcMain.handle(IPC.taskStart, (_event, id: string) => taskEngine.start(id));
   ipcMain.handle(IPC.taskPause, (_event, id: string, summary: string) => taskEngine.pause(id, summary));
   ipcMain.handle(IPC.taskResume, (_event, id: string) => taskEngine.start(id));
@@ -387,7 +396,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
     const messages = hasSystem
       ? req.messages
-      : [buildSystemMessage({ includeSkills: enableTools, query: lastUser?.content ?? "", customInstructions: req.customInstructions, personalityId: req.personalityId, adaptiveTone: req.adaptiveTone }), ...req.messages];
+      : [buildSystemMessage({ includeSkills: enableTools, includeClarification: !req.taskSpec && !req.taskId, query: lastUser?.content ?? "", customInstructions: req.customInstructions, personalityId: req.personalityId, adaptiveTone: req.adaptiveTone }), ...req.messages];
     // Snapshot file pre-images only when a workspace is selected, so a turn's
     // edits can be reverted. Prune old manifests opportunistically at turn start.
     const workspaceRoot = req.workspaceRoot ?? "";

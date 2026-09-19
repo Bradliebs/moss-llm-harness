@@ -117,6 +117,64 @@ range or search the stored text without exposing its host path. Artifacts are
 kept outside the selected workspace and are pruned after seven days or when the
 store exceeds 200 records.
 
+### Clarification questions
+
+In ordinary chat, Moss can ask up to four questions in a compact form when it
+needs preferences or missing details. Choose an option, use **Other** for a
+custom answer, or fill in a text field, then select **Send answers**. The answers
+become one normal user message; they do not approve tools or launch a mission.
+An existing composer draft and its attachments stay separate.
+
+Only the latest completed questionnaire is actionable. Older forms are disabled;
+interrupted, incomplete, or malformed responses stay as text. Model support for
+the format varies. Unsubmitted form entries reset when you reload or switch
+conversations. Do not enter credentials or secrets into clarification fields.
+
+After building, run `node scripts/smoke-clarification.mjs` to check streaming,
+submission, reload, Stop, and responsive layout with a local scripted provider
+and disposable profile. This checks the interface, not live model reliability.
+
+### Artifact workspace
+
+When a mission has saved artifacts, use **Open artifacts** in the chat header
+or select an artifact under **Mission details**. The workspace opens beside
+the conversation on wide windows and fills the chat area on narrow windows.
+Choose an artifact, switch between **Preview** and **Source**, or copy its text.
+Close the pane with its close button or Escape.
+
+This view reads stored mission snapshots, not arbitrary workspace files or the
+separate oversized-tool-output store. Markdown reports render without active
+HTML, external images, or navigable links; other file types display as text.
+The host checks task membership and content integrity before returning content.
+Previewing an artifact does not verify its claims or execute tools.
+
+After building, run `node scripts/smoke-artifacts.mjs` for a disposable-profile
+Electron check covering previews, copy, reload, integrity rejection, and desktop
+and narrow-window screenshots. It makes no model calls.
+
+### Interactive result tables
+
+Completed chat responses and Markdown artifact previews provide sorting,
+filtering, row selection, and CSV export for rectangular tables with up to
+1,000 rows and 30 columns. Streaming responses and larger tables retain their
+plain rendering. Click a column heading to cycle through ascending, descending,
+and original order. Filtering searches all cells; selection stays with each row.
+
+CSV export includes visible rows in their current order. When rows are selected,
+only selected visible rows are exported. Hidden selections remain selected but
+are not exported. Formula-like values, including negative numbers, receive a
+leading apostrophe so they are treated as literal text by spreadsheet importers
+that honor this convention. Export does not preserve Markdown formatting.
+
+Reset clears the filter, sort, and selection. These controls are temporary and
+reset on reload or when switching conversations or artifacts; they never change
+the saved response or verify the underlying data. Existing link and HTML
+restrictions still apply.
+
+After building, run `node scripts/smoke-tables.mjs` to check sorting, filtering,
+selection, an actual CSV download, and desktop and narrow-window layouts in a
+disposable Electron profile without model calls.
+
 ## Provider configuration
 
 | Provider | Kind | Default base URL | API key |

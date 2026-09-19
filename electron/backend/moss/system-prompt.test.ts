@@ -39,6 +39,14 @@ afterEach(() => {
 });
 
 describe("buildSystemMessage", () => {
+  it("only advertises clarification forms when the desktop host opts in", () => {
+    expect(buildSystemMessage({ includeSkills: false }).content).not.toContain("moss-clarification");
+    const content = buildSystemMessage({ includeSkills: false, includeClarification: true }).content;
+    expect(content).toContain("moss-clarification");
+    expect(content).toContain("not permission grants");
+    expect(content).toContain("Never request passwords");
+  });
+
   it("returns a system-role message with the base instructions", () => {
     const msg = buildSystemMessage({ includeSkills: false });
     expect(msg.role).toBe("system");

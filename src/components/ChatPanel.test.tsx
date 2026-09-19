@@ -13,7 +13,7 @@ import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ChatEventPayload, MossEvent, TaskSnapshot, TaskState } from "@common/types";
+import type { AgentMessage, ChatEventPayload, MossEvent, TaskSnapshot, TaskState } from "@common/types";
 
 import { ChatPanel } from "./ChatPanel";
 
@@ -35,7 +35,7 @@ const mockSetSessionTaskId = vi.fn();
 // Holds the session ChatPanel renders; tests override `value.messages` to drive
 // messagesToItems (e.g. multi-round turns) and beforeEach resets it to empty.
 const mockSession = vi.hoisted(() => ({
-  value: { id: "s1", title: "New chat", messages: [], createdAt: 0, updatedAt: 0, ...({} as { taskId?: string }) },
+  value: { id: "s1", title: "New chat", messages: [] as AgentMessage[], createdAt: 0, updatedAt: 0, ...({} as { taskId?: string }) },
 }));
 
 // Drives the header tool-activity badge and audit popover; reset in beforeEach.
@@ -192,6 +192,7 @@ beforeEach(() => {
       tool: { approve: vi.fn() },
       task: {
         get: vi.fn(async () => null),
+        artifact: vi.fn(async () => null),
         resume: vi.fn(async () => taskSnapshot("executing")),
         cancel: vi.fn(async () => taskSnapshot("cancelled")),
         history: vi.fn(async () => []),
@@ -215,6 +216,74 @@ afterEach(() => {
 });
 
 describe("ChatPanel", () => {
+  const questionBlock = '```moss-clarification\n{"version":1,"title":"Output details","questions":[{"id":"format","prompt":"Which format?","options":["Markdown","Text"]}]}\n```';
+
+  it("sends clarification answers as a normal turn without consuming the composer draft or launching a mission", async () => {
+    mockSession.value.messages = [{ role: "assistant", content: questionBlock }];
+    render(<Harness />);
+    fireEvent.change(screen.getByPlaceholderText("Message…"), { target: { value: "Keep this draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Mission" }));
+    await waitFor(() => expect(mockMissionCapabilities).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText("Which format?"), { target: { value: "choice-0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send answers" }));
+    const sent = vi.mocked(window.moss.chat.send).mock.calls[0][0];
+    expect(sent.messages.at(-1)).toEqual({ role: "user", content: "Answers to Output details:\n\nWhich format?\nMarkdown" });
+    expect(sent.taskSpec).toBeUndefined();
+    expect(sent.mission).toBeUndefined();
+    expect(window.moss.tool.approve).not.toHaveBeenCalled();
+    expect(mockMissionAuthorize).not.toHaveBeenCalled();
+    expect((screen.getByPlaceholderText("Message…") as HTMLTextAreaElement).value).toBe("Keep this draft");
+  });
+
+  it("does not activate questionnaires during streaming, interruption or tool calls", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "text-delta", text: questionBlock });
+    expect(screen.queryByRole("form", { name: "Clarification questions" })).toBeNull();
+    cleanup();
+    mockSession.value.messages = [{ role: "assistant", content: questionBlock, interrupted: true }];
+    render(<Harness />);
+    expect(screen.queryByRole("form", { name: "Clarification questions" })).toBeNull();
+    cleanup();
+    mockSession.value.messages = [{ role: "assistant", content: questionBlock, toolCalls: [{ id: "call-1", name: "read_file", arguments: "{}" }] }];
+    render(<Harness />);
+    expect(screen.queryByRole("form", { name: "Clarification questions" })).toBeNull();
+  });
+
+  it("keeps historical forms disabled and isolates answers across conversations", () => {
+    mockSession.value.messages = [{ role: "assistant", content: questionBlock }];
+    const { rerender } = render(<Harness />);
+    fireEvent.change(screen.getByLabelText("Which format?"), { target: { value: "choice-0" } });
+    mockSession.value = { ...mockSession.value, id: "s2" };
+    rerender(<Harness />);
+    expect((screen.getByLabelText("Which format?") as HTMLSelectElement).value).toBe("");
+    mockSession.value.messages.push({ role: "user", content: "Already answered" });
+    rerender(<Harness />);
+    fireEvent.submit(screen.getByRole("form", { name: "Clarification questions" }));
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
+  });
+
+  it("opens restored artifacts without starting tools and hides them on a conversation switch", async () => {
+    mockSession.value.taskId = "task-1";
+    const snapshot = taskSnapshot("completed");
+    const artifact = { id: "artifact-1", taskId: "task-1", planRevision: 1, stepId: "report", attemptId: "attempt-1", name: "report.md", summary: "Results", sha256: "a".repeat(64), byteLength: 10, createdAt: snapshot.createdAt };
+    snapshot.artifacts = [artifact];
+    vi.mocked(window.moss.task.get).mockResolvedValue(snapshot);
+    vi.mocked(window.moss.task.artifact).mockResolvedValue({ ...artifact, content: "# Stored report" });
+    const { rerender } = render(<Harness />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open artifacts" }));
+    await screen.findByRole("heading", { name: "Stored report" });
+    expect(window.moss.task.artifact).toHaveBeenCalledWith("task-1", "artifact-1");
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByLabelText("Artifact workspace"), { key: "Escape" });
+    expect(screen.queryByLabelText("Artifact workspace")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open artifacts" }));
+    await screen.findByRole("heading", { name: "Stored report" });
+    mockSession.value = { ...mockSession.value, id: "s2", taskId: undefined };
+    rerender(<Harness />);
+    expect(screen.queryByLabelText("Artifact workspace")).toBeNull();
+  });
+
   it("opens the compact conversation navigator from the header", () => {
     render(<Harness />);
     fireEvent.click(screen.getByLabelText("Open conversations"));

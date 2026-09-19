@@ -5,6 +5,7 @@ import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { createBundledHighlighter, createSingletonShorthands } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+import { ResultTable } from "./ResultTable";
 
 const { codeToHtml } = createSingletonShorthands(createBundledHighlighter({
   engine: () => createJavaScriptRegexEngine(),
@@ -136,8 +137,9 @@ function CodeBlock({ children, onCopy }: { children: ReactNode; onCopy: (text: s
   );
 }
 
-function markdownComponents(onCopy: (text: string) => void): Components {
+function markdownComponents(onCopy: (text: string) => void, streaming: boolean): Components {
   return {
+    ...(streaming ? {} : { table: ResultTable }),
     a: ({ href, children }) => {
       const safeHref = safeExternalUrl(href);
       return (
@@ -201,7 +203,7 @@ export function RichResponse({ content, streaming = false, onCopy }: RichRespons
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}
-        components={markdownComponents(onCopy)}
+        components={markdownComponents(onCopy, streaming)}
       >
         {content}
       </ReactMarkdown>
