@@ -44,7 +44,7 @@ substantially in tool use, instruction following, and context capacity.
 * Connects to local or remote MCP servers over standard I/O or HTTP
 * Stores durable memories and reusable skills between conversations
 * Indexes a codebase through a configurable embeddings endpoint
-* Supports image and text attachments, dictation, and optional email delivery
+* Supports image, Word (.docx), PDF, and text attachments, dictation, and optional email delivery
 * Streams safe GitHub-flavored Markdown with highlighted, copyable code
 * Tracks token usage, context consumption, estimated cost, and tool history
 * Persists multiple independent conversations with search and management controls
@@ -381,6 +381,22 @@ The response surface supports headings, nested lists, task lists, tables,
 blockquotes, inline code, highlighted code blocks, copy controls, regeneration,
 checkpoint reversion, token details, and a streaming indicator. User messages
 remain compact bubbles while assistant responses use a wider document layout.
+
+### Chat attachments
+
+Use Attach, drop files onto the composer, or paste files from the clipboard.
+Images are limited to 10 MB each and require a model that supports the image
+format. Common image extensions are recognized even when MIME metadata is missing.
+Markdown (`.md`, including `.MD`) and other text files are limited to 256 KB each.
+
+Word `.docx` and PDF files are limited to 10 MB each. Moss extracts their text
+locally and attaches it as a document, with a 256 KB extracted-text limit.
+Word formatting and embedded images are not included; scanned PDFs require OCR
+outside Moss. Empty, unreadable, or oversized documents produce an error.
+Legacy `.doc` files must be saved as `.docx` before attaching.
+
+Run `node scripts/smoke-attachments.mjs` after building to check Word, Markdown,
+and image attachment handling in a disposable Electron profile.
 
 ## Development commands
 

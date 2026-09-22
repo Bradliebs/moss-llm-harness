@@ -8,7 +8,7 @@ import { PERSONALITY_PRESETS } from "@common/personalities";
 import { parseClarification } from "@common/clarification";
 
 import { useDictation } from "../lib/dictation";
-import { extractPdfText, imageAttachmentError, isLikelyVisionModel, isPdfFile, MAX_PDF_BYTES, textAttachmentError, textLanguageForFile } from "../lib/attachments";
+import { DOCX_MEDIA_TYPE, extractDocxText, extractPdfText, imageAttachmentError, imageMediaType, isDocxFile, isLikelyVisionModel, isPdfFile, MAX_DOCX_BYTES, MAX_PDF_BYTES, textAttachmentError, textLanguageForFile } from "../lib/attachments";
 import { markdownToHtml } from "../lib/markdown";
 import { estimateCost, formatUsd } from "../lib/pricing";
 import {
@@ -1003,10 +1003,11 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   function addFiles(fileList: FileList | null): void {
     if (!fileList) return;
     for (const file of Array.from(fileList)) {
-      const isImage = file.type.startsWith("image/");
+      const imageType = imageMediaType(file);
       const isPdf = isPdfFile(file);
+      const isDocx = isDocxFile(file);
       const lang = textLanguageForFile(file);
-      if (isImage) {
+      if (imageType) {
         const error = imageAttachmentError(file);
         if (error) {
           setStatus(error);
@@ -1021,22 +1022,23 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         };
         reader.onerror = () => setStatus(`${file.name}: could not read file`);
         reader.onloadend = () => setPendingAttachmentReads((count) => Math.max(0, count - 1));
-        reader.readAsDataURL(file);
-      } else if (isPdf) {
-        if (file.size > MAX_PDF_BYTES) {
-          setStatus(`${file.name}: PDF is larger than 10 MB`);
+        reader.readAsDataURL(file.slice(0, file.size, imageType));
+      } else if (isPdf || isDocx) {
+        const format = isPdf ? "PDF" : "Word document";
+        if (file.size > (isPdf ? MAX_PDF_BYTES : MAX_DOCX_BYTES)) {
+          setStatus(`${file.name}: ${format} is larger than 10 MB`);
           continue;
         }
         setPendingAttachmentReads((count) => count + 1);
         file.arrayBuffer()
-          .then(extractPdfText)
+          .then(isPdf ? extractPdfText : extractDocxText)
           .then((text) => {
-            if (!text) throw new Error("no readable text found");
+            if (!text.trim()) throw new Error("no readable text found");
             const error = textAttachmentError({ name: file.name, size: new TextEncoder().encode(text).byteLength });
             if (error) throw new Error("extracted text is larger than 256 KB");
             setDocuments((prev) => [
               ...prev,
-              { name: file.name, mediaType: "application/pdf", text },
+              { name: file.name, mediaType: isPdf ? "application/pdf" : DOCX_MEDIA_TYPE, text },
             ]);
           })
           .catch((error: unknown) => {
@@ -1044,6 +1046,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             setStatus(`${file.name}: ${reason}`);
           })
           .finally(() => setPendingAttachmentReads((count) => Math.max(0, count - 1)));
+      } else if (file.name.toLowerCase().endsWith(".doc") || file.type === "application/msword") {
+        setStatus(`${file.name}: legacy .doc files are not supported; save as .docx and attach again`);
       } else if (lang !== null) {
         const error = textAttachmentError(file);
         if (error) {
@@ -1847,7 +1851,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             ref={fileInputRef}
             type="file"
             aria-label="Attach files"
-            accept="image/*,.pdf,.txt,.md,.json,.csv,.tsv,.log,.xml,.yml,.yaml,.toml,.ini,.html,.css,.ts,.tsx,.js,.jsx,.py,.sh,.sql,.rs,.go,.java,.c,.cpp,.rb"
+            accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.avif,.docx,.pdf,.txt,.md,.json,.csv,.tsv,.log,.xml,.yml,.yaml,.toml,.ini,.html,.css,.ts,.tsx,.js,.jsx,.py,.sh,.sql,.rs,.go,.java,.c,.cpp,.rb"
             multiple
             className="hidden"
             onChange={(e) => {
@@ -1858,7 +1862,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           <button
             className="rounded-xl bg-neutral-300 dark:bg-neutral-700 px-3 py-2 transition hover:bg-neutral-400 dark:hover:bg-neutral-600"
             onClick={() => fileInputRef.current?.click()}
-            title="Attach an image, PDF, or text file"
+            title="Attach an image, Word (.docx), PDF, or text file"
           >
             Attach{attachments.length + documents.length > 0 ? ` (${attachments.length + documents.length})` : ""}
           </button>

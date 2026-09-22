@@ -2,8 +2,7 @@
 //
 // Pure helpers for chat attachments: validating picked files before they become
 // data-URL image attachments, and a heuristic for whether the selected model is
-// likely to accept images. Kept dependency-free and DOM-free so they unit-test
-// in the node environment.
+// likely to accept images. Document parsers are loaded only when needed.
 
 /** Maximum size for an inline image attachment. base64 data URLs inflate the
  *  payload by ~33% and providers reject oversized requests, so cap before
@@ -17,13 +16,32 @@ export const MAX_TEXT_BYTES = 256 * 1024;
 
 /** Maximum PDF size accepted for local text extraction. */
 export const MAX_PDF_BYTES = 10 * 1024 * 1024;
+export const MAX_DOCX_BYTES = 10 * 1024 * 1024;
+export const DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+export function imageMediaType(file: { type: string; name: string }): string | null {
+  if (file.type.startsWith("image/")) return file.type;
+  if (file.type && file.type !== "application/octet-stream") return null;
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  const mediaTypes: Readonly<Record<string, string>> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+    bmp: "image/bmp",
+    svg: "image/svg+xml",
+    avif: "image/avif",
+  };
+  return Object.hasOwn(mediaTypes, extension) ? mediaTypes[extension] : null;
+}
 
 /** Validate a picked file destined to become an image attachment. Returns a
  *  short error string to show the user, or null when the file is acceptable.
  *  Drag-drop and paste bypass the file picker's accept filter, so this guards
  *  against non-image and oversized files reaching the providers. */
 export function imageAttachmentError(file: { type: string; size: number; name: string }): string | null {
-  if (!file.type.startsWith("image/")) return `${file.name}: not an image`;
+  if (!imageMediaType(file)) return `${file.name}: not an image`;
   if (file.size > MAX_IMAGE_BYTES) return `${file.name}: image is larger than 10 MB`;
   return null;
 }
@@ -59,10 +77,20 @@ export async function extractPdfText(data: ArrayBuffer): Promise<string> {
   }
 }
 
-/** File extensions inlined as fenced text. PDF/Word need binary parsing and are
- *  deliberately excluded: they would require a new dependency or a main-process
- *  route, so they stay unsupported rather than producing garbled output. The
- *  value is a code-fence language hint, "" when no useful highlight applies. */
+export function isDocxFile(file: { type: string; name: string }): boolean {
+  return file.type === DOCX_MEDIA_TYPE || file.name.toLowerCase().endsWith(".docx");
+}
+
+export async function extractDocxText(data: ArrayBuffer): Promise<string> {
+  const { default: mammoth } = await import("mammoth/mammoth.browser");
+  const result = await mammoth.extractRawText({ arrayBuffer: data });
+  const error = result.messages.find((message) => message.type === "error");
+  if (error) throw new Error(error.message);
+  return result.value;
+}
+
+/** File extensions inlined as fenced text. Binary documents use separate parsers.
+ *  The value is a code-fence language hint, "" when no useful highlight applies. */
 export const TEXT_EXTENSIONS: Readonly<Record<string, string>> = {
   txt: "",
   md: "markdown",

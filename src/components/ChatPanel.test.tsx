@@ -18,10 +18,12 @@ import type { AgentMessage, ChatEventPayload, MossEvent, TaskSnapshot, TaskState
 import { ChatPanel } from "./ChatPanel";
 
 const mockExtractPdfText = vi.hoisted(() => vi.fn());
+const mockExtractDocxText = vi.hoisted(() => vi.fn());
 
 vi.mock("../lib/attachments", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/attachments")>()),
   extractPdfText: mockExtractPdfText,
+  extractDocxText: mockExtractDocxText,
 }));
 
 const mockSetSessionMessages = vi.fn();
@@ -1046,13 +1048,16 @@ describe("ChatPanel", () => {
     ]);
   });
 
-  it("keeps a text document out of the chat body while sending it as an attachment", async () => {
+  it.each([
+    ["notes.txt", "text/plain"],
+    ["notes.MD", ""],
+  ])("keeps %s out of the chat body while sending it as a document attachment", async (name, type) => {
     render(<Harness />);
-    const file = new File(["private file body"], "notes.txt", { type: "text/plain" });
+    const file = new File(["private file body"], name, { type });
 
     fireEvent.change(screen.getByLabelText("Attach files"), { target: { files: [file] } });
 
-    await waitFor(() => expect(screen.getByText("notes.txt")).toBeDefined());
+    await waitFor(() => expect(screen.getByText(name)).toBeDefined());
     expect((screen.getByPlaceholderText("Message…") as HTMLTextAreaElement).value).toBe("");
     expect(screen.queryByText("private file body")).toBeNull();
     expect(screen.getByText("Attach (1)")).toBeDefined();
@@ -1064,10 +1069,87 @@ describe("ChatPanel", () => {
       {
         role: "user",
         content: "",
-        documents: [{ name: "notes.txt", mediaType: "text/plain", text: "private file body" }],
+        documents: [{ name, mediaType: type || "text/plain", text: "private file body" }],
       },
     ]);
     expect(screen.queryByText("private file body")).toBeNull();
+  });
+
+  it.each(["", "application/octet-stream"])("sends an image attachment with normalized MIME metadata (%s)", async (type) => {
+    render(<Harness />);
+    const file = new File(["pixels"], "photo.PNG", { type });
+    fireEvent.change(screen.getByLabelText("Attach files"), { target: { files: [file] } });
+
+    await waitFor(() => expect(screen.getByText("Attach (1)")).toBeDefined());
+    expect(screen.getByAltText("attachment").getAttribute("src")).toBe("data:image/png;base64,cGl4ZWxz");
+    fireEvent.click(screen.getByText("Send"));
+    const request = (window.moss.chat.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(request.messages[0].images).toEqual(["data:image/png;base64,cGl4ZWxz"]);
+  });
+
+  it("extracts and sends a Word document attachment", async () => {
+    mockExtractDocxText.mockResolvedValue("Word document body");
+    render(<Harness />);
+    const input = screen.getByLabelText("Attach files") as HTMLInputElement;
+    expect(input.accept).toContain(".docx");
+    const file = new File(["docx bytes"], "report.DOCX");
+    Object.defineProperty(file, "arrayBuffer", { value: vi.fn().mockResolvedValue(new ArrayBuffer(8)) });
+
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByText("report.DOCX")).toBeDefined());
+    expect(screen.queryByText("Word document body")).toBeNull();
+    fireEvent.click(screen.getByText("Send"));
+
+    const request = (window.moss.chat.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(request.messages).toEqual([{
+      role: "user",
+      content: "",
+      documents: [{
+        name: "report.DOCX",
+        mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        text: "Word document body",
+      }],
+    }]);
+  });
+
+  it.each([
+    ["empty", " \n", "no readable text found"],
+    ["oversized", "a".repeat(256 * 1024 + 1), "extracted text is larger than 256 KB"],
+    ["malformed", null, "invalid Word document"],
+  ])("rejects an %s Word attachment and releases the pending reader", async (_kind, text, reason) => {
+    if (text === null) mockExtractDocxText.mockRejectedValue(new Error(reason));
+    else mockExtractDocxText.mockResolvedValue(text);
+    render(<Harness />);
+    const file = new File(["docx bytes"], "report.docx");
+    Object.defineProperty(file, "arrayBuffer", { value: vi.fn().mockResolvedValue(new ArrayBuffer(8)) });
+
+    fireEvent.change(screen.getByLabelText("Attach files"), { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByText(`report.docx: ${reason}`)).toBeDefined());
+    expect(screen.queryByText("Attach (1)")).toBeNull();
+    expect(screen.queryByText("Attaching 1 file...")).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText("Message…"), { target: { value: "continue" } });
+    await waitFor(() => expect((screen.getByText("Send") as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it("rejects oversized Word attachments before reading", () => {
+    render(<Harness />);
+    const file = new File([], "large.docx");
+    const read = vi.fn();
+    Object.defineProperties(file, {
+      size: { value: 10 * 1024 * 1024 + 1 },
+      arrayBuffer: { value: read },
+    });
+    fireEvent.change(screen.getByLabelText("Attach files"), { target: { files: [file] } });
+    expect(screen.getByText("large.docx: Word document is larger than 10 MB")).toBeDefined();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("explains how to attach a legacy Word document", () => {
+    render(<Harness />);
+    const file = new File(["binary"], "legacy.doc", { type: "application/msword" });
+    fireEvent.change(screen.getByLabelText("Attach files"), { target: { files: [file] } });
+    expect(screen.getByText("legacy.doc: legacy .doc files are not supported; save as .docx and attach again")).toBeDefined();
+    expect(screen.queryByText("Attach (1)")).toBeNull();
   });
 
   it("extracts and sends a selected PDF as a document attachment", async () => {
