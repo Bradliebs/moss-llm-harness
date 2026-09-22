@@ -198,6 +198,8 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
   if (base === "deny") return { action: "deny", autoApproved: false };
   if (base === "allow") return { action: "run", autoApproved: false };
 
+  if (input.name === "jev_evaluate") return { action: "prompt", autoApproved: false, risk: "mutating" };
+
   if (ALWAYS_PROMPT_TOOLS.has(input.name)) {
     return { action: "prompt", autoApproved: false, risk: "destructive" };
   }

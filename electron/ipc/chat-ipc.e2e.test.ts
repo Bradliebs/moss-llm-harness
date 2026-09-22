@@ -52,6 +52,7 @@ vi.mock("../backend/moss/mcp/mcp-manager", () => ({
 import { registerChatIpc } from "./chat-ipc";
 import { taskStore } from "../backend/moss/task/task-store";
 import { taskEngine } from "../backend/moss/task/task-engine";
+import { providerCredentials } from "../backend/moss/provider-credentials";
 
 function scriptedProvider(rounds: ProviderStreamEvent[][]): ChatProvider {
   let round = 0;
@@ -153,6 +154,56 @@ describe("chat IPC turn (e2e)", () => {
       .filter((payload) => payload.event.type !== "round-start" && payload.event.type !== "round-end")
       .map((payload) => payload.event.type)).toEqual(["text-delta", "text-delta", "turn-complete"]);
     expect(sent.every((p) => p.turnId === "t1")).toBe(true);
+  });
+
+  it.each([undefined, false, true])("advertises Jev only when explicitly enabled: %s", async (jevEnabled) => {
+    let names: string[] = [];
+    mockProviderRef.current = {
+      kind: "test",
+      async *streamChat(input) {
+        names = (input.tools ?? []).map((tool) => tool.name);
+        yield { type: "text-delta", text: "done" };
+      },
+      async listModels() { return []; },
+    };
+    const sent: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({ enableTools: true, jevEnabled }));
+    await tick();
+    expect(names.includes("jev_evaluate")).toBe(jevEnabled === true);
+  });
+
+  it("does not register Jev when the tools master switch is off", async () => {
+    let names: string[] = [];
+    mockProviderRef.current = {
+      kind: "test",
+      async *streamChat(input) {
+        names = (input.tools ?? []).map((tool) => tool.name);
+        yield { type: "text-delta", text: "done" };
+      },
+      async listModels() { return []; },
+    };
+    recorded.on.get(IPC.chatStart)!(fakeEvent([]), request({ enableTools: false, jevEnabled: true }));
+    await tick();
+    expect(names).not.toContain("jev_evaluate");
+  });
+
+  it.each([false, true])("never sends Jev data for a disabled or denied call (enabled=%s)", async (jevEnabled) => {
+    const key = vi.spyOn(providerCredentials, "get");
+    mockProviderRef.current = scriptedProvider([
+      [{ type: "tool-call", toolCall: { id: "jev-call", name: "jev_evaluate", arguments: JSON.stringify({ state: "text", question: "Question?", type: "noul" }) } }],
+      [{ type: "text-delta", text: "done" }],
+    ]);
+    const sent: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({ enableTools: true, jevEnabled, autoApproveTools: true }));
+    await tick();
+    if (jevEnabled) {
+      expect(sent.some((payload) => payload.event.type === "tool-approval-request")).toBe(true);
+      recorded.on.get(IPC.toolApprove)!(null, { turnId: "t1", callId: "jev-call", approved: false });
+    }
+    await tick();
+    expect(sent.some((payload) => payload.event.type === "turn-complete")).toBe(true);
+    expect(key).not.toHaveBeenCalled();
+    key.mockRestore();
   });
 
   it("bridges the approval broker: a gated tool waits for toolApprove and is denied", async () => {

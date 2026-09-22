@@ -23,6 +23,7 @@ import {
   useSettings,
 } from "../lib/settings";
 import { MossFace } from "./MossFace";
+import { JevSettings } from "./JevSettings";
 
 export function SettingsPanel({ onClose }: { onClose: () => void }): React.ReactElement {
   const settings = useSettings();
@@ -626,6 +627,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
               domain; sends are still approval-gated before they go out.
             </p>
           </section>
+
+          <JevSettings />
 
           <section className="space-y-2">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Memory review</h3>

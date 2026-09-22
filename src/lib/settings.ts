@@ -64,6 +64,7 @@ export interface MossSettings {
   emailApiKey: string;
   /** verified sender address for the send_email tool */
   emailFrom: string;
+  jevEnabled: boolean;
   /** embeddings endpoint base URL for the codebase index (empty = reuse provider baseUrl) */
   embedBaseUrl: string;
   /** embeddings model name for the /embeddings endpoint */
@@ -116,6 +117,7 @@ const DEFAULT_SETTINGS: MossSettings = {
   sttModel: "whisper-1",
   emailApiKey: "",
   emailFrom: "",
+  jevEnabled: false,
   embedBaseUrl: "",
   embedModel: "nomic-embed-text",
   verifyEnabled: false,

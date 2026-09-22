@@ -767,6 +767,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       messages: [...base, userMsg],
       workspaceRoot: activeSettings.workspaceRoot ?? undefined,
       enableTools: activeSettings.enableTools,
+      jevEnabled: activeSettings.jevEnabled === true,
       maxToolRounds: activeSettings.maxToolRounds ?? 8,
       autoApproveTools: activeSettings.autoApproveTools,
       automation: {

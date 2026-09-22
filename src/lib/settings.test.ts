@@ -32,6 +32,7 @@ const baseline: MossSettings = {
   sttModel: "whisper-1",
   emailApiKey: "",
   emailFrom: "",
+  jevEnabled: false,
   embedBaseUrl: "",
   embedModel: "nomic-embed-text",
   verifyEnabled: false,
@@ -134,6 +135,18 @@ describe("applyPreset", () => {
 });
 
 describe("updateSettings", () => {
+  it("persists the optional Jev switch without storing a credential", () => {
+    const setItem = vi.fn();
+    vi.stubGlobal("localStorage", { setItem });
+    expect(settingsStore.get().jevEnabled).toBe(false);
+    updateSettings({ jevEnabled: true });
+    expect(settingsStore.get().jevEnabled).toBe(true);
+    expect(JSON.parse(setItem.mock.calls.at(-1)![1])).toMatchObject({ jevEnabled: true });
+    expect(settingsStore.get()).not.toHaveProperty("jevApiKey");
+    updateSettings({ jevEnabled: false });
+    expect(settingsStore.get().jevEnabled).toBe(false);
+  });
+
   it("merges a partial patch and leaves other fields intact", () => {
     updateSettings({ model: "llama3", enableTools: false });
     const s = settingsStore.get();

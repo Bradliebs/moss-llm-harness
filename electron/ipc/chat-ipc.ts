@@ -96,6 +96,7 @@ export function resolveMaxToolRounds(requested: number | undefined, verifyEnable
 }
 import { taskStore } from "../backend/moss/task/task-store";
 import { TOOL_DEFINITIONS, TOOL_REGISTRY } from "../backend/moss/tools";
+import { createJevTool } from "../backend/moss/tools/jev-tool";
 import { detectWorkspaceVerificationChecks, VerificationRegistry } from "../backend/moss/verify/verification-registry";
 import { runVerify } from "../backend/moss/verify/verifier";
 
@@ -384,6 +385,9 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     const routed = enableTools
       ? routeAvailableTools(req)
       : { tools: [], unmet: [] };
+    if (enableTools && req.jevEnabled === true && !req.taskSpec && !req.taskId && !req.mission) {
+      routed.tools.push(createJevTool(() => providerCredentials.get("typesafe")));
+    }
     const toolDefinitions = enableTools
       ? routed.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }))
       : [];
