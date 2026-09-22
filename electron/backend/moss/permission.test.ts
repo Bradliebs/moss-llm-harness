@@ -113,6 +113,9 @@ describe("resolvePermission", () => {
   });
 
   it("always prompts consequential external actions", () => {
+    expect(resolvePermission({ name: "jev_evaluate", autoApprove: true })).toEqual({
+      action: "prompt", autoApproved: false, risk: "mutating",
+    });
     expect(resolvePermission({ name: "send_email", autoApprove: true })).toEqual({
       action: "prompt",
       autoApproved: false,

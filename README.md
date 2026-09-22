@@ -87,6 +87,50 @@ After the application opens:
 6. Configure optional verification commands for coding tasks.
 7. Start a conversation and describe the outcome you want.
 
+## Optional TypeSafe Jev integration
+
+Jev is a structured decision model, not a replacement for your chat provider.
+Moss exposes it as the optional `jev_evaluate` tool in ordinary chat, using
+TypeSafe's official SDK and `jev-latest` model. It can answer a narrow yes/no
+question with a probability, select a choice, or score text against a rubric.
+
+1. Open **Settings**, then find **TypeSafe / Jev**.
+2. Enter your TypeSafe API key and select the save icon. The key is encrypted
+  with Electron's OS-backed credential storage, not saved in localStorage.
+3. Turn on **Use Jev** and keep the main tools switch enabled.
+4. Ask Moss to use Jev for a structured judgment, then review and approve the
+  proposed context before it is sent to TypeSafe.
+
+The global switch defaults off and takes effect on the next turn. Saving a key
+does not enable it. Turning the switch off removes the tool from subsequent
+turns; use **Stop** to cancel a current turn. Removing the key also disables Jev.
+The assistant decides whether to call the tool. Enabling Jev does not call it
+on every message, automatically review answers, or automatically route requests.
+
+To request it explicitly, include the text to evaluate and ask, for example:
+
+* "Use Jev to choose whether this ticket is billing, technical, or sales."
+* "Use Jev to score this proposal using the levels unclear, adequate, and clear."
+* "Use Jev to assess whether this message requests urgent help."
+
+If the assistant calls Jev, a `jev_evaluate` approval request appears before
+any context is sent. Declining it means no TypeSafe API call. Jev cannot browse
+or inspect files itself; the assistant must supply the relevant evidence.
+
+Each call requires approval even when general tool auto-approval is enabled.
+Only the supplied state and question are sent, not the whole conversation
+automatically. Review them for sensitive data. TypeSafe charges are separate
+from Moss's chat-model cost display and budget cap. Requests have a 15-second
+timeout and no automatic retries; cancellation cannot undo data already sent.
+Results are advisory and never replace tool permissions or host verification.
+Durable missions do not expose Jev because their budgets do not account for it.
+
+See the [TypeSafe introduction](https://docs.typesafe.ai/introduction) for the
+question types. After building, `node scripts/smoke-jev.mjs` checks settings,
+encrypted key persistence, opt-in routing, approval, and responsive layout
+with a disposable profile and mocked TypeSafe responses. It uses no real key
+and does not establish live API reliability.
+
 ## Conversation management
 
 Each conversation keeps its own message history and personality override. Moss

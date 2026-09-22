@@ -476,6 +476,7 @@ export interface ChatStartRequest {
   workspaceRoot?: string;
   /** when false, tools are not advertised (plain chat, for non-tool models) */
   enableTools?: boolean;
+  jevEnabled?: boolean;
   /** maximum tool-execution rounds before the model gets a final tool-disabled
    *  response round; the backend clamps this to a safe supported range. */
   maxToolRounds?: number;
