@@ -41,6 +41,12 @@ export const IPC = {
   providerCredentialSet: "moss:provider:credentialSet",
   /** renderer -> main (invoke): open a folder picker, returns path or null */
   workspacePick: "moss:workspace:pick",
+  /** renderer -> main (invoke): read a workspace file's current text for an approval diff */
+  workspacePreview: "moss:workspace:preview",
+  /** renderer -> main (invoke): infer advisory verification commands from project manifests */
+  workspaceSuggestVerification: "moss:workspace:suggestVerification",
+  /** renderer -> main (invoke): bring the application window to the foreground */
+  windowFocus: "moss:window:focus",
 
   /** renderer -> main (invoke): memory CRUD */
   memoryList: "moss:memory:list",

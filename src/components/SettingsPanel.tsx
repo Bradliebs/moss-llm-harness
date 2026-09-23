@@ -35,6 +35,7 @@ import { JevSettings } from "./JevSettings";
 import { LiveStatus } from "./LiveStatus";
 import { ProductDiagnosticsSettings } from "./ProductDiagnosticsSettings";
 import { AutomationSettings } from "./AutomationSettings";
+import { AccessibilitySettings } from "./AccessibilitySettings";
 
 type SettingsCategory = "readiness" | "diagnostics" | "general" | "models" | "tools" | "automation" | "knowledge" | "services" | "safety";
 
@@ -42,7 +43,7 @@ const SETTINGS_CATEGORIES: readonly { id: SettingsCategory | "all"; label: strin
   { id: "all", label: "All", keywords: "all settings" },
   { id: "readiness", label: "Readiness", keywords: "setup profile diagnostics connection" },
   { id: "diagnostics", label: "Diagnostics", keywords: "local telemetry retention export clear privacy" },
-  { id: "general", label: "General", keywords: "appearance theme avatar personality instructions confidence context" },
+  { id: "general", label: "General", keywords: "appearance theme avatar personality instructions confidence context accessibility text size contrast notifications shortcuts keyboard" },
   { id: "models", label: "Models", keywords: "provider model api key pricing budget" },
   { id: "tools", label: "Tools", keywords: "tools workspace verification" },
   { id: "automation", label: "Automation", keywords: "browser desktop windows scopes" },
@@ -51,7 +52,11 @@ const SETTINGS_CATEGORIES: readonly { id: SettingsCategory | "all"; label: strin
   { id: "safety", label: "Safety", keywords: "external content injection approval" },
 ];
 
-export function SettingsPanel({ onClose }: { onClose: () => void }): React.ReactElement {
+function isSettingsCategory(value: string | undefined): value is SettingsCategory | "all" {
+  return SETTINGS_CATEGORIES.some((category) => category.id === value);
+}
+
+export function SettingsPanel({ onClose, initialCategory }: { onClose: () => void; initialCategory?: SettingsCategory }): React.ReactElement {
   const settings = useSettings();
   const models = modelsStore.use();
   const [status, setStatus] = useState("");
@@ -67,7 +72,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
 
   const [indexing, setIndexing] = useState(false);
   const [indexMsg, setIndexMsg] = useState("");
-  const [activeCategory, setActiveCategory] = useState<SettingsCategory | "all">("all");
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory | "all">(() =>
+    initialCategory ?? (isSettingsCategory(settings.lastSettingsCategory) ? settings.lastSettingsCategory : "all"));
   const [settingsSearch, setSettingsSearch] = useState("");
   const [providerConnected, setProviderConnected] = useState<boolean | null>(null);
 
@@ -422,7 +428,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
                     ? "bg-emerald-700 text-white"
                     : "bg-neutral-200 text-neutral-600 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
                 }`}
-                onClick={() => setActiveCategory(category.id)}
+                onClick={() => {
+                  setActiveCategory(category.id);
+                  updateSettings({ lastSettingsCategory: category.id });
+                }}
               >
                 {category.label}
               </button>
@@ -490,6 +499,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
           <section className={sectionClass("diagnostics", "local telemetry retention export clear privacy")}>
             <ProductDiagnosticsSettings onStatus={setStatus} />
           </section>
+
+          <AccessibilitySettings className={sectionClass("general", "accessibility text size font contrast notifications keyboard shortcuts guide")} />
 
           <section className={sectionClass("general", "appearance theme avatar")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Appearance</h3>

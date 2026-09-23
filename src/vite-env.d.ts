@@ -32,6 +32,8 @@ import type {
   ToolApprovalDecision,
   TranscribeRequest,
   TranscribeResult,
+  VerificationSuggestion,
+  WorkspaceFilePreview,
 } from "@common/types";
 
 declare global {
@@ -82,6 +84,11 @@ declare global {
       };
       workspace: {
         pick: () => Promise<string | null>;
+        preview?: (root: string, path: string) => Promise<WorkspaceFilePreview>;
+        suggestVerification?: (root: string) => Promise<VerificationSuggestion[]>;
+      };
+      window?: {
+        focus: () => Promise<void>;
       };
       memory: {
         list: () => Promise<MemoryEntry[]>;

@@ -3,7 +3,8 @@
 // src/App.test.tsx
 //
 // App is the root coordinator: a single `overlay` state machine (none/settings/
-// library) plus the `busy` flag threaded to the sidebar and owned via ChatPanel's
+// library/runs), the command palette, global shortcuts, display preferences,
+// and the `busy` flag threaded to the sidebar and owned via ChatPanel's
 // setBusy. The child panels are mocked so only that wiring is under test.
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -130,6 +131,28 @@ describe("App", () => {
     expect(screen.getByText("sidebar-open:true")).toBeDefined();
     fireEvent.click(screen.getByText("sb-close"));
     expect(screen.getByText("sidebar-open:false")).toBeDefined();
+  });
+
+  it("routes global shortcuts to the palette and overlays", async () => {
+    render(<App />);
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeDefined();
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+
+    fireEvent.keyDown(document, { key: "j", ctrlKey: true });
+    expect(await screen.findByText("run-center-overlay")).toBeDefined();
+    fireEvent.click(screen.getByText("rc-close"));
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    expect(await screen.findByText("settings-overlay")).toBeDefined();
+  });
+
+  it("applies text size and high-contrast preferences", () => {
+    settingsStore.update((s) => ({ ...s, fontScale: "larger", highContrast: true }));
+    render(<App />);
+    expect(document.documentElement.style.fontSize).toBe("125%");
+    expect(document.documentElement.classList.contains("high-contrast")).toBe(true);
+    settingsStore.update((s) => ({ ...s, fontScale: "default", highContrast: false }));
   });
 });
 

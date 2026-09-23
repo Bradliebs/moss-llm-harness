@@ -19,6 +19,8 @@ export interface Session {
   /** per-chat personality override; undefined inherits the global default */
   personalityId?: string;
   taskId?: string;
+  /** pinned conversations sort above the rest of the list */
+  pinned?: boolean;
 }
 
 interface SessionsState {
@@ -123,11 +125,29 @@ export function selectSession(id: string): void {
 }
 
 export function deleteSession(id: string): void {
+  deleteSessions([id]);
+}
+
+/** Delete several conversations at once, keeping a valid current selection. */
+export function deleteSessions(ids: readonly string[]): void {
+  const doomed = new Set(ids);
   sessionsState.update((prev) => {
-    const sessions = prev.sessions.filter((s) => s.id !== id);
-    const currentId = prev.currentId === id ? (sessions[0]?.id ?? null) : prev.currentId;
+    const sessions = prev.sessions.filter((s) => !doomed.has(s.id));
+    const currentId = prev.currentId && doomed.has(prev.currentId) ? (sessions[0]?.id ?? null) : prev.currentId;
     return { sessions, currentId };
   });
+}
+
+export function setSessionPinned(id: string, pinned: boolean): void {
+  sessionsState.update((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((s) => (s.id === id ? { ...s, pinned } : s)),
+  }));
+}
+
+/** Pinned conversations first, otherwise preserving the stored order. */
+export function sortSessionsForDisplay(list: readonly Session[]): Session[] {
+  return [...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)];
 }
 
 /** Empty a conversation in place: drop its messages and reset the title to the

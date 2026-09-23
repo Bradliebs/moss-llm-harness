@@ -29,6 +29,16 @@ try {
     assert.deepEqual(serious, [], `${surface} has serious accessibility violations:\n${JSON.stringify(serious, null, 2)}`);
   }
   await assertAccessible("Welcome");
+  await window.getByRole("heading", { name: "Get started in three steps" }).waitFor();
+  await window.keyboard.press("Control+K");
+  const palette = window.getByRole("dialog", { name: "Command palette" });
+  await palette.waitFor();
+  await assertAccessible("Command palette");
+  await window.keyboard.type("run center");
+  await window.keyboard.press("Enter");
+  await window.getByRole("dialog", { name: "Run center" }).waitFor();
+  await window.getByRole("button", { name: "Close run center" }).click();
+  await window.getByRole("dialog", { name: "Run center" }).waitFor({ state: "detached" });
   const settingsButton = window.getByRole("banner").getByRole("button", { name: "Settings", exact: true });
   await settingsButton.click();
   const settingsDialog = window.getByRole("dialog", { name: "Settings" });
@@ -75,7 +85,7 @@ try {
   await window.setViewportSize({ width: 420, height: 740 });
   await window.getByRole("button", { name: "Open conversations" }).waitFor();
   await assertAccessible("Compact mission layout");
-  console.log("Packaged setup, Run center, diagnostics, templates, accessibility, and Mission preflight smoke passed.");
+  console.log("Packaged setup, guide, command palette, Run center, diagnostics, templates, accessibility, and Mission preflight smoke passed.");
 } finally {
   await application?.close().catch(() => undefined);
   rmSync(userDataDir, { recursive: true, force: true });

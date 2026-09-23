@@ -5,7 +5,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import { clipboard, dialog, ipcMain, shell } from "electron";
+import { BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
 
 import { IPC } from "../../common/ipc-contract";
 import type {
@@ -57,6 +57,7 @@ import {
   type McpServerConfig,
 } from "../backend/moss/mcp/mcp-config";
 import { mcpManager } from "../backend/moss/mcp/mcp-manager";
+import { readWorkspacePreview, suggestVerificationCommands } from "../backend/moss/workspace/workspace-insights";
 import { RunJournal } from "../backend/moss/learning/run-journal";
 import { createRetrospective } from "../backend/moss/learning/retrospective";
 import { LessonStore } from "../backend/moss/learning/lesson-store";
@@ -265,6 +266,19 @@ export function registerChatIpc(): void {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
+  });
+  ipcMain.handle(IPC.workspacePreview, (_event, root: unknown, path: unknown) => {
+    if (typeof root !== "string" || typeof path !== "string") throw new Error("Invalid preview request");
+    return readWorkspacePreview(root, path);
+  });
+  ipcMain.handle(IPC.workspaceSuggestVerification, (_event, root: unknown) =>
+    typeof root === "string" ? suggestVerificationCommands(root) : []);
+  ipcMain.handle(IPC.windowFocus, (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
   });
 
   ipcMain.handle(IPC.memoryList, () => memoryStore.list());

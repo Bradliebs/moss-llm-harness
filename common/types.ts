@@ -600,6 +600,22 @@ export interface CheckpointRevertResult {
   errors: string[];
 }
 
+/** Current state of a workspace file, used to preview a pending write. */
+export interface WorkspaceFilePreview {
+  exists: boolean;
+  content?: string;
+  byteLength?: number;
+  truncated?: boolean;
+  binary?: boolean;
+  error?: string;
+}
+
+/** A verification command inferred from a project manifest. Advisory only. */
+export interface VerificationSuggestion {
+  command: string;
+  source: string;
+}
+
 // --- Durable memory & skills (Phase 5) ---
 
 export type MemoryCategory = "preference" | "fact" | "decision" | "context";

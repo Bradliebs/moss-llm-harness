@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TaskSnapshot } from "@common/types";
 
-import { MissionMonitor, blockerRecovery } from "./MissionMonitor";
+import { MissionMonitor, blockerRecovery, budgetWarnings } from "./MissionMonitor";
 
 function taskSnapshot(state: TaskSnapshot["state"]): TaskSnapshot {
   return {
@@ -124,5 +124,17 @@ describe("MissionMonitor", () => {
     expect(onRecover).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
     expect(blockerRecovery("credential")).toEqual({ label: "Configure credentials", action: "settings" });
+  });
+
+  it("warns when a budget reaches 80 percent while the mission can still act", () => {
+    const task = taskSnapshot("executing");
+    task.attempts[0].actionCount = 9;
+    expect(budgetWarnings(task)).toEqual(["90% of the actions budget used"]);
+    expect(budgetWarnings({ ...task, state: "completed" })).toEqual([]);
+
+    render(
+      <MissionMonitor task={task} history={[]} onRecover={vi.fn()} onResume={vi.fn()} onCancel={vi.fn()} onOpenArtifact={vi.fn()} />,
+    );
+    expect(screen.getByLabelText("Budget warning").textContent).toContain("90% of the actions budget used");
   });
 });

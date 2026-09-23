@@ -21,6 +21,8 @@ import {
   ensureCurrentSession,
   getSessionMessages,
   getSessionPersonality,
+  getSessionTitle,
+  selectSession,
   sessionTokenUsage,
   sessionToolUsage,
   sessionToolAudit,
@@ -31,6 +33,8 @@ import {
   useSessions,
 } from "../lib/sessions";
 import { modelsStore, readinessItems, toEmbedConfig, toProviderConfig, updateSettings, useSettings } from "../lib/settings";
+import { explainToolFailure, providerErrorGuidance, type ProviderErrorGuidance, type SettingsCategoryId } from "../lib/guidance";
+import { currentNotifyContext, shouldNotify, showDesktopNotification } from "../lib/notifications";
 import { type ToolStatus, toolStatusColor } from "../lib/toolStatus";
 import { MossFace } from "./MossFace";
 import { ChatComposer } from "./ChatComposer";
@@ -41,6 +45,9 @@ import { MissionContractEditor, missionContractIssues, type MissionContract } fr
 import { RichResponse } from "./RichResponse";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { ToolActivity } from "./ToolActivity";
+import { ToolPreview } from "./ToolPreview";
+import { TurnUndo } from "./TurnUndo";
+import { bindSuggestedCommand, VerificationSuggestions } from "./VerificationSuggestions";
 
 const ArtifactWorkspace = lazy(() => import("./ArtifactWorkspace").then((module) => ({ default: module.ArtifactWorkspace })));
 const loadStoredArtifact = (taskId: string, artifactId: string) => window.moss.task.artifact(taskId, artifactId);
@@ -105,10 +112,21 @@ function positiveNumber(value: string): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function ToolCard({ tool, onApprove }: { tool: ToolView; onApprove: (callId: string, approved: boolean, comment?: string) => void }): React.ReactElement {
+function ToolCard({
+  tool,
+  onApprove,
+  workspaceRoot,
+  onOpenSettings,
+}: {
+  tool: ToolView;
+  onApprove: (callId: string, approved: boolean, comment?: string) => void;
+  workspaceRoot?: string | null;
+  onOpenSettings?: (category?: SettingsCategoryId) => void;
+}): React.ReactElement {
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const [approvalComment, setApprovalComment] = useState("");
   const active = tool.status === "running" || tool.status === "approval";
+  const failure = tool.status === "error" || tool.status === "done" ? explainToolFailure(tool.result) : null;
 
   useEffect(() => {
     if (detailsRef.current) detailsRef.current.open = active;
@@ -141,10 +159,37 @@ function ToolCard({ tool, onApprove }: { tool: ToolView; onApprove: (callId: str
       </summary>
 
       <div className="border-t border-neutral-200/70 px-3 py-2 dark:border-neutral-700/70">
-        <div className="text-[10px] font-medium uppercase text-neutral-500 dark:text-neutral-400">Arguments</div>
-        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">
-          {tool.args}
-        </pre>
+        {tool.status === "approval" ? (
+          <>
+            <div className="text-[10px] font-medium uppercase text-neutral-600 dark:text-neutral-300">Review</div>
+            <div className="mt-1">
+              <ToolPreview name={tool.name} args={tool.args} risk={tool.risk} workspaceRoot={workspaceRoot} />
+            </div>
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[10px] text-neutral-600 dark:text-neutral-300">Raw arguments</summary>
+              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">
+                {tool.args}
+              </pre>
+            </details>
+          </>
+        ) : (
+          <>
+            <div className="text-[10px] font-medium uppercase text-neutral-500 dark:text-neutral-400">Arguments</div>
+            <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">
+              {tool.args}
+            </pre>
+          </>
+        )}
+        {failure ? (
+          <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-900 dark:text-amber-200" aria-label="Why this was blocked">
+            <span className="font-medium">{failure.rule}:</span> {failure.detail}
+            {failure.settingsCategory && onOpenSettings ? (
+              <button type="button" className="ml-2 underline" onClick={() => onOpenSettings(failure.settingsCategory)}>
+                Open settings
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {tool.status === "approval" ? (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className="text-amber-700 dark:text-amber-300">Approval required.</span>
@@ -234,79 +279,6 @@ function ResponseActions({ content, onRegenerate }: { content: string; onRegener
           <RefreshCw size={14} aria-hidden="true" />
         </button>
       ) : null}
-    </div>
-  );
-}
-
-/** Shows how many files a completed turn changed and lets the user undo them.
- *  Lazily queries the checkpoint store on mount (and after the turn id changes);
- *  renders nothing when the turn changed no files or the bridge is unavailable.
- *  After a revert it reports the outcome and disables the button, since a turn's
- *  checkpoint is consumed by reverting it. */
-function TurnRevert({ turnId }: { turnId: string }): React.ReactElement | null {
-  const [count, setCount] = useState<number | null>(null);
-  const [state, setState] = useState<"idle" | "reverting" | "reverted" | "error">("idle");
-  const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    const bridge = window.moss?.checkpoint;
-    if (!bridge) {
-      setCount(0);
-      return;
-    }
-    void bridge
-      .list(turnId)
-      .then((files) => {
-        if (!cancelled) setCount(files.length);
-      })
-      .catch(() => {
-        if (!cancelled) setCount(0);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [turnId]);
-
-  if (!count || state === "reverted") {
-    return state === "reverted" ? (
-      <div className="mt-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">{message}</div>
-    ) : null;
-  }
-
-  const label = `${count} file${count === 1 ? "" : "s"} changed`;
-  return (
-    <div className="mt-1.5 flex items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
-      <span title="Files this turn created or modified in the workspace.">{label}</span>
-      <button
-        className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-medium text-amber-700 transition hover:bg-amber-500/20 disabled:opacity-50 dark:text-amber-300"
-        disabled={state === "reverting"}
-        title="Undo this turn's file changes, restoring each file to its state before the turn."
-        onClick={() => {
-          const bridge = window.moss?.checkpoint;
-          if (!bridge) return;
-          setState("reverting");
-          void bridge
-            .revert(turnId)
-            .then((res) => {
-              const undone = `Reverted ${res.reverted} file${res.reverted === 1 ? "" : "s"}`;
-              if (res.errors.length > 0) {
-                setState("error");
-                setMessage(`${undone}; ${res.errors.length} failed`);
-              } else {
-                setState("reverted");
-                setMessage(undone);
-              }
-            })
-            .catch((err: unknown) => {
-              setState("error");
-              setMessage(`Revert failed: ${err instanceof Error ? err.message : String(err)}`);
-            });
-        }}
-      >
-        {state === "reverting" ? "Reverting…" : "Revert"}
-      </button>
-      {state === "error" ? <span className="text-red-500 dark:text-red-400">{message}</span> : null}
     </div>
   );
 }
@@ -434,7 +406,7 @@ interface ChatPanelProps {
   busy: boolean;
   setBusy: (busy: boolean) => void;
   onOpenChats: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (category?: SettingsCategoryId) => void;
 }
 
 export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPanelProps): React.ReactElement {
@@ -490,6 +462,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const [mcpDownCount, setMcpDownCount] = useState(0);
   const [summarizing, setSummarizing] = useState(false);
   const [interruptQueued, setInterruptQueued] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [errorGuidance, setErrorGuidance] = useState<ProviderErrorGuidance | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const dictation = useDictation((text) =>
     setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text)),
   );
@@ -534,6 +509,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
 
   useEffect(() => {
     setStatus("");
+    setErrorGuidance(null);
+    setEditingIndex(null);
   }, [current?.id]);
 
   useEffect(() => {
@@ -654,12 +631,28 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     };
   }, []);
 
+  function notifyBackground(title: string, body: () => string, sessionId: string | null): void {
+    const viewingOwner = !!sessionId && sessionId === currentSessionIdRef.current;
+    if (!shouldNotify(currentNotifyContext(settingsRef.current.desktopNotifications !== false, viewingOwner))) return;
+    showDesktopNotification(title, body(), () => {
+      void window.moss.window?.focus();
+      if (sessionId) selectSession(sessionId);
+    });
+  }
+
+  function conversationLabel(sessionId: string | null): string {
+    return (sessionId && getSessionTitle(sessionId)) || "a conversation";
+  }
+
   function handleEvent(payload: ChatEventPayload): void {
     const ev = payload.event;
     if (ev.type === "task-state") {
       const sessionId = taskSessionRef.current;
       if (sessionId) setSessionTaskId(sessionId, ev.task.id);
       if (sessionId === currentSessionIdRef.current) setTask(ev.task);
+      if (ev.task.state === "blocked") {
+        notifyBackground("Mission blocked", () => `${conversationLabel(sessionId)}: ${ev.task.blocker?.summary ?? "Needs your attention"}`, sessionId);
+      }
       if (["completed", "failed", "cancelled"].includes(ev.task.state)) taskTurnIdRef.current = null;
     } else if (ev.type === "text-delta") {
       setActivity((prev) => {
@@ -683,6 +676,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           it.kind === "tool" && it.callId === ev.callId ? { ...it, status: "approval", risk: ev.risk } : it,
         ),
       );
+      setAnnouncement(`Approval required for ${ev.name}.`);
+      const sessionId = turnSessionRef.current ?? taskSessionRef.current;
+      notifyBackground("Approval needed", () => `${ev.name} is waiting in ${conversationLabel(sessionId)}`, sessionId);
     } else if (ev.type === "tool-result") {
       setActivity((prev) =>
         prev.map((it) =>
@@ -726,6 +722,15 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             ? `Error: ${ev.message}`
             : "",
       );
+      setErrorGuidance(ev.type === "turn-error" ? providerErrorGuidance(ev.message) : null);
+      setAnnouncement(ev.type === "turn-complete" ? "Response complete." : ev.type === "turn-error" ? "Response failed." : "Response stopped.");
+      if (ev.type !== "turn-aborted") {
+        notifyBackground(
+          ev.type === "turn-error" ? "Moss hit an error" : "Moss finished",
+          () => ev.type === "turn-error" ? `${conversationLabel(sessionId)}: ${ev.message}` : `Reply ready in ${conversationLabel(sessionId)}`,
+          sessionId,
+        );
+      }
 
       const queued = queuedInterruptionRef.current;
       if (queued && committed && queued.sessionId === sessionId) {
@@ -758,6 +763,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     setActivity([]);
     setBusy(true);
     setStatus("");
+    setErrorGuidance(null);
     setConfidence(null);
     window.moss.chat.send({
       turnId,
@@ -925,7 +931,12 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     }
 
     setSessionTitle(sessionId, text || documents[0]?.name || "");
-    const base = getSessionMessages(sessionId);
+    let base = getSessionMessages(sessionId);
+    if (editingIndex !== null && sessionId === current?.id && history[editingIndex]?.role === "user") {
+      base = history.slice(0, editingIndex);
+      setSessionMessages(sessionId, base);
+    }
+    setEditingIndex(null);
     runTurn(sessionId, base, userMsg);
   }
 
@@ -954,7 +965,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     if (!task?.blocker) return;
     const recovery = blockerRecovery(task.blocker.kind);
     if (recovery.action === "settings") {
-      onOpenSettings();
+      onOpenSettings(task.blocker.kind === "credential" ? "models" : task.blocker.kind === "unavailable-service" ? "services" : "readiness");
       return;
     }
     if (recovery.action === "guidance") {
@@ -1013,8 +1024,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   }
 
   /** Pull the user turn at the given history index back into the composer
-   *  (text + images) and truncate history before it, so the user can edit the
-   *  prompt and send it again. */
+   *  (text + attachments). History is kept until the edited message is sent,
+   *  so cancelling the edit leaves the conversation untouched. */
   function editUserAt(index: number): void {
     if (busy) return;
     const sessionId = current?.id;
@@ -1024,8 +1035,53 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     setInput(userMsg.content);
     setAttachments(userMsg.images ?? []);
     setDocuments(userMsg.documents ?? []);
-    setSessionMessages(sessionId, history.slice(0, index));
+    setEditingIndex(index);
+    composerRef.current?.focus();
   }
+
+  function cancelEdit(): void {
+    setEditingIndex(null);
+    setInput("");
+    setAttachments([]);
+    setDocuments([]);
+  }
+
+  function retryLastTurn(): void {
+    const lastUser = history.map((message) => message.role).lastIndexOf("user");
+    if (lastUser >= 0) regenerateAt(lastUser);
+  }
+
+  function applyErrorGuidance(): void {
+    const action = errorGuidance?.action;
+    if (!action) return;
+    if (action.kind === "settings") onOpenSettings(action.category);
+    else if (action.kind === "new-chat" && current) void handleContinueInNewChat(current.id);
+    else if (action.kind === "retry") retryLastTurn();
+  }
+
+  useEffect(() => {
+    const stopOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented || !turnIdRef.current) return;
+      if (document.querySelector('[aria-modal="true"]')) return;
+      if (turnSessionRef.current !== currentSessionIdRef.current) return;
+      event.preventDefault();
+      queuedInterruptionRef.current = null;
+      setInterruptQueued(false);
+      window.moss.chat.abort(turnIdRef.current);
+    };
+    const focusComposer = (): void => composerRef.current?.focus();
+    const stop = (): void => {
+      if (turnIdRef.current && turnSessionRef.current === currentSessionIdRef.current) window.moss.chat.abort(turnIdRef.current);
+    };
+    document.addEventListener("keydown", stopOnEscape);
+    window.addEventListener("moss:focus-composer", focusComposer);
+    window.addEventListener("moss:stop-turn", stop);
+    return () => {
+      document.removeEventListener("keydown", stopOnEscape);
+      window.removeEventListener("moss:focus-composer", focusComposer);
+      window.removeEventListener("moss:stop-turn", stop);
+    };
+  }, []);
 
   function abort(): void {
     queuedInterruptionRef.current = null;
@@ -1201,7 +1257,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         ) : (
           <button
             className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600"
-            onClick={onOpenSettings}
+            onClick={() => onOpenSettings()}
           >
             Set up provider…
           </button>
@@ -1313,7 +1369,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             Clear
           </button>
         ) : null}
-        <button className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600" onClick={onOpenSettings}>
+        <button className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600" onClick={() => onOpenSettings()}>
           Settings
         </button>
         {task?.artifacts?.length ? <button type="button" className="response-icon-button" title={`Open artifacts (${task.artifacts.length})`} aria-label="Open artifacts" aria-expanded={!!selectedArtifact} onClick={() => selectedArtifact ? setArtifactSelection(null) : openArtifact(task.artifacts![0].id)}><PanelRightOpen size={18} /></button> : null}
@@ -1326,6 +1382,16 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             needsSetup={!settings.model}
             onOpenSettings={onOpenSettings}
             readiness={readinessItems(settings)}
+            guide={settings.onboardingDismissed ? undefined : {
+              providerReady: !!settings.model && !!(settings.baseUrl ?? "").trim(),
+              workspaceRoot: settings.workspaceRoot,
+              onPickWorkspace: () => {
+                void window.moss.workspace.pick().then((dir) => {
+                  if (dir) updateSettings({ workspaceRoot: dir });
+                });
+              },
+              onDismiss: () => updateSettings({ onboardingDismissed: true }),
+            }}
           />
         ) : (
           items.map((it, i) => {
@@ -1411,7 +1477,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                   <button
                     className="hover:text-emerald-100"
                     onClick={() => editUserAt(it.historyIndex!)}
-                    title="Edit this message: pulls it into the composer and removes everything after it."
+                    title="Edit this message in the composer. Later messages are replaced only when you send the edit."
                   >
                     Edit
                   </button>
@@ -1444,9 +1510,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                   </div>
                 </div>
               ) : null}
-              {it.role === "assistant" && it.turnId ? <TurnRevert turnId={it.turnId} /> : null}
+              {it.role === "assistant" && it.turnId ? <TurnUndo turnId={it.turnId} /> : null}
             </div>
-          ) : <ToolCard key={i} tool={it} onApprove={approve} />
+          ) : <ToolCard key={i} tool={it} onApprove={approve} workspaceRoot={settings.workspaceRoot} onOpenSettings={onOpenSettings} />
           );
         }))}
       </div>
@@ -1482,6 +1548,11 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           if (skillMenuOpen && event.key === "Escape") {
             event.preventDefault();
             setSkillMenuDismissed(true);
+            return;
+          }
+          if (editingIndex !== null && event.key === "Escape" && !busy) {
+            event.preventDefault();
+            cancelEdit();
             return;
           }
           if (event.key === "Enter" && !event.shiftKey) {
@@ -1521,7 +1592,20 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         <LiveStatus
           message={turnActiveElsewhere ? "Another conversation has an active run. You can inspect this conversation while it continues." : status}
           className="mb-2 text-xs text-neutral-600 dark:text-neutral-400"
+          action={!turnActiveElsewhere && errorGuidance?.action ? { label: errorGuidance.action.label, onSelect: applyErrorGuidance } : undefined}
         />
+        {!turnActiveElsewhere && errorGuidance ? (
+          <p className="mb-2 text-xs text-neutral-700 dark:text-neutral-300" aria-label="How to fix this">{errorGuidance.hint}</p>
+        ) : null}
+        <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</div>
+        {editingIndex !== null ? (
+          <div className="mb-2 flex items-center gap-2 rounded-md border border-sky-400/50 bg-sky-500/10 px-2 py-1 text-xs text-sky-900 dark:text-sky-100" aria-label="Editing message">
+            <span>Editing an earlier message. Sending replaces it and everything after it.</span>
+            <button type="button" className="ml-auto underline" onClick={cancelEdit}>
+              Cancel edit
+            </button>
+          </div>
+        ) : null}
         {confidence ? (
           <div className="mb-2" title={confidence.note}>
             <span className={`rounded px-1.5 py-0.5 text-xs ${CONFIDENCE_CLASS[confidence.mode]}`}>
@@ -1669,6 +1753,22 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                   configuredCommands={configuredVerificationCommands}
                   onChange={setMissionContract}
                 />
+                <VerificationSuggestions
+                  workspaceRoot={settings.workspaceRoot}
+                  configuredCommands={configuredVerificationCommands}
+                  onAccept={(command) => {
+                    const existing = (settings.verifyCommands ?? "").split("\n").map((value) => value.trim()).filter(Boolean);
+                    const alsoEnabled = settings.verifyEnabled ? [] : existing.filter((value) => value !== command);
+                    updateSettings({
+                      verifyEnabled: true,
+                      verifyCommands: [...existing.filter((value) => value !== command), command].join("\n"),
+                    });
+                    setMissionContract((contract) => ({ ...contract, criteria: bindSuggestedCommand(contract.criteria, command) }));
+                    setStatus(alsoEnabled.length > 0
+                      ? `Enabled ${command} for verification. Your saved commands are enabled again too: ${alsoEnabled.join(", ")}.`
+                      : `Enabled ${command} for verification.`);
+                  }}
+                />
                 <div className="my-3 border-t border-neutral-200 dark:border-neutral-700" />
                 <div className="mb-3 flex gap-1" aria-label="Mission authority">
                   <button
@@ -1682,7 +1782,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                   <button
                     type="button"
                     aria-pressed={missionAuthority === "policy-scoped"}
-                    className={`rounded px-2 py-1 text-xs ${missionAuthority === "policy-scoped" ? "bg-amber-600 text-white" : "bg-neutral-200 dark:bg-neutral-800"}`}
+                    className={`rounded px-2 py-1 text-xs ${missionAuthority === "policy-scoped" ? "bg-amber-700 text-white" : "bg-neutral-200 dark:bg-neutral-800"}`}
                     onClick={() => setMissionAuthority("policy-scoped")}
                   >
                     Policy-scoped

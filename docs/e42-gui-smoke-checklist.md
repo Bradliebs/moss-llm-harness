@@ -27,15 +27,19 @@ npm run smoke:packaged
 ```
 
 The `pack:ci` command creates an unsigned package without changing the release
-configuration. The Windows CI job runs these commands after typechecking and the
-deterministic test suite.
+configuration. The Windows CI job runs these commands after typechecking, focused
+lint, the deterministic test suite, and the coverage gate.
 
 The smoke passes when `Moss.exe` loads and the Chat/Mission selector, mission
 review surface, settings dialog semantics, all four budget controls, and mission
 contract controls render through the packaged bridge. It also verifies that
 Launch remains disabled before the mandatory criterion passes preflight and that
 keyboard focus remains trapped in Settings, Escape closes the dialog, and focus
-returns to its opener.
+returns to its opener. The smoke also checks the getting-started guide, opens
+the command palette with `Ctrl+K` and routes it to Run center, enables local
+diagnostics, loads each mission template, and resizes to a 420 by 740 compact
+layout. axe must report no serious or critical findings on Welcome, the command
+palette, Settings, Run center, mission review, or the compact layout.
 
 The CI build also runs the renderer bundle budget:
 
@@ -48,6 +52,15 @@ built `dist/index.html`. Secondary Settings, Library, artifact, document parser,
 and syntax-language chunks are excluded until the user opens those workflows.
 
 ## Prerequisites
+
+### Recorded automated acceptance on 2026-09-22
+
+The unsigned package passed the expanded packaged smoke, including axe checks on
+Welcome, Settings, Run center, mission review, and the compact layout. The axe
+gate found white text on emerald 600 and low-contrast dark-mode mission labels;
+both were corrected before acceptance. Scripted supervised read-only, approval,
+denial, reload interruption, and deliberate recovery missions also passed. These
+checks used deterministic fixtures and do not establish live-model reliability.
 
 ### Recorded automated acceptance on 2026-09-14
 
@@ -312,11 +325,38 @@ still required before closing end-to-end dictation acceptance.
     - Run the packaged smoke suite and confirm axe reports no serious or critical
       findings for those surfaces.
 
+17. **Approval previews, undo, and guidance**
+    - Ask Moss to edit an existing file with auto-approve off. Confirm the
+      approval card shows a line diff against the current file, and a new file
+      is labelled **Create**. Confirm a command approval shows its working folder.
+    - After the turn, expand the changed-file list, select **Undo turn**, choose
+      **Keep changes** once, then confirm the undo and verify the files revert.
+    - Ask for a browser visit to a domain outside the allow-list. Confirm the
+      tool card names the allow-list rule and **Open settings** opens Automation.
+    - Select a model that does not exist and send a message. Confirm the error
+      offers a fix and **Open model settings**.
+    - In a workspace with a `package.json` test script, open mission review and
+      confirm the suggestion stays inactive until **Use** is selected.
+
+18. **Notifications, shortcuts, and organisation**
+    - Start a supervised mutation, then switch conversations or focus another
+      application. Confirm a Windows notification appears for the approval and
+      selecting it opens the owning conversation.
+    - Confirm `Ctrl+K`, `Ctrl+N`, `Ctrl+,`, `Ctrl+J`, `Ctrl+Shift+L`, `Ctrl+L`,
+      `Ctrl+B`, and `Esc` behave as documented, and `Ctrl+R` is not intercepted.
+    - Pin a conversation, select two conversations, export them together, and
+      delete them after confirmation.
+    - Edit an earlier message, cancel once, then send an edit and confirm only
+      later messages are replaced.
+    - Enable larger text and high contrast, reload, and confirm both persist.
+      Hide the getting-started guide and restore it from Settings.
+
 ## Pass criteria
 
 - No uncaught errors in the main-process console or the renderer devtools.
 - Streaming, tool approval, auto-approve provenance, abort, titling, background
-  inspection, templates, diagnostics, notifications, compact layout, and mission
-  authority behave as described above.
+  inspection, templates, diagnostics, notifications, compact layout, approval
+  previews, undo, shortcuts, conversation organisation, and mission authority
+  behave as described above.
 - Reload preserves session history, titles, task state, and the "auto" provenance
   tag without replaying an interrupted action.

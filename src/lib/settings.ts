@@ -117,6 +117,18 @@ export interface MossSettings {
   theme: "dark" | "light" | "auto";
   /** Last guided setup profile applied. Older settings load as custom. */
   readinessProfile?: ReadinessProfileId;
+  /** Windows notifications for background approvals, blockers, and completions. Absent means on. */
+  desktopNotifications?: boolean;
+  /** Root text scale applied to the whole interface. */
+  fontScale?: "default" | "large" | "larger";
+  /** Stronger text, border, and focus contrast. */
+  highContrast?: boolean;
+  /** Desktop sidebar collapsed to a narrow rail. */
+  sidebarCollapsed?: boolean;
+  /** First-run walkthrough dismissed by the user. */
+  onboardingDismissed?: boolean;
+  /** Settings category shown when the panel reopens. */
+  lastSettingsCategory?: string;
 }
 
 const DEFAULT_SETTINGS: MossSettings = {

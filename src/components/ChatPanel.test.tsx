@@ -33,6 +33,7 @@ const mockSummarize = vi.fn();
 const mockMissionAuthorize = vi.fn();
 const mockMissionCapabilities = vi.fn();
 const mockSetSessionTaskId = vi.fn();
+const mockSelectSession = vi.fn();
 
 // Holds the session ChatPanel renders; tests override `value.messages` to drive
 // messagesToItems (e.g. multi-round turns) and beforeEach resets it to empty.
@@ -96,6 +97,8 @@ vi.mock("../lib/sessions", () => ({
   ensureCurrentSession: () => "s1",
   getSessionMessages: () => [],
   getSessionPersonality: () => undefined,
+  getSessionTitle: () => "Test chat",
+  selectSession: (...args: unknown[]) => mockSelectSession(...args),
   setSessionPersonality: vi.fn(),
   setSessionMessages: (...args: unknown[]) => mockSetSessionMessages(...args),
   setSessionTitle: vi.fn(),
@@ -674,14 +677,16 @@ describe("ChatPanel", () => {
     };
     render(<Harness />);
 
-    const revertBtn = await screen.findByText("Revert");
+    const undoBtn = await screen.findByText("Undo turn");
     expect(list).toHaveBeenCalledWith("turn-42");
     expect(screen.getByText("2 files changed")).toBeTruthy();
 
-    fireEvent.click(revertBtn);
+    fireEvent.click(undoBtn);
+    expect(revert).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Undo changes"));
     expect(revert).toHaveBeenCalledWith("turn-42");
-    await screen.findByText("Reverted 2 files");
-    expect(screen.queryByText("Revert")).toBeNull();
+    await screen.findByText("Undid changes to 2 files");
+    expect(screen.queryByText("Undo turn")).toBeNull();
   });
 
   it("shows no revert affordance when a turn changed no files", async () => {
@@ -700,7 +705,7 @@ describe("ChatPanel", () => {
     render(<Harness />);
 
     await waitFor(() => expect(list).toHaveBeenCalledWith("turn-7"));
-    expect(screen.queryByText("Revert")).toBeNull();
+    expect(screen.queryByText("Undo turn")).toBeNull();
   });
 
   it("formats large per-turn token counts with thousands separators", () => {
@@ -1470,6 +1475,39 @@ describe("ChatPanel", () => {
     expect(screen.getByText("destructive")).toBeDefined();
   });
 
+  it("shows a readable command preview on approval and explains scope denials", () => {
+    mockSettings.workspaceRoot = "C:\\workspace";
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "tool-call", callId: "c3", name: "run_command", arguments: "{\"command\":\"npm test\"}" });
+    emit(turnId, { type: "tool-approval-request", callId: "c3", name: "run_command", arguments: "{\"command\":\"npm test\"}", risk: "mutating" });
+    expect(screen.getByText("Runs in")).toBeDefined();
+    expect(screen.getAllByText("npm test").length).toBeGreaterThan(0);
+
+    emit(turnId, { type: "tool-call", callId: "c4", name: "browser_navigate", arguments: "{}" });
+    emit(turnId, { type: "tool-result", callId: "c4", ok: false, content: "Domain is not allow-listed: evil.example" });
+    fireEvent.click(screen.getByText("browser_navigate"));
+    expect(screen.getByLabelText("Why this was blocked").textContent).toContain("evil.example");
+    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
+    expect(openSettings).toHaveBeenCalledWith("automation");
+  });
+
+  it("offers an actionable fix for recognized provider errors", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "turn-error", message: "HTTP 401 Unauthorized", messages: [] });
+    expect(screen.getByLabelText("How to fix this").textContent).toContain("rejected the API key");
+    fireEvent.click(screen.getByRole("button", { name: "Open model settings" }));
+    expect(openSettings).toHaveBeenCalledWith("models");
+  });
+
+  it("stops the running turn with Escape", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(window.moss.chat.abort).toHaveBeenCalledWith(turnId);
+  });
+
   it("opens a tool-activity audit listing each call's name, risk tier, and auto flag", () => {
     mockToolState.usage = { total: 2, autoApproved: 1 };
     mockToolState.audit = [
@@ -1674,7 +1712,7 @@ describe("ChatPanel", () => {
     expect(req.messages).toEqual([{ role: "user", content: "first" }]);
   });
 
-  it("pulls the last user turn back into the composer and truncates history on edit", () => {
+  it("pulls the last user turn into the composer and replaces history only when the edit is sent", () => {
     mockSession.value = {
       id: "s1",
       title: "New chat",
@@ -1689,8 +1727,13 @@ describe("ChatPanel", () => {
     fireEvent.click(screen.getByText("Edit"));
     const box = screen.getByPlaceholderText("Message…") as HTMLTextAreaElement;
     expect(box.value).toBe("typo here");
-    // History is truncated before the edited turn so resending does not duplicate it.
-    expect(mockSetSessionMessages).toHaveBeenCalledWith("s1", []);
+    expect(screen.getByLabelText("Editing message")).toBeDefined();
+    expect(mockSetSessionMessages).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("Cancel edit"));
+    expect(box.value).toBe("");
+    expect(screen.queryByLabelText("Editing message")).toBeNull();
+    expect(mockSetSessionMessages).not.toHaveBeenCalled();
   });
 
   it("regenerates an earlier turn from its own bubble, dropping all later messages", () => {
@@ -1730,6 +1773,11 @@ describe("ChatPanel", () => {
     fireEvent.click(screen.getAllByText("Edit")[0]);
     const box = screen.getByPlaceholderText("Message…") as HTMLTextAreaElement;
     expect(box.value).toBe("first");
+    expect(mockSetSessionMessages).not.toHaveBeenCalled();
+    fireEvent.change(box, { target: { value: "first, corrected" } });
+    fireEvent.keyDown(box, { key: "Enter" });
     expect(mockSetSessionMessages).toHaveBeenCalledWith("s1", []);
+    const req = (window.moss.chat.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(req.messages).toEqual([{ role: "user", content: "first, corrected" }]);
   });
 });

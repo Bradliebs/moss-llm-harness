@@ -30,6 +30,9 @@ const CH = {
   providerCredentialGet: "moss:provider:credentialGet",
   providerCredentialSet: "moss:provider:credentialSet",
   workspacePick: "moss:workspace:pick",
+  workspacePreview: "moss:workspace:preview",
+  workspaceSuggestVerification: "moss:workspace:suggestVerification",
+  windowFocus: "moss:window:focus",
   memoryList: "moss:memory:list",
   memoryAdd: "moss:memory:add",
   memoryDelete: "moss:memory:delete",
@@ -103,6 +106,11 @@ contextBridge.exposeInMainWorld("moss", {
   },
   workspace: {
     pick: () => ipcRenderer.invoke(CH.workspacePick),
+    preview: (root, path) => ipcRenderer.invoke(CH.workspacePreview, root, path),
+    suggestVerification: (root) => ipcRenderer.invoke(CH.workspaceSuggestVerification, root),
+  },
+  window: {
+    focus: () => ipcRenderer.invoke(CH.windowFocus),
   },
   memory: {
     list: () => ipcRenderer.invoke(CH.memoryList),

@@ -18,12 +18,16 @@ vi.mock("../lib/sessions", () => ({
   createSession: vi.fn(),
   selectSession: vi.fn(),
   deleteSession: vi.fn(),
+  deleteSessions: vi.fn(),
+  setSessionPinned: vi.fn(),
+  sortSessionsForDisplay: (list: unknown[]) => list,
   renameSession: vi.fn(),
   sessionToMarkdown: vi.fn(() => "# md"),
 }));
 
 vi.mock("../lib/settings", () => ({
   useSettings: () => ({ model: "gpt-4o", modelRates: {} }),
+  updateSettings: vi.fn(),
 }));
 
 const noop = (): void => {};
@@ -126,6 +130,28 @@ describe("Sidebar", () => {
     fireEvent.change(screen.getByLabelText("Search conversations"), { target: { value: "beta" } });
     expect(screen.queryByText("Alpha notes")).toBeNull();
     expect(screen.getByText("Beta plan")).toBeDefined();
+  });
+
+  it("pins conversations and deletes a confirmed bulk selection", () => {
+    vi.mocked(sessions.useSessions).mockReturnValue({
+      sessions: [
+        { id: "a", title: "Alpha notes", messages: [], createdAt: 0, updatedAt: 0 },
+        { id: "b", title: "Beta plan", messages: [], createdAt: 0, updatedAt: 0, pinned: true },
+      ],
+      currentId: "a",
+    });
+    render(<Sidebar busy={false} onOpenSettings={noop} onOpenLibrary={noop} />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Pin conversation" })[0]);
+    expect(sessions.setSessionPinned).toHaveBeenCalledWith("a", true);
+    expect(screen.getByRole("button", { name: "Unpin conversation" })).toBeDefined();
+
+    fireEvent.click(screen.getByText("Select conversations"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Alpha notes" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Beta plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(sessions.deleteSessions).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Delete 2" }));
+    expect(sessions.deleteSessions).toHaveBeenCalledWith(["a", "b"]);
   });
 
   it("renames a conversation on Enter in the inline editor", () => {

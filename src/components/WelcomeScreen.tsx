@@ -6,6 +6,7 @@
 // silently do nothing, so a setup call-to-action is shown instead.
 
 import { MossFace } from "./MossFace";
+import { FirstRunGuide, type FirstRunGuideProps } from "./FirstRunGuide";
 import type { ReadinessItem } from "../lib/settings";
 
 const SUGGESTIONS = [
@@ -21,9 +22,11 @@ interface WelcomeScreenProps {
   needsSetup?: boolean;
   onOpenSettings?: () => void;
   readiness?: readonly ReadinessItem[];
+  /** first-run walkthrough; omitted once dismissed */
+  guide?: Omit<FirstRunGuideProps, "onTry" | "onOpenSettings">;
 }
 
-export function WelcomeScreen({ onPick, needsSetup, onOpenSettings, readiness = [] }: WelcomeScreenProps): React.ReactElement {
+export function WelcomeScreen({ onPick, needsSetup, onOpenSettings, readiness = [], guide }: WelcomeScreenProps): React.ReactElement {
   const attentionCount = readiness.filter((item) => item.status === "attention").length;
   return (
     <div className="flex h-full flex-col items-center justify-center gap-8 px-4 text-center animate-fade-in">
@@ -39,7 +42,8 @@ export function WelcomeScreen({ onPick, needsSetup, onOpenSettings, readiness = 
             : "Pick a starting point, or just type a message below."}
         </p>
       </div>
-      {needsSetup ? (
+      {guide ? <FirstRunGuide {...guide} onTry={onPick} onOpenSettings={() => onOpenSettings?.()} /> : null}
+      {needsSetup && guide ? null : needsSetup ? (
         <div className="flex w-full max-w-xl flex-col items-center gap-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-6 py-5">
           <p className="text-sm text-neutral-700 dark:text-neutral-300">
             Moss needs a model provider before it can respond. Run Ollama locally, or add an

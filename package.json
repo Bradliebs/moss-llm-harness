@@ -16,7 +16,7 @@
     "test": "vitest run",
     "test:deterministic": "vitest run --exclude electron/ipc/chat-ipc.e2e.test.ts",
     "test:coverage": "vitest run --coverage --exclude electron/ipc/chat-ipc.e2e.test.ts",
-    "lint": "eslint eslint.config.mjs src/components/AutomationSettings.tsx src/components/LiveStatus.tsx src/components/ProductDiagnosticsSettings.tsx src/components/RunCenter.tsx src/components/ToolActivity.tsx src/lib/missionTemplates.ts src/lib/taskRuns.ts electron/backend/moss/product-diagnostics.ts electron/backend/moss/evals/product-metrics.ts electron/backend/moss/evals/product-ux-cases.ts scripts/check-bundle-budget.mjs scripts/smoke-packaged.mjs --max-warnings=0",
+    "lint": "eslint eslint.config.mjs src/components/AutomationSettings.tsx src/components/LiveStatus.tsx src/components/ProductDiagnosticsSettings.tsx src/components/RunCenter.tsx src/components/ToolActivity.tsx src/components/AccessibilitySettings.tsx src/components/CommandPalette.tsx src/components/FirstRunGuide.tsx src/components/ToolPreview.tsx src/components/TurnUndo.tsx src/components/VerificationSuggestions.tsx src/lib/guidance.ts src/lib/notifications.ts src/lib/shortcuts.ts src/lib/toolPreview.ts electron/backend/moss/workspace/workspace-insights.ts src/lib/missionTemplates.ts src/lib/taskRuns.ts electron/backend/moss/product-diagnostics.ts electron/backend/moss/evals/product-metrics.ts electron/backend/moss/evals/product-ux-cases.ts scripts/check-bundle-budget.mjs scripts/smoke-packaged.mjs --max-warnings=0",
     "test:sandbox": "node scripts/test-sandbox.cjs",
     "eval": "npm run build:main --silent && node dist-electron/electron/backend/moss/evals/eval-cli.js",
     "eval:health": "npm run eval -- health scripts/eval-pilots.cjs",

@@ -150,6 +150,14 @@ app
   .whenReady()
   .then(() => {
     fileLog(`app ready (packaged=${app.isPackaged}, appPath=${app.getAppPath()})`);
+    // Windows attributes toast notifications to this id; it must match appId.
+    if (process.platform === "win32") {
+      try {
+        app.setAppUserModelId("com.moss.app");
+      } catch (err) {
+        fileLog(`setAppUserModelId failed: ${fmtError(err)}`);
+      }
+    }
     // Each startup step is isolated: a failure in one must not prevent the
     // window from appearing, otherwise the app fails silently with no UI.
     try {

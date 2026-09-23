@@ -32,6 +32,23 @@ describe("createSession", () => {
   });
 });
 
+describe("pinning and bulk deletion", () => {
+  it("pins conversations and deletes several while keeping a valid selection", () => {
+    const first = sessions.createSession();
+    const second = sessions.createSession();
+    const third = sessions.createSession();
+    sessions.setSessionPinned(first, true);
+    const list = [
+      { id: third, pinned: false },
+      { id: second },
+      { id: first, pinned: true },
+    ] as Session[];
+    expect(sessions.sortSessionsForDisplay(list).map((session) => session.id)).toEqual([first, third, second]);
+    sessions.deleteSessions([second, third]);
+    expect(sessions.ensureCurrentSession()).toBe(first);
+  });
+});
+
 describe("getSessionMessages / setSessionMessages", () => {
   it("round-trips a session's messages and returns [] for an unknown id", () => {
     const id = sessions.createSession();

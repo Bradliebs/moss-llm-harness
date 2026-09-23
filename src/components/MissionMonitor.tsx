@@ -33,6 +33,30 @@ export function blockerRecovery(kind: TaskBlockerKind): { label: string; action:
   return { label: "Review setup", action: "settings" };
 }
 
+export const BUDGET_WARNING_RATIO = 0.8;
+
+/** Budgets at or beyond the warning threshold while the mission can still act. */
+export function budgetWarnings(task: TaskSnapshot): string[] {
+  const budget = task.spec.budget;
+  if (!budget || ["completed", "failed", "cancelled"].includes(task.state)) return [];
+  const actions = task.attempts.reduce((total, attempt) => total + attempt.actionCount, 0);
+  const tokens = task.attempts.reduce(
+    (total, attempt) => total + (attempt.usage.inputTokens ?? 0) + (attempt.usage.outputTokens ?? 0),
+    0,
+  );
+  const cost = task.attempts.reduce((total, attempt) => total + attempt.estimatedCostUsd, 0);
+  const elapsed = Math.max(0, new Date(task.updatedAt).getTime() - new Date(task.createdAt).getTime());
+  const checks: Array<[string, number, number | undefined]> = [
+    ["actions", actions, budget.maxActions],
+    ["tokens", tokens, budget.maxTokens],
+    ["cost", cost, budget.maxCostUsd],
+    ["time", elapsed, budget.maxDurationMs],
+  ];
+  return checks
+    .filter(([, used, limit]) => !!limit && used / limit >= BUDGET_WARNING_RATIO)
+    .map(([label, used, limit]) => `${Math.min(100, Math.round((used / limit!) * 100))}% of the ${label} budget used`);
+}
+
 export function MissionMonitor({
   task,
   history,
@@ -124,6 +148,11 @@ export function MissionMonitor({
           {task.spec.budget.maxDurationMs ? <span title="Remaining at the latest durable checkpoint">{formatDuration(task.spec.budget.maxDurationMs - elapsedMs)} left</span> : null}
           {exclusiveStep ? <span className="font-medium text-amber-700 dark:text-amber-300">Exclusive: {exclusiveStep.description}</span> : null}
         </div>
+      ) : null}
+      {budgetWarnings(task).length > 0 ? (
+        <p className="mt-1 font-medium text-amber-800 dark:text-amber-300" role="status" aria-label="Budget warning">
+          {budgetWarnings(task).join(" · ")}. The mission blocks when a budget is exhausted; revise it or cancel if progress has stalled.
+        </p>
       ) : null}
       {task.blocker ? <p className="mt-1 whitespace-pre-wrap text-amber-700 dark:text-amber-300">{task.blocker.summary}</p> : null}
       {(task.missionPlan || task.evidence.length > 0 || (task.artifacts?.length ?? 0) > 0) ? (

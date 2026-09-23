@@ -22,6 +22,7 @@ const env = vi.hoisted(() => ({
   permission: null as null | ((wc: unknown, permission: string, cb: (granted: boolean) => void) => void),
   reload: vi.fn(),
   registerIpc: vi.fn(),
+  setAppUserModelId: vi.fn(),
   mcpInit: vi.fn(() => Promise.resolve()),
   mcpClose: vi.fn(() => Promise.resolve()),
 }));
@@ -31,6 +32,9 @@ vi.mock("electron", () => {
     webContents = {
       openDevTools: vi.fn(),
       on: (event: string, handler: (...args: any[]) => unknown) => {
+        env.webContentsHandlers.set(event, handler);
+      },
+      once: (event: string, handler: (...args: any[]) => unknown) => {
         env.webContentsHandlers.set(event, handler);
       },
       replaceMisspelling: env.replaceMisspelling,
@@ -49,6 +53,7 @@ vi.mock("electron", () => {
       getAppPath: () => "/app",
       getPath: () => "/tmp",
       whenReady: () => Promise.resolve(),
+      setAppUserModelId: env.setAppUserModelId,
       on: (event: string, handler: (...args: unknown[]) => unknown) => {
         env.handlers.set(event, handler);
       },
@@ -96,6 +101,7 @@ describe("main composition root", () => {
     expect(env.registerIpc).toHaveBeenCalled();
     expect(env.windows).toBe(1);
     expect(typeof env.permission).toBe("function");
+    if (process.platform === "win32") expect(env.setAppUserModelId).toHaveBeenCalledWith("com.moss.app");
   });
 
   it("grants the media permission and denies all others", () => {

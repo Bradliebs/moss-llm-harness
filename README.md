@@ -2,7 +2,7 @@
 title: Moss
 description: A local-first agentic desktop harness for completing and verifying work across files, commands, browsers, and desktop applications
 author: Moss contributors
-ms.date: 2026-09-05
+ms.date: 2026-09-23
 ms.topic: overview
 keywords:
   - ai agent
@@ -10,7 +10,7 @@ keywords:
   - ollama
   - model context protocol
   - desktop automation
-estimated_reading_time: 8
+estimated_reading_time: 12
 ---
 
 <p align="center">
@@ -37,6 +37,13 @@ substantially in tool use, instruction following, and context capacity.
 
 * Runs multi-step tasks through an explicit, recoverable lifecycle
 * Requires task evidence and configured verification before claiming completion
+* Starts missions from editable Coding, Research, and Automation templates
+* Monitors background missions from an accessible Run center
+* Guides setup through readiness profiles and categorized, searchable Settings
+* Records opt-in, content-free product diagnostics locally
+* Previews file diffs and command context before you approve changes
+* Notifies you when background work needs attention, with per-turn undo
+* Offers a command palette, keyboard shortcuts, larger text, and high contrast
 * Reads, writes, searches, and checkpoints files inside the selected workspace
 * Runs shell commands with risk classification and approval controls
 * Uses isolated, domain-allow-listed Playwright browser sessions
@@ -171,10 +178,18 @@ Each conversation keeps its own message history and personality override. Moss
 persists conversations locally, restores the selected conversation after a
 reload, and derives a title from the first user message.
 
-Use the left sidebar to create, search, select, rename, export, copy, or delete
-conversations. In a compact window, open the same conversation list from the
-menu button in the chat header. Creating or selecting a conversation closes the
-compact list and displays that conversation's history.
+Use the left sidebar to create, search, select, rename, pin, export, copy, or
+delete conversations. Pinned conversations stay at the top of the list. Choose
+**Select conversations** to export several conversations into one Markdown file
+or delete them together after a confirmation. Collapse the sidebar to a narrow
+rail with its toolbar button or `Ctrl+B`; Moss remembers the choice. In a compact
+window, open the same conversation list from the menu button in the chat header.
+Creating or selecting a conversation closes the compact list and displays that
+conversation's history.
+
+Select **Edit** on an earlier message to load it into the composer. The original
+conversation is unchanged until you send the edit, which replaces that message
+and everything after it. **Cancel edit** or `Esc` restores the empty composer.
 
 The **Clear** action removes messages from the selected conversation while
 keeping its entry. **Continue in new chat** creates a separate conversation with
@@ -306,9 +321,20 @@ verification, browser, or desktop prerequisites remain visible and continue to
 block launch. Templates use the same preflight and native authorization paths as
 manually authored missions.
 
-When a turn changes files, Moss creates a checkpoint. The response footer shows
-the changed-file count and provides a revert action while the checkpoint remains
-available.
+When a workspace is selected, mission review suggests verification commands
+inferred from project files such as `package.json` scripts, `pyproject.toml`,
+`Cargo.toml`, `go.mod`, .NET projects, Maven, Gradle, and Makefile test targets.
+Suggestions stay inactive until you select **Use**, which enables the command
+under **Settings > Verification** and binds it to the first eligible mandatory
+criterion.
+
+While a mission runs, the task status bar warns when any action, token, cost,
+or time budget reaches 80 percent, before the mission blocks on exhaustion.
+
+When a turn changes files, Moss creates a checkpoint. The response footer lists
+each changed file and whether the turn created or modified it. **Undo turn**
+asks for confirmation, then restores modified files and deletes created ones
+while the checkpoint remains available.
 
 ### Durable approvals and task history
 
@@ -442,6 +468,15 @@ irreversible effects.
 Auto-approval can reduce prompts for eligible reversible actions. It does not
 bypass controls for irreversible operations.
 
+Approval prompts describe the effect instead of showing only raw arguments.
+File writes show a line diff against the file's current workspace content, or
+mark the file as new. Edits show the replaced snippet, moves show both paths,
+and commands show the working folder and time limit. The raw arguments remain
+available beneath the preview. When a tool is blocked, the tool card names the
+rule that applied, such as the workspace sandbox, a browser or desktop
+allow-list, mission authority, or your denial, and links to the Settings
+category that controls it.
+
 ## Response experience
 
 Assistant responses render sanitized GitHub-flavored Markdown. Raw model HTML is
@@ -452,6 +487,39 @@ The response surface supports headings, nested lists, task lists, tables,
 blockquotes, inline code, highlighted code blocks, copy controls, regeneration,
 checkpoint reversion, token details, and a streaming indicator. User messages
 remain compact bubbles while assistant responses use a wider document layout.
+
+Recognized provider failures include a short fix and a direct action: rejected
+API keys, unavailable models, unreachable providers, and spending caps open model
+settings; rate limits and temporary server errors offer **Retry**; context
+overflow offers **Continue in new chat**.
+
+### Notifications, shortcuts, and accessibility
+
+Moss shows a Windows notification when background work needs approval, a
+mission blocks, or a reply finishes or fails while the window is unfocused or
+you are viewing another conversation. Selecting the notification focuses Moss
+and opens the owning conversation. Turn this off under **Settings > General**.
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+K` | Open the command palette for actions and conversations |
+| `Ctrl+N` | Start a new chat |
+| `Ctrl+,` | Open Settings |
+| `Ctrl+J` | Open Run center |
+| `Ctrl+Shift+L` | Open Library |
+| `Ctrl+L` | Focus the message box |
+| `Ctrl+B` | Collapse or expand the sidebar |
+| `Esc` | Stop the current response, or cancel an edit |
+
+Shortcuts avoid Electron's reload and developer-tools accelerators. **Settings >
+General** also offers larger text, a high-contrast mode with stronger borders and
+focus outlines, and a keyboard shortcut reference. Screen readers hear concise
+announcements when a reply completes, fails, or needs approval, instead of every
+streamed token. Settings reopens on the category you last used.
+
+New installations show a three-step getting-started guide: connect a model,
+choose an optional workspace, and try a safe read-only request. Hide it from the
+welcome screen and restore it from **Settings > General**.
 
 ### Chat attachments
 
@@ -477,14 +545,19 @@ and image attachment handling in a disposable Electron profile.
 | `npm run dev:renderer` | Start the Vite renderer server without Electron preload APIs |
 | `npm run start` | Launch Electron from existing build output |
 | `npm run typecheck` | Type-check the renderer and Electron projects |
+| `npm run lint` | Lint the product-quality surfaces with zero warnings allowed |
 | `npm test` | Run the Vitest test suite once |
 | `npm run test:deterministic` | Run the deterministic CI test tier |
+| `npm run test:coverage` | Run the deterministic tier with focused V8 coverage thresholds |
 | `npm run test:sandbox` | Run four live containment tests with a provisioned, digest-pinned Linux Node.js image |
 | `npm run eval -- dry-run scripts/eval-pilots.cjs` | Validate the evaluation matrix without invoking a model |
 | `npm run eval:health` | Validate corpus, reference solution, and grader publication health |
 | `npm run build` | Build the Electron main process and Vite renderer |
+| `npm run check:bundle` | Enforce initial renderer JavaScript and CSS budgets |
 | `npm run pack` | Create an unpacked application directory |
-| `npm run smoke:packaged` | Check the built Windows application through its packaged Electron bridge |
+| `npm run pack:ci` | Create an unsigned unpacked application for CI and local smoke checks |
+| `npm run smoke:packaged` | Check packaged setup, Run center, templates, diagnostics, accessibility, and compact layout |
+| `node scripts/smoke-missions.mjs` | Run supervised approval, denial, reload, and recovery mission smokes |
 | `npm run dist` | Build a Windows NSIS installer |
 
 The renderer alone expects APIs injected by `electron/preload.cjs`. Running
@@ -517,18 +590,23 @@ Run all checks used for normal development:
 
 ```powershell
 npm run typecheck
+npm run lint
 npm test
+npm run test:coverage
 npm run build
 npm run check:bundle
 ```
+
+Before a release, also run `npm run pack:ci`, `npm run smoke:packaged`, and
+`node scripts/smoke-missions.mjs`.
 
 Tests cover renderer behavior, IPC, providers, tool execution, permissions,
 approvals, checkpoints, capability acquisition, browser and desktop boundaries,
 task recovery, verification, memory, skills, learning, and the evaluation harness.
 The bundle gate follows the renderer assets referenced by `dist/index.html` and
-limits initial JavaScript and CSS independently. Settings, Library, artifact
-preview, PDF extraction, DOCX extraction, and syntax languages load only when
-their workflows need them.
+limits initial JavaScript and CSS independently. Settings, Library, Run center,
+the command palette, artifact preview, PDF extraction, DOCX extraction, and
+syntax languages load only when their workflows need them.
 
 The evaluation harness runs production-loop tasks in isolated workspaces and
 grades their end state with independent validators. It supports governed corpus
@@ -606,6 +684,24 @@ Historical reports, including the earlier auto-approval mismatch, remain unchang
 Real dictation still requires a configured Whisper-compatible endpoint. Release
 acceptance and baseline promotion remain subject to the evidence and review gates.
 
+The September 22 harness and UX audit verification passed 1,483 deterministic
+tests with four gated live tests skipped, 18 mission IPC end-to-end tests, focused
+lint, and coverage of 92.1% statements and 82.51% branches. The production build
+measured 625.2 KiB of initial JavaScript and 62.9 KiB of CSS. The unsigned package
+passed axe serious and critical checks on Welcome, Settings, Run center, mission
+review, and the compact layout, plus supervised mission smokes. Production
+dependencies reported no npm audit vulnerabilities. Remaining advisories affect
+development tooling only and require the gated Vitest and electron-builder major
+upgrades.
+
+The September 23 UX follow-up passed 1,531 deterministic tests with four gated
+live tests skipped, 18 mission IPC end-to-end tests, focused lint, and coverage
+of 94.04% statements and 85.57% branches. The initial renderer bundle measured
+656.1 KiB of JavaScript and 66.5 KiB of CSS. The packaged smoke added axe checks
+for the command palette and verified the getting-started guide; supervised
+mission smokes passed. Windows notifications and approval diffs still need the
+interactive checks in the [GUI smoke checklist](docs/e42-gui-smoke-checklist.md).
+
 See the [harness feedback loop guide](docs/harness-feedback-loop.md) for corpus
 selection, provider runs, report inspection, resume behavior, and CI tiers.
 
@@ -643,12 +739,14 @@ Electron preload bridge and is not designed to run as a standalone website.
 ### A task cannot use files or commands
 
 Choose a workspace in Settings and confirm tools are enabled. Operations outside
-that workspace are rejected by design.
+that workspace are rejected by design. The tool card names the rule that blocked
+the call and links to the Settings category that controls it.
 
 ### Browser navigation is denied
 
 Add the destination hostname to the browser domain allowlist. Every redirect and
-request must remain within the configured set.
+request must remain within the configured set. **Open settings** on the blocked
+tool card opens the Automation category directly.
 
 ### Desktop controls are unavailable
 
@@ -664,9 +762,32 @@ Settings, while user-decision blockers focus the composer for guidance.
 Resumable external interruptions retain the Resume action. Moss does not convert
 failed verification into completion or blindly repeat the same failed check.
 
+### Notifications do not appear
+
+Confirm **Settings > General > Notify me when background work needs approval,
+blocks, or finishes** is on, and that Windows notifications are allowed for Moss
+under **Settings > System > Notifications**. Moss only notifies when its window
+is unfocused or you are viewing a different conversation. Unpackaged
+development builds started with `npm run dev` may not show Windows notifications,
+because Windows associates them with an installed app shortcut.
+
+### A keyboard shortcut does nothing
+
+Global shortcuts pause while a dialog such as Settings or Run center is open,
+except `Ctrl+K`, which still closes the command palette. Close the dialog first,
+or open **Settings > General > Keyboard shortcuts** for the full list.
+
+### An approval shows no diff
+
+Comparing an overwrite with the existing file needs a selected workspace;
+without one, Moss shows only the new content. Files larger than 256 KB, binary
+files, and changes over 1,500 combined lines show a summary instead. Expand
+**Raw arguments** to review the exact request.
+
 ## Additional documentation
 
 * [Historical chat checkpoint (June 2026)](docs/chat_checkpoint.md)
 * [Electron 42 GUI smoke checklist](docs/e42-gui-smoke-checklist.md)
 * [Planned Electron Builder 26 upgrade](docs/electron-builder-26-upgrade.md)
 * [Harness feedback loop](docs/harness-feedback-loop.md)
+* [Harness reliability audit (September 2026)](docs/harness-reliability-audit-2026-09-18.md)

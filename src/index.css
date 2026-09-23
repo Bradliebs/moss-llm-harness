@@ -401,3 +401,26 @@ body {
     animation: none;
   }
 }
+
+/* High-contrast preference: lift muted text to full contrast, strengthen
+   borders, and make keyboard focus unmistakable in both themes. */
+html.high-contrast .text-neutral-400,
+html.high-contrast .text-neutral-500,
+html.high-contrast .text-neutral-600 {
+  color: #262626;
+}
+html.high-contrast.dark .text-neutral-400,
+html.high-contrast.dark .text-neutral-500,
+html.high-contrast.dark .text-neutral-600,
+html.high-contrast.dark .dark\:text-neutral-400,
+html.high-contrast.dark .dark\:text-neutral-500,
+html.high-contrast.dark .dark\:text-neutral-600 {
+  color: #f5f5f5;
+}
+html.high-contrast [class*="border-neutral-"] {
+  border-color: currentColor;
+}
+html.high-contrast :focus-visible {
+  outline: 3px solid #f59e0b;
+  outline-offset: 2px;
+}

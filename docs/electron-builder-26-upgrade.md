@@ -8,6 +8,12 @@ because packaging on Windows needs an elevated PowerShell session (symlink and
 code-signing privileges) and, for the symlink step, Developer Mode enabled. Do
 not run this autonomously.
 
+As of 2026-09-23, `npm audit` reports high and critical advisories in the
+electron-builder 25 dependency tree, including `tar`, `app-builder-lib`, and
+`builder-util-runtime`. They affect packaging tooling, not production
+dependencies. `npm audit --omit=dev` reports no vulnerabilities. This upgrade is
+the planned remediation; do not use `npm audit fix --force` in place of it.
+
 ## Prerequisites
 
 - Windows with Developer Mode enabled (Settings > For developers), or an elevated
