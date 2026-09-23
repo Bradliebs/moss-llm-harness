@@ -20,6 +20,10 @@ const CH = {
   taskPause: "moss:task:pause",
   taskResume: "moss:task:resume",
   taskCancel: "moss:task:cancel",
+  diagnosticsList: "moss:diagnostics:list",
+  diagnosticsConfigure: "moss:diagnostics:configure",
+  diagnosticsClear: "moss:diagnostics:clear",
+  diagnosticsRecord: "moss:diagnostics:record",
   missionAuthorize: "moss:mission:authorize",
   missionCapabilities: "moss:mission:capabilities",
   providerListModels: "moss:provider:listModels",
@@ -81,6 +85,12 @@ contextBridge.exposeInMainWorld("moss", {
     pause: (id, summary) => ipcRenderer.invoke(CH.taskPause, id, summary),
     resume: (id) => ipcRenderer.invoke(CH.taskResume, id),
     cancel: (id) => ipcRenderer.invoke(CH.taskCancel, id),
+  },
+  diagnostics: {
+    list: () => ipcRenderer.invoke(CH.diagnosticsList),
+    configure: (config) => ipcRenderer.invoke(CH.diagnosticsConfigure, config),
+    clear: () => ipcRenderer.invoke(CH.diagnosticsClear),
+    record: (kind) => ipcRenderer.invoke(CH.diagnosticsRecord, kind),
   },
   mission: {
     authorize: (request) => ipcRenderer.invoke(CH.missionAuthorize, request),

@@ -55,7 +55,12 @@ describe("resolveMaxToolRounds", () => {
 describe("resolveMissionSpec", () => {
   const spec = {
     objective: "Inspect the workspace",
-    acceptanceCriteria: [{ id: "done", description: "Inspection complete", mandatory: true }],
+    acceptanceCriteria: [{
+      id: "done",
+      description: "Inspection complete",
+      mandatory: true,
+      verification: { kind: "file-exists" as const, path: "report.md" },
+    }],
     constraints: [],
     assumptions: [],
   };
@@ -133,6 +138,14 @@ describe("registerChatIpc", () => {
     const request = {
       objective: "Implement the feature",
       workspaceRoot: "C:\\workspace",
+      acceptanceCriteria: [{
+        id: "done",
+        description: "The feature exists",
+        mandatory: true,
+        verification: { kind: "file-exists" as const, path: "feature.ts" },
+      }],
+      constraints: [],
+      assumptions: [],
       policy: {
         authority: "policy-scoped" as const,
         requestedCapabilities: ["write_file"],

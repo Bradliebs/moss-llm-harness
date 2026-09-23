@@ -14,10 +14,12 @@ import { createLogger } from "../common/logger";
 import { mcpManager } from "./backend/moss/mcp/mcp-manager";
 import { memoryStore } from "./backend/moss/memory/memory-store";
 import { taskEngine } from "./backend/moss/task/task-engine";
+import { productDiagnostics } from "./backend/moss/product-diagnostics";
 import { registerChatIpc } from "./ipc/chat-ipc";
 
 const log = createLogger("Main");
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+const processStartedAt = Date.now();
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -125,6 +127,9 @@ function createWindow(): void {
     log.error(detail);
     fileLog(detail);
     showLoadError(detail);
+  });
+  mainWindow.webContents.once("did-finish-load", () => {
+    void productDiagnostics.record("renderer-startup", { durationMs: Date.now() - processStartedAt });
   });
 
   if (devServerUrl) {

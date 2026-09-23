@@ -21,21 +21,31 @@ runtime, IPC contract, preload bridge, or renderer event handling.
 Build the unpacked app and run its Playwright Electron smoke:
 
 ```powershell
-npm run pack
-npm run smoke:packaged
-```
-
-If Windows blocks electron-builder's signing-helper symlinks, create an unsigned
-local smoke package without changing the release configuration:
-
-```powershell
 npm run build
-npx electron-builder --dir --config.win.signAndEditExecutable=false
+npm run pack:ci
 npm run smoke:packaged
 ```
+
+The `pack:ci` command creates an unsigned package without changing the release
+configuration. The Windows CI job runs these commands after typechecking and the
+deterministic test suite.
 
 The smoke passes when `Moss.exe` loads and the Chat/Mission selector, mission
-review surface, and all four budget controls render through the packaged bridge.
+review surface, settings dialog semantics, all four budget controls, and mission
+contract controls render through the packaged bridge. It also verifies that
+Launch remains disabled before the mandatory criterion passes preflight and that
+keyboard focus remains trapped in Settings, Escape closes the dialog, and focus
+returns to its opener.
+
+The CI build also runs the renderer bundle budget:
+
+```powershell
+npm run check:bundle
+```
+
+This gate measures the initial JavaScript and stylesheet graph referenced by the
+built `dist/index.html`. Secondary Settings, Library, artifact, document parser,
+and syntax-language chunks are excluded until the user opens those workflows.
 
 ## Prerequisites
 
@@ -175,6 +185,11 @@ still required before closing end-to-end dictation acceptance.
    - Open Settings, enter the base URL (`http://localhost:11434/v1` for Ollama),
      and confirm the model dropdown populates from the provider.
    - Select a model; confirm the header shows the model name.
+   - Confirm the Readiness category reports the selected model, workspace,
+     approval mode, verification, automation scopes, pricing, and optional
+     services.
+   - Apply each readiness profile and confirm it never enables automatic
+     mutation approval. Run **Test provider connection** before continuing.
 
 2. **Plain chat (tools off)**
    - Disable tools in Settings.
@@ -221,6 +236,8 @@ still required before closing end-to-end dictation acceptance.
 9. **Supervised read-only mission**
    - Select Mission and open Review mission.
    - Keep Supervised selected and choose only read-only repository capabilities.
+   - Describe a measurable acceptance criterion and select its verification
+     method. Confirm Launch remains disabled until the method is complete.
    - Launch a repository inspection objective. Confirm no native authorization
      appears, the plan revision and worker role render, and deterministic
      evidence is attached to the acceptance criterion before completion.
@@ -235,7 +252,8 @@ still required before closing end-to-end dictation acceptance.
 11. **Policy-scoped bounded mutation**
     - Select Policy-scoped, set positive time, token, action, and cost budgets,
       then launch a bounded file change.
-    - Confirm the native dialog names the objective and authority scope.
+    - Confirm the native dialog names the objective, acceptance criterion,
+      verification method, and authority scope.
     - Cancel once and confirm no task launches and the draft remains. Launch
       again, approve, and confirm usage never exceeds the reviewed budgets.
 
@@ -246,11 +264,59 @@ still required before closing end-to-end dictation acceptance.
     - Interrupt a mission while read-only workers are active. Confirm active
       workers settle, their step leases clear, and no dependent exclusive step
       starts until a deliberate resume creates fresh attempts.
+    - Trigger a verification failure and confirm **Edit verification** reopens
+      mission review instead of offering a blind Resume action.
+
+13. **Background mission inspection**
+    - Start a durable mission, then select another conversation while it runs.
+      Confirm transient output remains visible only in the owning conversation.
+    - Open **Run center**. Confirm the mission shows its current state and the
+      **Inspect** action returns to the owning conversation without interrupting
+      execution.
+    - Expand **Run details** and confirm step state, consumed budgets, evidence
+      pass count, and artifact count match the owning mission.
+    - For paused or blocked work, select **Review and resume** and confirm Moss
+      returns to the owning conversation and its specific recovery controls.
+    - Export run diagnostics and confirm the JSON excludes objective text,
+      evidence summaries, tool arguments, workspace paths, and artifact content.
+    - Pause an executing run and confirm its current attempt stops before the
+      durable task enters a resumable paused state.
+    - Confirm an active mission can be cancelled from Run center and its final
+      cancelled state remains inspectable.
+
+14. **Mission templates**
+    - Select each Coding, Research, and Automation template.
+    - Confirm each template prefills an editable objective, outcome contract,
+      verification method, capabilities, constraints, assumptions, and budgets.
+    - Remove a required prerequisite. Confirm the missing workspace, verification
+      command, or automation scope is named and Launch remains disabled.
+
+15. **Local product diagnostics**
+    - Open **Settings > Diagnostics** and confirm collection is off by default.
+    - Enable collection, complete and abort separate turns, then reopen Settings.
+      Confirm only categorical events and durations appear, including renderer
+      startup, launch-to-first-response, stop settlement, and successful blocker
+      or reload recovery when those paths were exercised.
+    - Export the redacted JSON and confirm it contains no prompt, response, API
+      key, workspace path, file content, or raw tool argument.
+    - Clear diagnostics and confirm the retained event count returns to zero
+      without changing the consent setting.
+
+16. **Notifications and compact accessibility**
+    - Trigger success, warning, and error status messages. Confirm their severity
+      is conveyed consistently and errors include a local reference identifier.
+    - Trigger a recoverable blocker and confirm its recovery action is reachable
+      from the related status presentation.
+    - Repeat Welcome, Settings, Run center, and mission review at 420 by 740.
+      Confirm controls remain reachable by keyboard without horizontal clipping.
+    - Run the packaged smoke suite and confirm axe reports no serious or critical
+      findings for those surfaces.
 
 ## Pass criteria
 
 - No uncaught errors in the main-process console or the renderer devtools.
-- Streaming, tool approval, auto-approve provenance, abort, titling, and mission
+- Streaming, tool approval, auto-approve provenance, abort, titling, background
+  inspection, templates, diagnostics, notifications, compact layout, and mission
   authority behave as described above.
 - Reload preserves session history, titles, task state, and the "auto" provenance
   tag without replaying an interrupted action.

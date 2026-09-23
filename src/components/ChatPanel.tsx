@@ -1,6 +1,6 @@
 // src/components/ChatPanel.tsx
 
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Check, Copy, FileText, Menu, PanelRightOpen, RefreshCw, X } from "lucide-react";
 
 import type { AgentMessage, ChatEventPayload, ConfidenceMode, DocumentAttachment, MissionCapabilityDescriptor, MissionLaunchPolicy, Skill, TaskBudget, TaskHistoryEntry, TaskSnapshot, TaskSpec, TokenUsage } from "@common/types";
@@ -10,6 +10,7 @@ import { parseClarification } from "@common/clarification";
 import { useDictation } from "../lib/dictation";
 import { DOCX_MEDIA_TYPE, extractDocxText, extractPdfText, imageAttachmentError, imageMediaType, isDocxFile, isLikelyVisionModel, isPdfFile, MAX_DOCX_BYTES, MAX_PDF_BYTES, textAttachmentError, textLanguageForFile } from "../lib/attachments";
 import { markdownToHtml } from "../lib/markdown";
+import { buildMissionTemplate, type MissionTemplateId } from "../lib/missionTemplates";
 import { estimateCost, formatUsd } from "../lib/pricing";
 import {
   clearSession,
@@ -29,14 +30,19 @@ import {
   setSessionTitle,
   useSessions,
 } from "../lib/sessions";
-import { modelsStore, toEmbedConfig, toProviderConfig, updateSettings, useSettings } from "../lib/settings";
+import { modelsStore, readinessItems, toEmbedConfig, toProviderConfig, updateSettings, useSettings } from "../lib/settings";
 import { type ToolStatus, toolStatusColor } from "../lib/toolStatus";
 import { MossFace } from "./MossFace";
-import { ArtifactWorkspace } from "./ArtifactWorkspace";
+import { ChatComposer } from "./ChatComposer";
 import { ClarificationForm } from "./ClarificationForm";
+import { LiveStatus } from "./LiveStatus";
+import { blockerRecovery, MissionMonitor } from "./MissionMonitor";
+import { MissionContractEditor, missionContractIssues, type MissionContract } from "./MissionReview";
 import { RichResponse } from "./RichResponse";
 import { WelcomeScreen } from "./WelcomeScreen";
+import { ToolActivity } from "./ToolActivity";
 
+const ArtifactWorkspace = lazy(() => import("./ArtifactWorkspace").then((module) => ({ default: module.ArtifactWorkspace })));
 const loadStoredArtifact = (taskId: string, artifactId: string) => window.moss.task.artifact(taskId, artifactId);
 async function copyArtifact(content: string): Promise<void> {
   if (!await window.moss.clipboard.write(content)) throw new Error("Copy failed");
@@ -97,14 +103,6 @@ interface MissionLaunch {
 function positiveNumber(value: string): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function formatDuration(milliseconds: number): string {
-  const minutes = Math.max(0, Math.ceil(milliseconds / 60_000));
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remainder = minutes % 60;
-  return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
 }
 
 function ToolCard({ tool, onApprove }: { tool: ToolView; onApprove: (callId: string, approved: boolean, comment?: string) => void }): React.ReactElement {
@@ -175,7 +173,7 @@ function ToolCard({ tool, onApprove }: { tool: ToolView; onApprove: (callId: str
             />
             <button
               type="button"
-              className="rounded-md bg-emerald-600 px-2.5 py-0.5 font-medium text-white transition hover:bg-emerald-500"
+              className="rounded-md bg-emerald-700 px-2.5 py-0.5 font-medium text-white transition hover:bg-emerald-600"
               onClick={() => onApprove(tool.callId, true, approvalComment)}
             >
               Approve
@@ -451,6 +449,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const toolAudit = sessionToolAudit(history);
   const contextUsed = contextWindowTokens(history);
   const contextDetail = contextWindowUsage(history);
+  const configuredVerificationCommands = settings.verifyEnabled
+    ? (settings.verifyCommands ?? "").split("\n").map((command) => command.trim()).filter(Boolean)
+    : [];
 
   const [pendingUser, setPendingUser] = useState<AgentMessage | null>(null);
   const [activity, setActivity] = useState<ViewItem[]>([]);
@@ -461,7 +462,6 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkillIndex, setSelectedSkillIndex] = useState(0);
   const [skillMenuDismissed, setSkillMenuDismissed] = useState(false);
-  const [dragging, setDragging] = useState(false);
   const [status, setStatus] = useState("");
   const [task, setTask] = useState<TaskSnapshot | null>(null);
   const [taskHistory, setTaskHistory] = useState<TaskHistoryEntry[]>([]);
@@ -472,24 +472,26 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const [selectedMissionCapabilities, setSelectedMissionCapabilities] = useState<string[]>([]);
   const [missionCapabilitiesLoading, setMissionCapabilitiesLoading] = useState(false);
   const [missionBudget, setMissionBudget] = useState({ minutes: "15", tokens: "50000", actions: "24", cost: "5" });
+  const [missionContract, setMissionContract] = useState<MissionContract>(() => ({
+    criteria: [{
+      id: "requested-outcome",
+      description: "",
+      mandatory: true,
+      ...(configuredVerificationCommands.length > 0
+        ? { verification: { kind: "commands" as const, commands: [configuredVerificationCommands[0]] } }
+        : {}),
+    }],
+    constraints: "",
+    assumptions: "",
+  }));
+  const [activeMissionTemplate, setActiveMissionTemplate] = useState<MissionTemplateId | null>(null);
   const [confidence, setConfidence] = useState<{ mode: ConfidenceMode; note: string } | null>(null);
   const [mcpToolCount, setMcpToolCount] = useState(0);
   const [mcpDownCount, setMcpDownCount] = useState(0);
-  const [showToolAudit, setShowToolAudit] = useState(false);
-  const [auditHideReadonly, setAuditHideReadonly] = useState(false);
-  const [auditSortByRisk, setAuditSortByRisk] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
   const [interruptQueued, setInterruptQueued] = useState(false);
   const dictation = useDictation((text) =>
     setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text)),
-  );
-
-  // The audit popover view: optionally drop readonly rows and order by risk
-  // (destructive first) so a long tool history stays scannable. The sort copy
-  // is stable, so calls of equal risk keep their execution order.
-  const riskRank = (r: string) => (r === "destructive" ? 0 : r === "mutating" ? 1 : 2);
-  const visibleToolAudit = (auditHideReadonly ? toolAudit.filter((e) => e.risk !== "readonly") : toolAudit.slice()).sort(
-    (a, b) => (auditSortByRisk ? riskRank(a.risk) - riskRank(b.risk) : 0),
   );
 
   const turnIdRef = useRef<string | null>(null);
@@ -513,10 +515,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     durableTask?: TaskSnapshot,
   ) => void>(() => undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  // Depth counter so the drop overlay does not flicker as the drag crosses
-  // nested children (each child fires its own dragenter/dragleave pair).
-  const dragDepth = useRef(0);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const slashMatch = input.match(/^\/([^\s]*)$/);
   const skillQuery = slashMatch?.[1].toLowerCase() ?? "";
@@ -823,8 +822,19 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
 
   async function launchMission(text: string, userMsg: AgentMessage): Promise<void> {
     const budget = currentMissionBudget();
-    if (!budget || selectedMissionCapabilities.length === 0) {
-      setStatus(!budget ? "Mission budgets must all be positive numbers." : "Select at least one mission capability.");
+    const contractIssues = missionContractIssues(
+      missionContract,
+      configuredVerificationCommands,
+      settingsRef.current.workspaceRoot,
+    );
+    if (!budget || selectedMissionCapabilities.length === 0 || contractIssues.length > 0) {
+      setStatus(
+        !budget
+          ? "Mission budgets must all be positive numbers."
+          : selectedMissionCapabilities.length === 0
+            ? "Select at least one mission capability."
+            : contractIssues[0],
+      );
       return;
     }
     const activeSettings = settingsRef.current;
@@ -842,12 +852,21 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       maxAutoApprovedRisk: missionAuthority === "supervised" ? "readonly" : "mutating",
       budget,
     };
+    const acceptanceCriteria = missionContract.criteria.map((criterion) => ({
+      ...structuredClone(criterion),
+      description: criterion.description.trim(),
+    }));
+    const constraints = missionContract.constraints.split("\n").map((value) => value.trim()).filter(Boolean);
+    const assumptions = missionContract.assumptions.split("\n").map((value) => value.trim()).filter(Boolean);
     let policy: MissionLaunchPolicy = policyWithoutToken;
     if (missionAuthority === "policy-scoped") {
       setStatus("Awaiting native mission authorization...");
       const authorization = await window.moss.mission.authorize({
         objective: text,
         workspaceRoot: activeSettings.workspaceRoot ?? undefined,
+        acceptanceCriteria,
+        constraints,
+        assumptions,
         policy: policyWithoutToken,
         automation,
       });
@@ -859,13 +878,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     }
     const spec: TaskSpec = {
       objective: text,
-      acceptanceCriteria: [{
-        id: "requested-outcome",
-        description: "The requested outcome is complete and verified with available evidence.",
-        mandatory: true,
-      }],
-      constraints: [],
-      assumptions: [],
+      acceptanceCriteria,
+      constraints,
+      assumptions,
       workspaceRoot: activeSettings.workspaceRoot ?? undefined,
       budget,
     };
@@ -881,6 +896,10 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     const text = (textArg ?? input).trim();
     if ((!text && attachments.length === 0 && documents.length === 0) || pendingAttachmentReads > 0 || !settings.model) return;
     if (busy && queuedInterruptionRef.current) return;
+    if (busy && turnSessionRef.current !== currentSessionIdRef.current) {
+      setStatus("Open the running conversation before interrupting it.");
+      return;
+    }
 
     const sessionId = busy ? turnSessionRef.current : ensureCurrentSession();
     if (!sessionId) return;
@@ -929,6 +948,29 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     } catch (error) {
       setStatus(`Could not cancel task: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  function applyBlockerRecovery(): void {
+    if (!task?.blocker) return;
+    const recovery = blockerRecovery(task.blocker.kind);
+    if (recovery.action === "settings") {
+      onOpenSettings();
+      return;
+    }
+    if (recovery.action === "guidance") {
+      setStatus("Add the missing decision or guidance, then send it as a follow-up.");
+      composerRef.current?.focus();
+      return;
+    }
+    setComposerMode("mission");
+    setInput(task.spec.objective);
+    setMissionContract({
+      criteria: task.spec.acceptanceCriteria.map((criterion) => structuredClone(criterion)),
+      constraints: task.spec.constraints.join("\n"),
+      assumptions: task.spec.assumptions.join("\n"),
+    });
+    setStatus("Review the mission contract and launch a revised mission.");
+    composerRef.current?.focus();
   }
 
   /** Fork this conversation into a fresh chat carrying a model-written summary.
@@ -1091,29 +1133,38 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     );
   }
 
+  function applyMissionTemplate(id: MissionTemplateId): void {
+    const template = buildMissionTemplate(
+      id,
+      configuredVerificationCommands,
+      missionCapabilities,
+      Boolean(settings.workspaceRoot),
+    );
+    setActiveMissionTemplate(id);
+    setMissionContract(template.contract);
+    setSelectedMissionCapabilities(template.capabilityIds);
+    setMissionBudget(template.budget);
+    if (!input.trim()) setInput(template.objective);
+    setStatus(
+      template.missingPrerequisites.length > 0
+        ? `${template.label} template applied. Before launch: ${template.missingPrerequisites.join(" ")}`
+        : `${template.label} template applied. Review the contract before launch.`,
+    );
+  }
+
+  const turnActiveElsewhere = busy && !!turnSessionRef.current && turnSessionRef.current !== current?.id;
+  const ownsActiveTurn = !busy || turnSessionRef.current === current?.id;
   const items: ViewItem[] = [
     ...messagesToItems(history),
-    ...(pendingUser ? [{ kind: "message", role: "user", content: pendingUser.content, images: pendingUser.images, documents: pendingUser.documents } as MessageView] : []),
-    ...activity,
+    ...(ownsActiveTurn && pendingUser ? [{ kind: "message", role: "user", content: pendingUser.content, images: pendingUser.images, documents: pendingUser.documents } as MessageView] : []),
+    ...(ownsActiveTurn ? activity : []),
   ];
 
   const showWelcome = items.length === 0;
-  const taskActionCount = task?.attempts.reduce((total, attempt) => total + attempt.actionCount, 0) ?? 0;
-  const taskTokenCount = task?.attempts.reduce(
-    (total, attempt) => total + (attempt.usage.inputTokens ?? 0) + (attempt.usage.outputTokens ?? 0),
-    0,
-  ) ?? 0;
-  const taskCost = task?.attempts.reduce((total, attempt) => total + attempt.estimatedCostUsd, 0) ?? 0;
-  const taskElapsedMs = task
-    ? Math.max(0, new Date(task.updatedAt).getTime() - new Date(task.createdAt).getTime())
-    : 0;
-  const runningTaskStep = task?.steps.find((step) => step.state === "running");
-  const currentExclusiveStep = task?.steps.find(
-    (step) => step.state === "running" && step.mission?.executionLane === "exclusive",
-  );
   const selectedArtifact = artifactSelection?.sessionId === current?.id && artifactSelection?.taskId === task?.id
     ? task?.artifacts?.find((artifact) => artifact.id === artifactSelection?.id)
     : undefined;
+  const missionIssues = missionContractIssues(missionContract, configuredVerificationCommands, settings.workspaceRoot);
   function openArtifact(id: string): void {
     if (current && task) setArtifactSelection({ sessionId: current.id, taskId: task.id, id });
   }
@@ -1190,74 +1241,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             ~{formatUsd(cost)}
           </span>
         ) : null}
-        {tools.total > 0 ? (
-          <span className="relative">
-            <button
-              type="button"
-              className={tools.autoApproved > 0 ? "text-xs text-amber-400/80 hover:underline" : "text-xs text-neutral-400 dark:text-neutral-600 hover:underline"}
-              title={`${tools.total} tool call(s) ran in this conversation; ${tools.autoApproved} ran without asking because auto-approve was on. Click to review.`}
-              onClick={() => setShowToolAudit((v) => !v)}
-            >
-              {tools.total} tool{tools.total === 1 ? "" : "s"}
-              {tools.autoApproved > 0 ? ` (${tools.autoApproved} auto)` : ""}
-            </button>
-            {showToolAudit ? (
-              <div className="absolute left-0 top-5 z-20 max-h-64 w-72 overflow-y-auto rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-2 shadow-lg">
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Tool activity</p>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setAuditHideReadonly((v) => !v)}
-                      className={
-                        auditHideReadonly
-                          ? "rounded bg-neutral-300 dark:bg-neutral-700 px-1 text-[10px] uppercase text-neutral-800 dark:text-neutral-200"
-                          : "rounded bg-neutral-200 dark:bg-neutral-800 px-1 text-[10px] uppercase text-neutral-600 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200"
-                      }
-                    >
-                      Hide readonly
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAuditSortByRisk((v) => !v)}
-                      className={
-                        auditSortByRisk
-                          ? "rounded bg-neutral-300 dark:bg-neutral-700 px-1 text-[10px] uppercase text-neutral-800 dark:text-neutral-200"
-                          : "rounded bg-neutral-200 dark:bg-neutral-800 px-1 text-[10px] uppercase text-neutral-600 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200"
-                      }
-                    >
-                      By risk
-                    </button>
-                  </div>
-                </div>
-                <ul className="space-y-1">
-                  {visibleToolAudit.map((e, i) => (
-                    <li key={`${e.callId}-${i}`} className="flex items-center gap-2 text-xs">
-                      <span className="flex-1 truncate font-mono text-neutral-800 dark:text-neutral-200">{e.name}</span>
-                      <span
-                        className={
-                          e.risk === "destructive"
-                            ? "rounded bg-red-900/60 px-1 text-[10px] uppercase text-red-300"
-                            : e.risk === "mutating"
-                              ? "rounded bg-amber-900/60 px-1 text-[10px] uppercase text-amber-300"
-                              : "rounded bg-neutral-200 dark:bg-neutral-800 px-1 text-[10px] uppercase text-neutral-600 dark:text-neutral-400"
-                        }
-                      >
-                        {e.risk}
-                      </span>
-                      {e.autoApproved ? (
-                        <span className="rounded bg-amber-900/40 px-1 text-[10px] uppercase text-amber-300">auto</span>
-                      ) : null}
-                      {e.durationMs != null ? (
-                        <span className="font-mono text-[10px] tabular-nums text-neutral-500 dark:text-neutral-400">{e.durationMs}ms</span>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </span>
-        ) : null}
+        <ToolActivity total={tools.total} autoApproved={tools.autoApproved} entries={toolAudit} />
         {settings.contextLimit > 0 && contextUsed > 0 ? (
           <span
             className="inline-flex flex-col gap-0.5"
@@ -1337,7 +1321,12 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
 
       <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6">
         {showWelcome ? (
-          <WelcomeScreen onPick={(text) => send(text)} needsSetup={!settings.model} onOpenSettings={onOpenSettings} />
+          <WelcomeScreen
+            onPick={(text) => send(text)}
+            needsSetup={!settings.model}
+            onOpenSettings={onOpenSettings}
+            readiness={readinessItems(settings)}
+          />
         ) : (
           items.map((it, i) => {
           const clarification = it.kind === "message" && it.role === "assistant" && !it.interrupted && !it.hasToolCalls && !(busy && i === items.length - 1)
@@ -1463,152 +1452,76 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       </div>
 
       {task ? (
-        <section className="border-t border-neutral-200 dark:border-neutral-800 bg-white/70 dark:bg-neutral-900/70 px-4 py-2 text-xs" aria-label="Task status">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="font-semibold text-neutral-900 dark:text-neutral-100">Task</span>
-            <span className={
-              task.state === "completed"
-                ? "text-emerald-600 dark:text-emerald-400"
-                : task.state === "blocked" || task.state === "failed"
-                  ? "text-red-600 dark:text-red-400"
-                  : task.state === "paused" || task.state === "waiting_for_approval"
-                    ? "text-amber-600 dark:text-amber-400"
-                    : "text-sky-600 dark:text-sky-400"
-            }>{task.state.replaceAll("_", " ")}</span>
-            <span className="min-w-0 flex-1 truncate text-neutral-500 dark:text-neutral-400">
-              {runningTaskStep?.description ?? task.spec.objective}
-            </span>
-            {task.missionPlan ? (
-              <span className="tabular-nums text-neutral-500 dark:text-neutral-400">
-                Plan r{task.missionPlan.revision} · {task.steps.filter((step) => step.state === "completed").length}/{task.steps.length} steps
-              </span>
-            ) : null}
-            {runningTaskStep?.mission ? (
-              <span className="text-neutral-500 dark:text-neutral-400">
-                {runningTaskStep.mission.workerRole} · {runningTaskStep.mission.executionLane}
-              </span>
-            ) : null}
-            <span className="tabular-nums text-neutral-500 dark:text-neutral-400">
-              {task.attempts.length} {task.attempts.length === 1 ? "attempt" : "attempts"} · {task.evidence.filter((item) => item.passed).length}/{task.spec.acceptanceCriteria.filter((item) => item.mandatory).length} evidence
-            </span>
-            {task.spec.budget?.maxActions ? (
-              <span className="tabular-nums text-neutral-500 dark:text-neutral-400">
-                {taskActionCount}/{task.spec.budget.maxActions} actions
-              </span>
-            ) : null}
-            {task.approval ? (
-              <span className="font-mono text-neutral-500 dark:text-neutral-400">
-                {task.approval.toolName} {task.approval.status}
-              </span>
-            ) : null}
-            {(task.state === "paused" || task.state === "blocked") ? (
-              <button className="rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-0.5 hover:bg-neutral-300 dark:hover:bg-neutral-700" onClick={() => void resumeTask()}>
-                Resume
-              </button>
-            ) : null}
-            {!(["completed", "failed", "cancelled"].includes(task.state)) ? (
-              <button className="text-red-600 dark:text-red-400 hover:text-red-500" onClick={() => void cancelTask()}>
-                Cancel
-              </button>
-            ) : null}
-          </div>
-          {task.spec.budget ? (
-            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-neutral-500 dark:text-neutral-400" aria-label="Remaining mission budget">
-              {task.spec.budget.maxActions ? <span>{Math.max(0, task.spec.budget.maxActions - taskActionCount)} actions left</span> : null}
-              {task.spec.budget.maxTokens ? <span>{formatTokens(Math.max(0, task.spec.budget.maxTokens - taskTokenCount))} tokens left</span> : null}
-              {task.spec.budget.maxCostUsd ? <span>{formatUsd(Math.max(0, task.spec.budget.maxCostUsd - taskCost))} left</span> : null}
-              {task.spec.budget.maxDurationMs ? <span title="Remaining at the latest durable checkpoint">{formatDuration(task.spec.budget.maxDurationMs - taskElapsedMs)} left</span> : null}
-              {currentExclusiveStep ? <span className="font-medium text-amber-700 dark:text-amber-300">Exclusive: {currentExclusiveStep.description}</span> : null}
-            </div>
-          ) : null}
-          {task.blocker ? <p className="mt-1 whitespace-pre-wrap text-amber-700 dark:text-amber-300">{task.blocker.summary}</p> : null}
-          {(task.missionPlan || task.evidence.length > 0 || (task.artifacts?.length ?? 0) > 0) ? (
-            <details className="mt-1 border-t border-neutral-200 pt-1 dark:border-neutral-800">
-              <summary className="w-fit cursor-pointer select-none text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100">
-                Mission details
-              </summary>
-              {task.missionPlan ? (
-                <ol className="mt-1 grid gap-1 sm:grid-cols-2">
-                  {task.steps.map((step) => (
-                    <li key={step.id} className="flex min-w-0 gap-2 text-neutral-600 dark:text-neutral-300">
-                      <span className="w-16 shrink-0 text-neutral-400">{step.state}</span>
-                      <span className="min-w-0 truncate">{step.description}</span>
-                      {step.mission ? <span className="ml-auto shrink-0 text-neutral-400">{step.mission.workerRole}</span> : null}
-                    </li>
-                  ))}
-                </ol>
-              ) : null}
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                {task.spec.acceptanceCriteria.map((criterion) => {
-                  const criterionEvidence = task.evidence.filter((item) => item.criterionId === criterion.id);
-                  return (
-                    <div key={criterion.id} className="min-w-0 border-l-2 border-neutral-300 pl-2 dark:border-neutral-700">
-                      <div className="flex gap-2 text-neutral-700 dark:text-neutral-200">
-                        <span className="min-w-0 flex-1 truncate">{criterion.description}</span>
-                        <span className="shrink-0 tabular-nums text-neutral-400">{criterionEvidence.filter((item) => item.passed).length}/{criterionEvidence.length}</span>
-                      </div>
-                      {criterionEvidence.map((item) => <p key={item.id} className={item.passed ? "truncate text-emerald-600 dark:text-emerald-400" : "truncate text-red-600 dark:text-red-400"}>{item.summary}</p>)}
-                    </div>
-                  );
-                })}
-              </div>
-              {task.artifacts && task.artifacts.length > 0 ? (
-                <ul className="mt-2 space-y-1" aria-label="Mission artifacts">
-                  {task.artifacts.map((artifact) => (
-                    <li key={artifact.id} className="flex gap-2 text-neutral-600 dark:text-neutral-300">
-                      <button type="button" className="min-w-0 break-words text-left font-mono underline decoration-neutral-400 underline-offset-2 hover:text-emerald-600" title={`Open ${artifact.name}`} onClick={() => openArtifact(artifact.id)}>{artifact.name}</button>
-                      <span className="min-w-0 truncate text-neutral-400">{artifact.summary}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </details>
-          ) : null}
-          {taskHistory.length > 0 ? (
-            <details className="mt-1 border-t border-neutral-200 pt-1 dark:border-neutral-800">
-              <summary className="w-fit cursor-pointer select-none text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100">
-                Timeline ({taskHistory.length})
-              </summary>
-              <ol className="mt-1 max-h-40 space-y-1 overflow-y-auto border-l border-neutral-300 pl-3 dark:border-neutral-700">
-                {taskHistory.map((entry) => (
-                  <li key={entry.id} className="flex gap-2 text-neutral-600 dark:text-neutral-300">
-                    <time className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500" dateTime={entry.occurredAt}>
-                      {new Date(entry.occurredAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </time>
-                    <span>{entry.summary}</span>
-                  </li>
-                ))}
-              </ol>
-            </details>
-          ) : null}
-        </section>
+        <MissionMonitor
+          task={task}
+          history={taskHistory}
+          onRecover={applyBlockerRecovery}
+          onResume={() => void resumeTask()}
+          onCancel={() => void cancelTask()}
+          onOpenArtifact={openArtifact}
+        />
       ) : null}
-
-      <footer
-        className="relative border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-950/60 px-4 py-3 backdrop-blur-sm"
-        onDragEnter={(e) => {
-          e.preventDefault();
-          dragDepth.current += 1;
-          setDragging(true);
+      <ChatComposer
+        value={input}
+        onValueChange={(value) => {
+          setInput(value);
+          setSelectedSkillIndex(0);
+          setSkillMenuDismissed(false);
         }}
-        onDragOver={(e) => e.preventDefault()}
-        onDragLeave={() => {
-          dragDepth.current = Math.max(0, dragDepth.current - 1);
-          if (dragDepth.current === 0) setDragging(false);
+        onKeyDown={(event) => {
+          if (skillMenuOpen && event.key === "ArrowDown") {
+            event.preventDefault();
+            setSelectedSkillIndex((index) => (index + 1) % matchingSkills.length);
+            return;
+          }
+          if (skillMenuOpen && event.key === "ArrowUp") {
+            event.preventDefault();
+            setSelectedSkillIndex((index) => (index - 1 + matchingSkills.length) % matchingSkills.length);
+            return;
+          }
+          if (skillMenuOpen && event.key === "Escape") {
+            event.preventDefault();
+            setSkillMenuDismissed(true);
+            return;
+          }
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            if (skillMenuOpen) {
+              selectSkill(matchingSkills[selectedSkillIndex] ?? matchingSkills[0]);
+              return;
+            }
+            send();
+          }
         }}
-        onDrop={(e) => {
-          e.preventDefault();
-          dragDepth.current = 0;
-          setDragging(false);
-          addFiles(e.dataTransfer.files);
+        onPaste={(event) => {
+          if (event.clipboardData.files.length > 0) {
+            event.preventDefault();
+            addFiles(event.clipboardData.files);
+          }
         }}
+        onFiles={addFiles}
+        composerRef={composerRef}
+        attachmentCount={attachments.length + documents.length}
+        dictationState={dictation.state}
+        onToggleDictation={dictation.toggle}
+        busy={busy && ownsActiveTurn}
+        interruptQueued={interruptQueued}
+        modelSelected={!!settings.model && !turnActiveElsewhere}
+        pendingAttachmentReads={pendingAttachmentReads}
+        hasSendContent={!!input.trim() || attachments.length > 0 || documents.length > 0}
+        launchBlocked={composerMode === "mission" && (
+          missionCapabilitiesLoading
+          || selectedMissionCapabilities.length === 0
+          || missionIssues.length > 0
+        )}
+        mode={composerMode}
+        onSend={() => send()}
+        onAbort={abort}
       >
-        {dragging ? (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-emerald-500/60 bg-neutral-50/80 dark:bg-neutral-950/80 text-sm text-emerald-300">
-            Drop files to attach
-          </div>
-        ) : null}
-        {status ? <div className="mb-2 text-xs text-neutral-600 dark:text-neutral-400">{status}</div> : null}
+        <LiveStatus
+          message={turnActiveElsewhere ? "Another conversation has an active run. You can inspect this conversation while it continues." : status}
+          className="mb-2 text-xs text-neutral-600 dark:text-neutral-400"
+        />
         {confidence ? (
           <div className="mb-2" title={confidence.note}>
             <span className={`rounded px-1.5 py-0.5 text-xs ${CONFIDENCE_CLASS[confidence.mode]}`}>
@@ -1724,7 +1637,26 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             ))}
           </div>
           {composerMode === "mission" ? (
-            <details className="relative">
+            <>
+              <div className="flex flex-wrap items-center gap-1.5" aria-label="Mission templates">
+                <span className="text-[11px] text-neutral-500 dark:text-neutral-400">Templates:</span>
+                {(["coding", "research", "automation"] as const).map((templateId) => (
+                  <button
+                    key={templateId}
+                    type="button"
+                    className={`rounded border px-2 py-1 text-[11px] capitalize ${
+                      activeMissionTemplate === templateId
+                        ? "border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                        : "border-neutral-300 text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                    }`}
+                    onClick={() => applyMissionTemplate(templateId)}
+                    disabled={busy}
+                  >
+                    {templateId}
+                  </button>
+                ))}
+              </div>
+            <details  className="relative">
               <summary className="cursor-pointer select-none rounded px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-200 dark:text-neutral-300 dark:hover:bg-neutral-800">
                 Review mission
               </summary>
@@ -1732,11 +1664,17 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                 className="absolute bottom-8 left-0 z-20 w-[min(36rem,calc(100vw-2rem))] rounded-md border border-neutral-300 bg-white p-3 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
                 aria-label="Mission review"
               >
+                <MissionContractEditor
+                  contract={missionContract}
+                  configuredCommands={configuredVerificationCommands}
+                  onChange={setMissionContract}
+                />
+                <div className="my-3 border-t border-neutral-200 dark:border-neutral-700" />
                 <div className="mb-3 flex gap-1" aria-label="Mission authority">
                   <button
                     type="button"
                     aria-pressed={missionAuthority === "supervised"}
-                    className={`rounded px-2 py-1 text-xs ${missionAuthority === "supervised" ? "bg-emerald-600 text-white" : "bg-neutral-200 dark:bg-neutral-800"}`}
+                    className={`rounded px-2 py-1 text-xs ${missionAuthority === "supervised" ? "bg-emerald-700 text-white" : "bg-neutral-200 dark:bg-neutral-800"}`}
                     onClick={() => setMissionAuthority("supervised")}
                   >
                     Supervised
@@ -1797,125 +1735,30 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                 </fieldset>
               </div>
             </details>
+            </>
           ) : null}
           {composerMode === "mission" ? (
-            <span className="text-xs text-neutral-500 dark:text-neutral-400">
-              {missionAuthority === "supervised" ? "Prompts before mutations" : "Native approval for bounded mutations"}
-            </span>
+            <>
+              <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                {missionAuthority === "supervised" ? "Prompts before mutations" : "Native approval for bounded mutations"}
+              </span>
+              {missionIssues.length > 0 ? (
+                <span className="text-xs text-amber-700 dark:text-amber-300">{missionIssues[0]}</span>
+              ) : (
+                <span className="text-xs text-emerald-700 dark:text-emerald-300">
+                  {missionContract.criteria.length} verified {missionContract.criteria.length === 1 ? "criterion" : "criteria"}
+                </span>
+              )}
+            </>
           ) : null}
         </div>
-        <div className="flex gap-2">
-          <textarea
-            className="flex-1 resize-none rounded-xl border border-neutral-300/60 dark:border-neutral-700/60 bg-neutral-200 dark:bg-neutral-800 px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
-            rows={2}
-            placeholder="Message…"
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              setSelectedSkillIndex(0);
-              setSkillMenuDismissed(false);
-            }}
-            onPaste={(e) => {
-              if (e.clipboardData.files.length > 0) {
-                e.preventDefault();
-                addFiles(e.clipboardData.files);
-              }
-            }}
-            onKeyDown={(e) => {
-              if (skillMenuOpen && e.key === "ArrowDown") {
-                e.preventDefault();
-                setSelectedSkillIndex((index) => (index + 1) % matchingSkills.length);
-                return;
-              }
-              if (skillMenuOpen && e.key === "ArrowUp") {
-                e.preventDefault();
-                setSelectedSkillIndex((index) => (index - 1 + matchingSkills.length) % matchingSkills.length);
-                return;
-              }
-              if (skillMenuOpen && e.key === "Escape") {
-                e.preventDefault();
-                setSkillMenuDismissed(true);
-                return;
-              }
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                if (skillMenuOpen) {
-                  selectSkill(matchingSkills[selectedSkillIndex] ?? matchingSkills[0]);
-                  return;
-                }
-                send();
-              }
-            }}
-          />
-          <input
-            ref={fileInputRef}
-            type="file"
-            aria-label="Attach files"
-            accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.avif,.docx,.pdf,.txt,.md,.json,.csv,.tsv,.log,.xml,.yml,.yaml,.toml,.ini,.html,.css,.ts,.tsx,.js,.jsx,.py,.sh,.sql,.rs,.go,.java,.c,.cpp,.rb"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              addFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <button
-            className="rounded-xl bg-neutral-300 dark:bg-neutral-700 px-3 py-2 transition hover:bg-neutral-400 dark:hover:bg-neutral-600"
-            onClick={() => fileInputRef.current?.click()}
-            title="Attach an image, Word (.docx), PDF, or text file"
-          >
-            Attach{attachments.length + documents.length > 0 ? ` (${attachments.length + documents.length})` : ""}
-          </button>
-          <button
-            className={`rounded-xl px-3 py-2 transition disabled:opacity-50 ${
-              dictation.state === "recording"
-                ? "bg-red-700 hover:bg-red-600"
-                : "bg-neutral-300 dark:bg-neutral-700 hover:bg-neutral-400 dark:hover:bg-neutral-600"
-            }`}
-            onClick={dictation.toggle}
-            disabled={dictation.state === "transcribing"}
-            title="Dictate with Whisper"
-          >
-            {dictation.state === "recording"
-              ? "Recording"
-              : dictation.state === "transcribing"
-                ? "…"
-                : "Mic"}
-          </button>
-          {busy ? (
-            <>
-              <button
-                className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white shadow transition hover:bg-emerald-500 disabled:opacity-50"
-                onClick={() => send()}
-                disabled={
-                  interruptQueued ||
-                  !settings.model ||
-                  pendingAttachmentReads > 0 ||
-                  (!input.trim() && attachments.length === 0 && documents.length === 0)
-                }
-                title="Stop the current response and send this message"
-              >
-                {interruptQueued ? "Queued" : "Interrupt"}
-              </button>
-              <button className="rounded-xl bg-red-700 px-4 py-2 font-medium text-white transition hover:bg-red-600" onClick={abort}>
-                Stop
-              </button>
-            </>
-          ) : (
-            <button
-              className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white shadow transition hover:bg-emerald-500 disabled:opacity-50"
-              onClick={() => send()}
-              disabled={!settings.model || pendingAttachmentReads > 0 || (composerMode === "mission" && (missionCapabilitiesLoading || selectedMissionCapabilities.length === 0))}
-            >
-              {composerMode === "mission" ? "Launch" : "Send"}
-            </button>
-          )}
-        </div>
-      </footer>
+      </ChatComposer>
     </div>
     {selectedArtifact && task ? (
       <div className="absolute inset-0 z-20 min-w-0 lg:static lg:z-auto lg:w-[40%] lg:max-w-[40rem] lg:shrink-0">
-        <ArtifactWorkspace key={`${current?.id}:${task.id}`} artifacts={task.artifacts ?? []} selectedId={selectedArtifact.id} onSelect={openArtifact} onClose={() => setArtifactSelection(null)} loadArtifact={loadStoredArtifact} onCopy={copyArtifact} />
+        <Suspense fallback={null}>
+          <ArtifactWorkspace key={`${current?.id}:${task.id}`} artifacts={task.artifacts ?? []} selectedId={selectedArtifact.id} onSelect={openArtifact} onClose={() => setArtifactSelection(null)} loadArtifact={loadStoredArtifact} onCopy={copyArtifact} />
+        </Suspense>
       </div>
     ) : null}
     </div>

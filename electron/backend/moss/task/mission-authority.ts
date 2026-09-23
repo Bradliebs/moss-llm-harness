@@ -55,6 +55,17 @@ export class MissionAuthorityBroker {
 
 export function validateMissionAuthorizationRequest(request: MissionAuthorizationRequest): void {
   if (!request.objective.trim()) throw new Error("Mission authorization requires an objective");
+  if (!request.acceptanceCriteria.some((criterion) => criterion.mandatory)) {
+    throw new Error("Mission authorization requires a mandatory acceptance criterion");
+  }
+  for (const criterion of request.acceptanceCriteria.filter((item) => item.mandatory)) {
+    if (!criterion.id.trim() || !criterion.description.trim()) {
+      throw new Error("Mission authorization criteria require identifiers and measurable outcomes");
+    }
+    if (!criterion.verification) {
+      throw new Error("Mission authorization criteria require verification methods");
+    }
+  }
   if (request.policy.authority !== "policy-scoped") {
     throw new Error("Only policy-scoped missions require elevated authorization");
   }
@@ -78,6 +89,14 @@ function fingerprint(request: MissionAuthorizationRequest): string {
   const normalized = {
     objective: request.objective.trim(),
     workspaceRoot: request.workspaceRoot?.trim() ?? "",
+    acceptanceCriteria: request.acceptanceCriteria.map((criterion) => ({
+      id: criterion.id.trim(),
+      description: criterion.description.trim(),
+      mandatory: criterion.mandatory,
+      verification: criterion.verification,
+    })),
+    constraints: request.constraints.map((value) => value.trim()),
+    assumptions: request.assumptions.map((value) => value.trim()),
     policy: {
       authority: request.policy.authority,
       requestedCapabilities: request.policy.requestedCapabilities.map((value) => value.trim()).sort(),

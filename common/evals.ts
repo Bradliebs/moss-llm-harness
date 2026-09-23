@@ -259,6 +259,15 @@ export interface HarnessProcessScores {
   consistency: number;
 }
 
+export interface HarnessProductMetrics {
+  interventionCount: number;
+  recoveryAttempts: number;
+  recoverySucceeded: boolean;
+  approvalLatencyMs?: number;
+  userVisibleErrorQuality: "actionable" | "generic" | "not-applicable";
+  falseCompletion: boolean;
+}
+
 export interface HarnessMechanismMetric {
   passed: number;
   total: number;

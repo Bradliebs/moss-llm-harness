@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MissionWorkerResult, MissionWorkOrder } from "./mission-controller";
-import { WorkspaceMissionVerifier } from "./mission-verifier";
+import { buildMissionVerificationChecks, WorkspaceMissionVerifier } from "./mission-verifier";
 import { VerificationRegistry } from "../verify/verification-registry";
 
 const dirs: string[] = [];
@@ -24,6 +24,87 @@ describe("WorkspaceMissionVerifier", () => {
 
     expect(evidence).toEqual([expect.objectContaining({ criterionId: "tests", passed: false })]);
     expect(evidence[0].summary).toContain("No deterministic workspace verification check");
+  });
+
+  describe("buildMissionVerificationChecks", () => {
+    it("converts criterion bindings into host verification checks", () => {
+      expect(buildMissionVerificationChecks({
+        objective: "Build",
+        acceptanceCriteria: [{
+          id: "done",
+          description: "Tests pass",
+          mandatory: true,
+          verification: { kind: "commands", commands: ["npm test"] },
+        }],
+        constraints: [],
+        assumptions: [],
+      }, { enabled: true, commands: ["npm test"] })).toEqual([{
+        id: "done-command-1",
+        criterionId: "done",
+        kind: "command",
+        command: "npm test",
+      }]);
+    });
+
+    it("converts file and HTTP bindings without introducing commands", () => {
+      expect(buildMissionVerificationChecks({
+        objective: "Build",
+        acceptanceCriteria: [
+          {
+            id: "artifact",
+            description: "Artifact exists",
+            mandatory: true,
+            verification: { kind: "file-exists", path: "dist/report.json" },
+          },
+          {
+            id: "content",
+            description: "Artifact is complete",
+            mandatory: true,
+            verification: { kind: "file-contains", path: "dist/report.json", substring: "\"complete\": true" },
+          },
+          {
+            id: "health",
+            description: "Service is healthy",
+            mandatory: true,
+            verification: { kind: "http", url: "https://example.com/health", expectedStatus: 204 },
+          },
+        ],
+        constraints: [],
+        assumptions: [],
+      }, undefined)).toEqual([
+        { id: "artifact-file-exists", criterionId: "artifact", kind: "file-exists", path: "dist/report.json" },
+        {
+          id: "content-file-contains",
+          criterionId: "content",
+          kind: "file-contains",
+          path: "dist/report.json",
+          substring: "\"complete\": true",
+        },
+        {
+          id: "health-http",
+          criterionId: "health",
+          kind: "http",
+          url: "https://example.com/health",
+          expectedStatus: 204,
+        },
+      ]);
+    });
+
+    it("rejects mandatory criteria without bindings and commands not enabled by the user", () => {
+      const spec = {
+        objective: "Build",
+        acceptanceCriteria: [{ id: "done", description: "Tests pass", mandatory: true }],
+        constraints: [],
+        assumptions: [],
+      };
+      expect(() => buildMissionVerificationChecks(spec, undefined)).toThrow("requires a verification method");
+      spec.acceptanceCriteria[0] = {
+        ...spec.acceptanceCriteria[0],
+        verification: { kind: "commands", commands: ["npm test"] },
+      };
+      expect(() => buildMissionVerificationChecks(spec, { enabled: false, commands: ["npm test"] }))
+        .toThrow("not enabled in Settings");
+    });
   });
 
   it("passes a criterion only when all explicitly bound host checks pass", async () => {

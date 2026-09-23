@@ -18,6 +18,8 @@ import type {
   MissionCapabilitiesRequest,
   MissionCapabilityDescriptor,
   ProviderConfig,
+  ProductDiagnosticEntry,
+  ProductDiagnosticsConfig,
   Skill,
   SkillCreateRequest,
   SkillImportResult,
@@ -62,6 +64,12 @@ declare global {
         pause: (id: string, summary: string) => Promise<TaskSnapshot>;
         resume: (id: string) => Promise<TaskSnapshot>;
         cancel: (id: string) => Promise<TaskSnapshot>;
+      };
+      diagnostics: {
+        list: () => Promise<{ config: ProductDiagnosticsConfig; entries: ProductDiagnosticEntry[] }>;
+        configure: (config: ProductDiagnosticsConfig) => Promise<ProductDiagnosticsConfig>;
+        clear: () => Promise<void>;
+        record: (kind: "renderer-startup") => Promise<void>;
       };
       mission: {
         authorize: (request: MissionAuthorizationRequest) => Promise<MissionAuthorization | null>;

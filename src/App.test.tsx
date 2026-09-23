@@ -17,12 +17,14 @@ vi.mock("./components/Sidebar", () => ({
     busy,
     onOpenSettings,
     onOpenLibrary,
+    onOpenRuns,
     open,
     onClose,
   }: {
     busy: boolean;
     onOpenSettings: () => void;
     onOpenLibrary: () => void;
+    onOpenRuns: () => void;
     open: boolean;
     onClose: () => void;
   }) => (
@@ -32,6 +34,7 @@ vi.mock("./components/Sidebar", () => ({
       <button onClick={onClose}>sb-close</button>
       <button onClick={onOpenSettings}>sb-open-settings</button>
       <button onClick={onOpenLibrary}>sb-open-library</button>
+      <button onClick={onOpenRuns}>sb-open-runs</button>
     </div>
   ),
 }));
@@ -64,6 +67,15 @@ vi.mock("./components/LibraryPanel", () => ({
   ),
 }));
 
+vi.mock("./components/RunCenter", () => ({
+  RunCenter: ({ onClose }: { onClose: () => void }) => (
+    <div>
+      <span>run-center-overlay</span>
+      <button onClick={onClose}>rc-close</button>
+    </div>
+  ),
+}));
+
 afterEach(cleanup);
 
 describe("App", () => {
@@ -73,26 +85,35 @@ describe("App", () => {
     expect(screen.queryByText("library-overlay")).toBeNull();
   });
 
-  it("opens and closes the settings overlay", () => {
+  it("opens and closes the settings overlay", async () => {
     render(<App />);
     fireEvent.click(screen.getByText("sb-open-settings"));
-    expect(screen.getByText("settings-overlay")).toBeDefined();
+    expect(await screen.findByText("settings-overlay")).toBeDefined();
     fireEvent.click(screen.getByText("sp-close"));
     expect(screen.queryByText("settings-overlay")).toBeNull();
   });
 
-  it("opens the library overlay", () => {
+  it("opens the library overlay", async () => {
     render(<App />);
     fireEvent.click(screen.getByText("sb-open-library"));
-    expect(screen.getByText("library-overlay")).toBeDefined();
+    expect(await screen.findByText("library-overlay")).toBeDefined();
   });
 
-  it("shows only one overlay at a time", () => {
+  it("opens and closes the run center", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText("sb-open-runs"));
+    expect(await screen.findByText("run-center-overlay")).toBeDefined();
+    fireEvent.click(screen.getByText("rc-close"));
+    expect(screen.queryByText("run-center-overlay")).toBeNull();
+  });
+
+  it("shows only one overlay at a time", async () => {
     render(<App />);
     fireEvent.click(screen.getByText("sb-open-settings"));
+    expect(await screen.findByText("settings-overlay")).toBeDefined();
     fireEvent.click(screen.getByText("sb-open-library"));
     expect(screen.queryByText("settings-overlay")).toBeNull();
-    expect(screen.getByText("library-overlay")).toBeDefined();
+    expect(await screen.findByText("library-overlay")).toBeDefined();
   });
 
   it("threads the busy flag from ChatPanel to the sidebar", () => {

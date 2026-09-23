@@ -40,14 +40,26 @@ vi.mock("../lib/avatar", () => ({
 
 vi.mock("../lib/settings", () => ({
   PROVIDER_PRESETS: [
-    { label: "Ollama" },
-    { label: "OpenAI" },
-    { label: "Anthropic" },
-    { label: "OpenRouter" },
-    { label: "Mistral" },
-    { label: "xAI (Grok)" },
-    { label: "Custom" },
+    { id: "ollama", label: "Ollama" },
+    { id: "openai", label: "OpenAI" },
+    { id: "anthropic", label: "Anthropic" },
+    { id: "openrouter", label: "OpenRouter" },
+    { id: "mistral", label: "Mistral" },
+    { id: "xai", label: "xAI (Grok)" },
+    { id: "custom", label: "Custom" },
   ],
+  READINESS_PROFILES: [
+    { id: "chat", label: "Chat only", description: "Model conversation without workspace tools" },
+    { id: "coding", label: "Coding", description: "Workspace tools with explicit approval and verification" },
+    { id: "research", label: "Research", description: "Browser-capable tools with explicit approval" },
+    { id: "desktop", label: "Desktop automation", description: "Windows automation with explicit approval" },
+    { id: "custom", label: "Custom", description: "Keep full control of every setting" },
+  ],
+  readinessItems: vi.fn(() => [
+    { id: "provider", label: "Provider and model", detail: "Choose a provider and model.", status: "attention" },
+    { id: "workspace", label: "Workspace", detail: "No workspace selected.", status: "attention" },
+  ]),
+  readinessProfilePatch: vi.fn((profile: string) => ({ readinessProfile: profile })),
   applyPreset: vi.fn(),
   saveProviderCredential: vi.fn(() => Promise.resolve()),
   updateSettings: vi.fn(),
@@ -82,6 +94,21 @@ beforeEach(() => {
         status: vi.fn(() => Promise.resolve({ indexed: false, files: 0, chunks: 0, model: "" })),
         reindex: vi.fn(() => Promise.resolve({ ok: true, files: 0, chunks: 0, skipped: 0 })),
       },
+      clipboard: { write: vi.fn(() => Promise.resolve()) },
+      diagnostics: {
+        list: vi.fn(() => Promise.resolve({
+          config: { enabled: false, retentionDays: 30 },
+          entries: [{
+            id: "event-1",
+            occurredAt: "2026-01-01T00:00:00.000Z",
+            kind: "turn-settled",
+            outcome: "completed",
+          }],
+        })),
+        configure: vi.fn((config) => Promise.resolve(config)),
+        clear: vi.fn(() => Promise.resolve()),
+        record: vi.fn(() => Promise.resolve()),
+      },
     },
   });
 });
@@ -93,6 +120,78 @@ afterEach(() => {
 });
 
 describe("SettingsPanel", () => {
+  it("navigates categorized routes and applies a readiness profile", () => {
+    render(<SettingsPanel onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Models" }));
+    expect(screen.getByText("Provider").closest("section")?.className).not.toContain("hidden");
+    expect(screen.getByRole("heading", { name: "Readiness" }).closest("section")?.className).toContain("hidden");
+
+    fireEvent.click(screen.getByRole("button", { name: "Readiness" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Coding/ }));
+    expect(settings.readinessProfilePatch).toHaveBeenCalledWith("coding", settingsValue);
+    expect(settings.updateSettings).toHaveBeenCalledWith({ readinessProfile: "coding" });
+  });
+
+  it("filters category navigation and copies redacted readiness diagnostics", async () => {
+    settingsValue.workspaceRoot = "C:\\secret\\project";
+    render(<SettingsPanel onClose={() => {}} />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search settings" }), { target: { value: "provider" } });
+    expect(screen.getByRole("button", { name: "Models" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Automation" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Models" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search settings" }), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
+
+    await waitFor(() => expect(window.moss.clipboard.write).toHaveBeenCalled());
+    const payload = String(vi.mocked(window.moss.clipboard.write).mock.calls[0][0]);
+    expect(payload).not.toContain("C:\\secret\\project");
+    expect(payload).toContain("Workspace selected.");
+    settingsValue.workspaceRoot = null;
+  });
+
+  it("manages opt-in local product diagnostics", async () => {
+    render(<SettingsPanel onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Diagnostics" }));
+    expect(await screen.findByText("1 retained event")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Collect local product diagnostics/ }));
+    await waitFor(() => expect(window.moss.diagnostics.configure).toHaveBeenCalledWith({
+      enabled: true,
+      retentionDays: 30,
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear diagnostics" }));
+    await waitFor(() => expect(window.moss.diagnostics.clear).toHaveBeenCalledOnce());
+  });
+
+  it("exposes modal semantics, closes on Escape, and restores focus", async () => {
+    const onClose = vi.fn();
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const view = render(<SettingsPanel onClose={onClose} />);
+
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeDefined();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close settings" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    view.unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
+
+  it("announces provider failures as an alert", async () => {
+    window.moss.provider.listModels = vi.fn(() => Promise.reject(new Error("offline")));
+
+    render(<SettingsPanel onClose={() => {}} />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Models error: offline");
+  });
+
   it("renders every provider preset as an option", async () => {
     render(<SettingsPanel onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText("No MCP servers configured or connected.")).toBeDefined());

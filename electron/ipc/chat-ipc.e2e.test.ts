@@ -322,7 +322,12 @@ describe("chat IPC turn (e2e)", () => {
         taskId,
         taskSpec: {
           objective: "Prepare a deployment",
-          acceptanceCriteria: [{ id: "ready", description: "Deployment is ready", mandatory: true }],
+          acceptanceCriteria: [{
+            id: "ready",
+            description: "Deployment is ready",
+            mandatory: true,
+            verification: { kind: "http", url: "http://127.0.0.1/deployment-ready" },
+          }],
           constraints: [],
           assumptions: [],
         },
@@ -349,7 +354,7 @@ describe("chat IPC turn (e2e)", () => {
     }
   });
 
-  it("does not certify a mission outcome from generic passing project tests", async () => {
+  it("completes a mission only from an explicitly bound passing project test", async () => {
     const taskId = `mission-complete-${crypto.randomUUID()}`;
     const workspaceRoot = mkdtempSync(join(tmpdir(), "moss-mission-ipc-"));
     writeFileSync(join(workspaceRoot, "package.json"), JSON.stringify({
@@ -394,11 +399,17 @@ describe("chat IPC turn (e2e)", () => {
         taskId,
         taskSpec: {
           objective: "Inspect and verify the workspace",
-          acceptanceCriteria: [{ id: "tests", description: "Tests pass", mandatory: true }],
+          acceptanceCriteria: [{
+            id: "tests",
+            description: "Tests pass",
+            mandatory: true,
+            verification: { kind: "commands", commands: ["npm test"] },
+          }],
           constraints: [],
           assumptions: [],
           workspaceRoot,
         },
+        verify: { enabled: true, commands: ["npm test"] },
         mission: {
           authority: "supervised",
           requestedCapabilities: ["read_file"],
@@ -414,9 +425,9 @@ describe("chat IPC turn (e2e)", () => {
       }, { timeout: 15_000 });
       expect(sent.find((payload) => payload.event.type === "turn-error")?.event).toBeUndefined();
       expect(await taskStore.get(taskId)).toMatchObject({
-        state: "blocked",
-        steps: [{ id: "verify", state: "failed" }],
-        evidence: [{ criterionId: "tests", passed: false, kind: "external" }],
+        state: "completed",
+        steps: [{ id: "verify", state: "completed" }],
+        evidence: [{ criterionId: "tests", passed: true, kind: "command" }],
       });
       expect(sent.some((payload) => payload.event.type === "tool-result" && payload.event.name === "read_file")).toBe(true);
     } finally {

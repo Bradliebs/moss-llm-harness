@@ -26,6 +26,10 @@ export const IPC = {
   taskPause: "moss:task:pause",
   taskResume: "moss:task:resume",
   taskCancel: "moss:task:cancel",
+  diagnosticsList: "moss:diagnostics:list",
+  diagnosticsConfigure: "moss:diagnostics:configure",
+  diagnosticsClear: "moss:diagnostics:clear",
+  diagnosticsRecord: "moss:diagnostics:record",
   /** renderer -> main (invoke): native-confirm elevated mission authority */
   missionAuthorize: "moss:mission:authorize",
   /** renderer -> main (invoke): list currently eligible mission capabilities */

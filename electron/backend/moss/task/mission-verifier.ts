@@ -1,6 +1,7 @@
 import type { MissionEvidenceResult, MissionStepVerifier, MissionWorkerResult, MissionWorkOrder } from "./mission-controller";
 import { VerificationRegistry } from "../verify/verification-registry";
 import type { VerificationCheck } from "../../../../common/verification";
+import type { TaskSpec, VerifyConfig } from "../../../../common/types";
 
 export interface WorkspaceMissionVerifierOptions {
   workspaceRoot: string;
@@ -45,4 +46,79 @@ export class WorkspaceMissionVerifier implements MissionStepVerifier {
     }
     return evidence;
   }
+}
+
+export function buildMissionVerificationChecks(
+  spec: TaskSpec,
+  verify: VerifyConfig | undefined,
+): VerificationCheck[] {
+  const configuredCommands = new Set(
+    verify?.enabled === true
+      ? verify.commands.map((command) => command.trim()).filter(Boolean)
+      : [],
+  );
+  const checks: VerificationCheck[] = [];
+  for (const criterion of spec.acceptanceCriteria) {
+    const binding = criterion.verification;
+    if (!binding) {
+      if (criterion.mandatory) {
+        throw new Error(`Mandatory criterion '${criterion.description}' requires a verification method`);
+      }
+      continue;
+    }
+    if (binding.kind === "commands") {
+      const commands = binding.commands.map((command) => command.trim()).filter(Boolean);
+      if (commands.length === 0) throw new Error(`Criterion '${criterion.description}' requires a verification command`);
+      for (const command of commands) {
+        if (!configuredCommands.has(command)) {
+          throw new Error(`Mission verification command is not enabled in Settings: ${command}`);
+        }
+        checks.push({
+          id: `${criterion.id}-command-${checks.length + 1}`,
+          criterionId: criterion.id,
+          kind: "command",
+          command,
+        });
+      }
+    } else if (binding.kind === "file-exists") {
+      const path = binding.path.trim();
+      if (!path) throw new Error(`Criterion '${criterion.description}' requires a path`);
+      checks.push({ id: `${criterion.id}-file-exists`, criterionId: criterion.id, kind: "file-exists", path });
+    } else if (binding.kind === "file-contains") {
+      const path = binding.path.trim();
+      const substring = binding.substring.trim();
+      if (!path || !substring) throw new Error(`Criterion '${criterion.description}' requires a path and expected text`);
+      checks.push({
+        id: `${criterion.id}-file-contains`,
+        criterionId: criterion.id,
+        kind: "file-contains",
+        path,
+        substring,
+      });
+    } else {
+      const url = binding.url.trim();
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("unsupported");
+      } catch {
+        throw new Error(`Criterion '${criterion.description}' requires a valid HTTP or HTTPS URL`);
+      }
+      if (
+        binding.expectedStatus !== undefined
+        && (!Number.isInteger(binding.expectedStatus)
+          || binding.expectedStatus < 100
+          || binding.expectedStatus > 599)
+      ) {
+        throw new Error(`Criterion '${criterion.description}' requires an HTTP status between 100 and 599`);
+      }
+      checks.push({
+        id: `${criterion.id}-http`,
+        criterionId: criterion.id,
+        kind: "http",
+        url,
+        ...(binding.expectedStatus !== undefined ? { expectedStatus: binding.expectedStatus } : {}),
+      });
+    }
+  }
+  return checks;
 }

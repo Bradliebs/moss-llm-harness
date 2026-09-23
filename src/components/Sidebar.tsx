@@ -17,6 +17,7 @@ import {
   type Session,
 } from "../lib/sessions";
 import { useSettings } from "../lib/settings";
+import { isRunActive, useTaskRuns } from "../lib/taskRuns";
 import { MossFace } from "./MossFace";
 
 interface SidebarProps {
@@ -25,6 +26,7 @@ interface SidebarProps {
   onClose?: () => void;
   onOpenSettings: () => void;
   onOpenLibrary: () => void;
+  onOpenRuns?: () => void;
 }
 
 // Trigger a client-side file download for a text payload. Guards on
@@ -52,14 +54,16 @@ function copyToClipboard(text: string): void {
   void navigator.clipboard.writeText(text);
 }
 
-export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLibrary }: SidebarProps): React.ReactElement {
+export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLibrary, onOpenRuns }: SidebarProps): React.ReactElement {
   const { sessions, currentId } = useSessions();
+  const runs = useTaskRuns();
   const settings = useSettings();
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
 
   const exportOptions = { includeTools: true, model: settings.model, modelRates: settings.modelRates };
+  const runsByTask = new Map(runs.map((run) => [run.id, run]));
 
   const filter = query.trim().toLowerCase();
   const visible = filter ? sessions.filter((s) => s.title.toLowerCase().includes(filter)) : sessions;
@@ -119,9 +123,8 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
       </div>
       <div className="border-b border-neutral-200 dark:border-neutral-800 p-2">
         <button
-          className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white shadow transition hover:bg-emerald-500 disabled:opacity-50"
+          className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-medium text-white shadow transition hover:bg-emerald-600 disabled:opacity-50"
           onClick={createAndClose}
-          disabled={busy}
         >
           + New chat
         </button>
@@ -144,7 +147,10 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
           <p className="px-2 py-4 text-xs text-neutral-500 dark:text-neutral-400">No matching conversations.</p>
         ) : (
           <ul className="space-y-1">
-            {visible.map((s) => (
+            {visible.map((s) => {
+                const run = s.taskId ? runsByTask.get(s.taskId) : undefined;
+                const active = isRunActive(run);
+                return (
               <li
                 key={s.id}
                 className={`group relative flex items-center rounded-md px-2 py-1.5 text-sm transition ${
@@ -172,16 +178,24 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
                       className="min-w-0 flex-1 truncate text-left group-hover:pr-24 group-focus-within:pr-24 disabled:cursor-not-allowed"
                       onClick={() => selectAndClose(s.id)}
                       onDoubleClick={() => beginRename(s)}
-                      disabled={busy}
                       title={s.title}
                     >
                       {s.title}
+                      {run ? (
+                        <span
+                          className={`ml-2 inline-block h-2 w-2 rounded-full ${
+                            active ? "bg-emerald-500" : run.state === "failed" ? "bg-red-500" : "bg-neutral-400"
+                          }`}
+                          title={`Mission ${run.state.replaceAll("_", " ")}`}
+                          aria-label={`Mission ${run.state.replaceAll("_", " ")}`}
+                        />
+                      ) : null}
                     </button>
                     <div className="invisible absolute right-1 flex items-center rounded bg-neutral-200 dark:bg-neutral-800 opacity-0 shadow-sm transition group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
                       <button
                         className="p-1 text-neutral-500 dark:text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40"
                         onClick={() => beginRename(s)}
-                        disabled={busy}
+                        disabled={busy && active}
                         title="Rename conversation"
                         aria-label="Rename conversation"
                       >
@@ -206,7 +220,7 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
                       <button
                         className="p-1 text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40"
                         onClick={() => deleteSession(s.id)}
-                        disabled={busy}
+                        disabled={busy && active}
                         title="Delete conversation"
                         aria-label="Delete conversation"
                       >
@@ -216,12 +230,24 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
                   </>
                 )}
               </li>
-            ))}
+                );
+            })}
           </ul>
         )}
       </nav>
 
       <div className="space-y-1 border-t border-neutral-200 dark:border-neutral-800 p-2">
+        <button
+          className="w-full rounded-md px-3 py-1.5 text-left text-sm text-neutral-700 dark:text-neutral-300 transition hover:bg-neutral-200 dark:hover:bg-neutral-800"
+          onClick={onOpenRuns}
+        >
+          Run center
+          {runs.some(isRunActive) ? (
+            <span className="ml-2 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
+              {runs.filter(isRunActive).length}
+            </span>
+          ) : null}
+        </button>
         <button
           className="w-full rounded-md px-3 py-1.5 text-left text-sm text-neutral-700 dark:text-neutral-300 transition hover:bg-neutral-200 dark:hover:bg-neutral-800"
           onClick={onOpenLibrary}

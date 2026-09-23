@@ -115,7 +115,14 @@ export interface TaskAcceptanceCriterion {
   id: string;
   description: string;
   mandatory: boolean;
+  verification?: TaskCriterionVerification;
 }
+
+export type TaskCriterionVerification =
+  | { kind: "commands"; commands: string[] }
+  | { kind: "file-exists"; path: string }
+  | { kind: "file-contains"; path: string; substring: string }
+  | { kind: "http"; url: string; expectedStatus?: number };
 
 export interface TaskEvidence {
   id: string;
@@ -239,6 +246,9 @@ export interface MissionLaunchPolicy {
 export interface MissionAuthorizationRequest {
   objective: string;
   workspaceRoot?: string;
+  acceptanceCriteria: TaskAcceptanceCriterion[];
+  constraints: string[];
+  assumptions: string[];
   policy: Omit<MissionLaunchPolicy, "authorizationToken">;
   automation?: AutomationConfig;
 }
@@ -339,6 +349,37 @@ export interface TaskHistoryEntry {
   criterionId?: string;
   evidenceKind?: TaskEvidence["kind"];
   passed?: boolean;
+}
+
+export type ProductDiagnosticKind =
+  | "renderer-startup"
+  | "launch-first-response"
+  | "turn-started"
+  | "first-response"
+  | "approval-requested"
+  | "approval-resolved"
+  | "task-blocked"
+  | "blocker-recovery"
+  | "reload-recovery"
+  | "stop-settled"
+  | "verification-result"
+  | "turn-settled"
+  | "provider-failure";
+
+export interface ProductDiagnosticEntry {
+  id: string;
+  occurredAt: string;
+  kind: ProductDiagnosticKind;
+  durationMs?: number;
+  outcome?: "completed" | "aborted" | "failed" | "blocked" | "passed" | "failed-verification" | "approved" | "denied";
+  category?: "authentication" | "rate-limit" | "network" | "configuration" | "provider" | "unknown";
+  mission?: boolean;
+  approvalRisk?: ToolRisk;
+}
+
+export interface ProductDiagnosticsConfig {
+  enabled: boolean;
+  retentionDays: number;
 }
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";

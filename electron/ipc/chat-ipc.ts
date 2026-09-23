@@ -19,6 +19,9 @@ import type {
   MissionCapabilityDescriptor,
   MissionLaunchPolicy,
   MossEvent,
+  ProductDiagnosticEntry,
+  ProductDiagnosticKind,
+  ProductDiagnosticsConfig,
   SkillCreateRequest,
   SkillUpdateRequest,
   SkillRenameRequest,
@@ -60,6 +63,7 @@ import { LessonStore } from "../backend/moss/learning/lesson-store";
 import { memoryStore } from "../backend/moss/memory/memory-store";
 import { memoryReviewQueue } from "../backend/moss/governed/review-queue";
 import { providerCredentials } from "../backend/moss/provider-credentials";
+import { productDiagnostics } from "../backend/moss/product-diagnostics";
 import { createProvider } from "../backend/moss/providers";
 import { skillsStore } from "../backend/moss/skills/skills-store";
 import { transcribeAudio } from "../backend/moss/stt";
@@ -70,7 +74,7 @@ import { MissionController, remainingBudget } from "../backend/moss/task/mission
 import { MissionPlanner } from "../backend/moss/task/mission-planner";
 import { taskArtifactStore } from "../backend/moss/task/task-artifact-store";
 import { taskEngine } from "../backend/moss/task/task-engine";
-import { WorkspaceMissionVerifier } from "../backend/moss/task/mission-verifier";
+import { buildMissionVerificationChecks, WorkspaceMissionVerifier } from "../backend/moss/task/mission-verifier";
 import { RunTurnMissionWorker } from "../backend/moss/task/mission-worker";
 import { buildTaskProgressPacket, renderTaskProgressPacket, selectDependencyReadyStep } from "../backend/moss/task/progress-packet";
 
@@ -105,6 +109,8 @@ interface Inflight {
   broker: ApprovalBroker;
   taskId?: string;
   send: (event: MossEvent) => void;
+  approvalStartedAt: Map<string, number>;
+  abortRequestedAt?: number;
 }
 
 function approvalResponse(decision: Pick<ToolApprovalDecision, "approved" | "comment">) {
@@ -117,6 +123,7 @@ const runJournal = new RunJournal();
 const lessonStore = new LessonStore();
 const verificationRegistry = new VerificationRegistry();
 const missionAuthority = new MissionAuthorityBroker();
+const processStartedAt = Date.now();
 let bundledCapabilityTools: ReturnType<typeof createBundledCapabilityTools> | undefined;
 let capabilityHistoryCache = new Map<string, { successCount: number; failureCount: number }>();
 
@@ -129,6 +136,7 @@ export function registerChatIpc(): void {
   ipcMain.on(IPC.chatAbort, (_event, turnId: string) => {
     const entry = inflight.get(turnId);
     if (entry) {
+      entry.abortRequestedAt = Date.now();
       entry.controller.abort();
       entry.broker.denyAll("Turn aborted");
     }
@@ -140,6 +148,8 @@ export function registerChatIpc(): void {
     const detail = [
       `Objective: ${request.objective.trim().slice(0, 200)}`,
       `Workspace: ${request.workspaceRoot?.trim() || "No filesystem scope"}`,
+      `Criteria: ${request.acceptanceCriteria.map((criterion) => criterion.description.trim()).join("; ")}`,
+      `Verification: ${request.acceptanceCriteria.map((criterion) => criterion.verification?.kind ?? "none").join(", ")}`,
       `Capabilities: ${request.policy.requestedCapabilities.join(", ") || "None"}`,
       `Automatic risk ceiling: ${request.policy.maxAutoApprovedRisk}`,
       `Budget: ${budget?.maxActions ?? "default"} actions, ${budget?.maxTokens ?? "default"} tokens, $${budget?.maxCostUsd ?? "default"}, ${budget?.maxDurationMs ?? "default"} ms`,
@@ -164,6 +174,13 @@ export function registerChatIpc(): void {
   ipcMain.on(IPC.toolApprove, (_event, decision: ToolApprovalDecision) => {
     const entry = inflight.get(decision.turnId);
     if (!entry) return;
+    const approvalStartedAt = entry.approvalStartedAt.get(decision.callId);
+    entry.approvalStartedAt.delete(decision.callId);
+    void productDiagnostics.record("approval-resolved", {
+      ...(approvalStartedAt ? { durationMs: Date.now() - approvalStartedAt } : {}),
+      mission: Boolean(entry.taskId),
+      outcome: decision.approved ? "approved" : "denied",
+    });
     if (!entry.taskId) {
       entry.broker.resolve(decision.callId, approvalResponse(decision));
       return;
@@ -194,7 +211,16 @@ export function registerChatIpc(): void {
     return { ...reference, content: record.content };
   });
   ipcMain.handle(IPC.taskStart, (_event, id: string) => taskEngine.start(id));
-  ipcMain.handle(IPC.taskPause, (_event, id: string, summary: string) => taskEngine.pause(id, summary));
+  ipcMain.handle(IPC.taskPause, async (_event, id: string, summary: string) => {
+    const active = [...inflight.values()].filter((entry) => entry.taskId === id);
+    for (const entry of active) {
+      entry.controller.abort();
+      entry.broker.denyAll("Task paused");
+    }
+    const task = await taskEngine.pause(id, summary);
+    for (const entry of active) entry.send({ type: "task-state", task });
+    return task;
+  });
   ipcMain.handle(IPC.taskResume, (_event, id: string) => taskEngine.start(id));
   ipcMain.handle(IPC.taskCancel, async (_event, id: string) => {
     const active = [...inflight.values()].filter((entry) => entry.taskId === id);
@@ -205,6 +231,15 @@ export function registerChatIpc(): void {
     const task = await taskEngine.cancel(id);
     for (const entry of active) entry.send({ type: "task-state", task });
     return task;
+  });
+  ipcMain.handle(IPC.diagnosticsList, () => productDiagnostics.list());
+  ipcMain.handle(IPC.diagnosticsConfigure, (_event, config: ProductDiagnosticsConfig) =>
+    productDiagnostics.configure(config),
+  );
+  ipcMain.handle(IPC.diagnosticsClear, () => productDiagnostics.clear());
+  ipcMain.handle(IPC.diagnosticsRecord, (_event, kind: ProductDiagnosticKind) => {
+    if (kind !== "renderer-startup") throw new Error("Unsupported renderer diagnostic");
+    return productDiagnostics.record(kind);
   });
 
   ipcMain.handle(IPC.providerListModels, async (_event, config: ChatStartRequest["config"]) => {
@@ -325,17 +360,54 @@ export function registerChatIpc(): void {
 }
 
 async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): Promise<void> {
+  const startedAt = Date.now();
+  const mission = Boolean(req.taskSpec || req.taskId);
+  let firstResponseRecorded = false;
+  let lastTaskState: TaskSnapshot["state"] | undefined;
+  void productDiagnostics.record("turn-started", { mission });
   const controller = new AbortController();
   const broker = new ApprovalBroker();
   const disposers = new Set<() => Promise<void>>();
   const durableTaskId = req.taskSpec ? req.taskId ?? req.turnId : undefined;
   let preserveTaskOnAbort = false;
   let rendererUnavailable = false;
+  let recoveringBlocker = false;
+  let recoveringReload = false;
   let pendingDurableApproval: { callId: string; persisted: Promise<TaskSnapshot> } | undefined;
 
   let terminalEvent: Extract<MossEvent, { type: "turn-complete" | "turn-aborted" | "turn-error" }> | undefined;
   const approvalEvents = new Map<string, Extract<MossEvent, { type: "tool-approval-request" }>>();
+  const approvalStartedAt = new Map<string, number>();
   const send = (mossEvent: MossEvent) => {
+    if (
+      !firstResponseRecorded
+      && ["text-delta", "tool-call", "notice", "task-state"].includes(mossEvent.type)
+    ) {
+      firstResponseRecorded = true;
+      void productDiagnostics.record("first-response", { durationMs: Date.now() - startedAt, mission });
+      void productDiagnostics.record("launch-first-response", { durationMs: Date.now() - processStartedAt, mission });
+    }
+    if (mossEvent.type === "tool-approval-request") {
+      approvalStartedAt.set(mossEvent.callId, Date.now());
+      void productDiagnostics.record("approval-requested", { durationMs: Date.now() - startedAt, mission, approvalRisk: mossEvent.risk });
+    }
+    if (mossEvent.type === "task-state" && mossEvent.task.state !== lastTaskState) {
+      lastTaskState = mossEvent.task.state;
+      if (mossEvent.task.state === "blocked") {
+        void productDiagnostics.record("task-blocked", { durationMs: Date.now() - startedAt, mission, outcome: "blocked" });
+      }
+      if (mossEvent.task.state === "completed") {
+        const mandatory = mossEvent.task.spec.acceptanceCriteria.filter((criterion) => criterion.mandatory);
+        const passed = mandatory.every((criterion) =>
+          mossEvent.task.evidence.some((evidence) => evidence.criterionId === criterion.id && evidence.passed),
+        );
+        void productDiagnostics.record("verification-result", {
+          durationMs: Date.now() - startedAt,
+          mission,
+          outcome: passed ? "passed" : "failed-verification",
+        });
+      }
+    }
     if (mossEvent.type === "turn-complete" || mossEvent.type === "turn-aborted" || mossEvent.type === "turn-error") {
       terminalEvent = mossEvent;
       return;
@@ -345,7 +417,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       event.sender.send(IPC.chatEvent, { turnId: req.turnId, event: mossEvent });
     }
   };
-  const inflightEntry = { controller, broker, send, ...(durableTaskId ? { taskId: durableTaskId } : {}) };
+  const inflightEntry: Inflight = { controller, broker, send, approvalStartedAt, ...(durableTaskId ? { taskId: durableTaskId } : {}) };
   inflight.set(req.turnId, inflightEntry);
   const handleRendererDestroyed = () => {
     const entry = inflight.get(req.turnId);
@@ -360,6 +432,11 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         : Promise.resolve();
       void persisted
         .then(() => taskEngine.interruptApproval(entry.taskId!, callId, "Renderer closed before the approval was completed"))
+        .then(() => productDiagnostics.record("task-blocked", {
+          durationMs: Date.now() - startedAt,
+          mission: true,
+          outcome: "blocked",
+        }))
         .catch(() => undefined)
         .finally(() => entry.broker.denyAll("Renderer closed before the approval was completed"));
     } else {
@@ -413,17 +490,20 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     let attemptId: string | undefined;
     let acceptedCompletion: CompletionContext | undefined;
     const storedTask = durableTaskId ? await taskStore.get(durableTaskId) : undefined;
+    recoveringBlocker = storedTask?.state === "blocked" || storedTask?.state === "paused";
+    recoveringReload = storedTask?.blocker?.kind === "approval"
+      && storedTask.blocker.summary.includes("Renderer closed");
     if (!storedTask && req.taskSpec?.executionGrant && !req.mission) {
       throw new Error("Mission execution grants must be issued by Electron from a mission launch policy");
-    }
-    if (!storedTask && req.taskSpec && req.mission?.authority === "policy-scoped") {
-      const token = req.mission.authorizationToken;
-      if (!token) throw new Error("Policy-scoped mission requires native authorization");
-      missionAuthority.consume(toMissionAuthorizationRequest(req.taskSpec.objective, req.mission, req), token);
     }
     const requestedSpec = storedTask?.spec ?? (req.taskSpec && req.mission
       ? resolveMissionSpec(req.taskSpec, req.mission, routed.tools.map((tool) => tool.name), req)
       : req.taskSpec);
+    if (!storedTask && req.taskSpec && req.mission?.authority === "policy-scoped") {
+      const token = req.mission.authorizationToken;
+      if (!token) throw new Error("Policy-scoped mission requires native authorization");
+      missionAuthority.consume(toMissionAuthorizationRequest(req.taskSpec, req.mission, req), token);
+    }
     let task = requestedSpec
       ? requestedSpec.executionGrant
         ? await ensureMissionTask(durableTaskId!, requestedSpec, send)
@@ -494,7 +574,10 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         planner,
         capabilities,
         worker,
-        verifier: new WorkspaceMissionVerifier({ workspaceRoot }),
+        verifier: new WorkspaceMissionVerifier({
+          workspaceRoot,
+          checks: buildMissionVerificationChecks(task.spec, req.verify),
+        }),
         onTaskState: (next) => {
           task = next;
           send({ type: "task-state", task: next });
@@ -631,10 +714,48 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     if (terminalEvent && !rendererUnavailable && !event.sender.isDestroyed()) {
       event.sender.send(IPC.chatEvent, { turnId: req.turnId, event: terminalEvent });
     }
+    if (terminalEvent) {
+      const outcome = terminalEvent.type === "turn-complete"
+        ? "completed"
+        : terminalEvent.type === "turn-aborted"
+          ? "aborted"
+          : "failed";
+      void productDiagnostics.record("turn-settled", { durationMs: Date.now() - startedAt, mission, outcome });
+      if (inflightEntry.abortRequestedAt) {
+        void productDiagnostics.record("stop-settled", {
+          durationMs: Date.now() - inflightEntry.abortRequestedAt,
+          mission,
+          outcome,
+        });
+      }
+      if (terminalEvent.type === "turn-complete" && recoveringBlocker) {
+        void productDiagnostics.record("blocker-recovery", { durationMs: Date.now() - startedAt, mission, outcome: "passed" });
+      }
+      if (terminalEvent.type === "turn-complete" && recoveringReload) {
+        void productDiagnostics.record("reload-recovery", { durationMs: Date.now() - startedAt, mission, outcome: "passed" });
+      }
+      if (terminalEvent.type === "turn-error" && terminalEvent.source === "provider-model") {
+        void productDiagnostics.record("provider-failure", {
+          durationMs: Date.now() - startedAt,
+          mission,
+          outcome: "failed",
+          category: diagnosticFailureCategory(terminalEvent.message),
+        });
+      }
+    }
     event.sender.removeListener("destroyed", handleRendererDestroyed);
     event.sender.removeListener("render-process-gone", handleRendererDestroyed);
     event.sender.removeListener("did-start-navigation", handleRendererNavigation);
     if (inflight.get(req.turnId) === inflightEntry) inflight.delete(req.turnId);
+  }
+
+  function diagnosticFailureCategory(message: string): ProductDiagnosticEntry["category"] {
+    const normalized = message.toLowerCase();
+    if (/401|403|auth|api key|credential/.test(normalized)) return "authentication";
+    if (/429|rate.?limit|quota/.test(normalized)) return "rate-limit";
+    if (/network|fetch|socket|timeout|econn|dns/.test(normalized)) return "network";
+    if (/config|model|base.?url|endpoint/.test(normalized)) return "configuration";
+    return normalized ? "provider" : "unknown";
   }
 }
 
@@ -726,7 +847,7 @@ export function resolveMissionSpec(
   spec: TaskSpec,
   policy: MissionLaunchPolicy,
   availableCapabilities: readonly string[],
-  request: Pick<ChatStartRequest, "workspaceRoot" | "automation">,
+  request: Pick<ChatStartRequest, "workspaceRoot" | "automation" | "verify">,
 ): TaskSpec {
   const available = new Set(availableCapabilities);
   const requested = policy.requestedCapabilities.map((capability) => capability.trim());
@@ -734,6 +855,7 @@ export function resolveMissionSpec(
   if (new Set(requested).size !== requested.length) throw new Error("Mission capabilities must be unique");
   const unavailable = requested.filter((capability) => !available.has(capability));
   if (unavailable.length > 0) throw new Error(`Mission capabilities are unavailable: ${unavailable.join(", ")}`);
+  buildMissionVerificationChecks(spec, request.verify);
 
   const budget = boundMissionBudget(policy.budget);
   return {
@@ -778,13 +900,16 @@ function boundBudgetValue(value: number | undefined, fallback: number, ceiling: 
 }
 
 function toMissionAuthorizationRequest(
-  objective: string,
+  spec: TaskSpec,
   policy: MissionLaunchPolicy,
   request: Pick<ChatStartRequest, "workspaceRoot" | "automation">,
 ): MissionAuthorizationRequest {
   return {
-    objective,
+    objective: spec.objective,
     ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
+    acceptanceCriteria: structuredClone(spec.acceptanceCriteria),
+    constraints: [...spec.constraints],
+    assumptions: [...spec.assumptions],
     policy: {
       authority: policy.authority,
       requestedCapabilities: [...policy.requestedCapabilities],

@@ -24,5 +24,26 @@ export default defineConfig({
     environment: "node",
     maxWorkers: 2,
     minWorkers: 1,
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary"],
+      include: [
+        "src/components/LiveStatus.tsx",
+        "src/components/AutomationSettings.tsx",
+        "src/components/ProductDiagnosticsSettings.tsx",
+        "src/components/RunCenter.tsx",
+        "src/components/ToolActivity.tsx",
+        "src/lib/missionTemplates.ts",
+        "electron/backend/moss/product-diagnostics.ts",
+        "electron/backend/moss/evals/product-metrics.ts",
+        "electron/backend/moss/evals/product-ux-cases.ts",
+      ],
+      thresholds: {
+        statements: 75,
+        branches: 60,
+        functions: 70,
+        lines: 75,
+      },
+    },
   },
 });

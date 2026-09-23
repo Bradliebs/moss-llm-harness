@@ -87,6 +87,40 @@ After the application opens:
 6. Configure optional verification commands for coding tasks.
 7. Start a conversation and describe the outcome you want.
 
+### Guided readiness and profiles
+
+The welcome screen summarizes provider, workspace, tools, verification,
+automation, pricing, and optional-service readiness. Open **Settings** for the
+complete checklist and a provider connection test.
+
+Settings includes safe starting profiles:
+
+* Chat only disables tools and automation
+* Coding enables workspace tools while retaining explicit mutation approval
+* Research enables browser tooling while retaining explicit approval
+* Desktop automation enables Windows automation while retaining explicit
+  approval
+* Custom preserves direct control of every setting
+
+Profiles never enable automatic mutation approval or invent verification
+commands. Search Settings or use its category routes to focus on readiness,
+diagnostics, models, tools, automation, knowledge, services, safety, or general
+preferences.
+The **Copy diagnostics** action exports a local readiness snapshot without API
+keys or the workspace path.
+
+The separate **Diagnostics** category can enable local product diagnostics.
+Collection is off by default. When enabled, Moss retains bounded timing, outcome,
+approval, blocker, verification, startup, first-response, stop-settlement, and
+recovery categories for 7, 30, or 90 days. It never stores prompts, responses,
+file contents, API keys, workspace paths, or raw tool arguments. You can inspect
+recent event categories, clear them, or export the redacted JSON from Settings.
+
+Status notifications use consistent info, success, warning, and error severity.
+Errors remain assertive for assistive technology and include a stable local
+reference when no correlation identifier is supplied. Recovery actions can be
+attached to the same notification instead of being presented as unrelated UI.
+
 ## Optional TypeSafe Jev integration
 
 Jev is a structured decision model, not a replacement for your chat provider.
@@ -251,6 +285,27 @@ resume, cancellation, failure, and evidence-gated completion. Verification can
 combine task-specific evidence with newline-separated commands configured in
 Settings, such as tests, type checks, or builds.
 
+### Mission contract preflight
+
+Before launch, every mandatory acceptance criterion needs a measurable outcome
+and an explicit verification method. The mission review supports configured
+commands, file existence, file content, and HTTP status checks. File and command
+checks also require a selected workspace. Commands must exactly match entries
+enabled under **Settings > Verification**.
+
+Launch remains disabled until the contract passes preflight. Constraints and
+assumptions are optional, but become part of the reviewed mission specification
+when supplied. Policy-scoped authorization binds the complete contract,
+capabilities, budgets, and automation scopes to its token. Editing any bound
+field requires fresh authorization.
+
+Mission intake includes Coding, Research, and Automation templates. Each template
+prefills an editable objective, outcome contract, verification method,
+capabilities, constraints, assumptions, and budget. Missing workspace,
+verification, browser, or desktop prerequisites remain visible and continue to
+block launch. Templates use the same preflight and native authorization paths as
+manually authored missions.
+
 When a turn changes files, Moss creates a checkpoint. The response footer shows
 the changed-file count and provides a revert action while the checkpoint remains
 available.
@@ -272,6 +327,22 @@ Each task also exposes an ordered, read-only timeline derived from its append-on
 journal. The renderer receives concise transitions, attempts, approval outcomes,
 and evidence results. Raw snapshots, tool arguments, approval comments, model
 output, and evidence summaries are excluded from this history projection.
+
+### Run center and background inspection
+
+Use **Run center** in the conversation sidebar to inspect active, waiting,
+blocked, paused, completed, failed, and cancelled missions. Each run remains
+bound to the conversation that launched it. Switching conversations does not
+interrupt durable work, and transient output never appears in another
+conversation. While a run is active elsewhere, other conversations remain
+read-only until you return to the owning conversation or cancel the run.
+
+The sidebar marks conversations with mission state. Run center summarizes step
+progress, consumed budgets, passing evidence, and artifact counts. It can open
+the owning conversation, route paused or blocked work to its recovery controls,
+cancel an active durable task through the main-process task controller, or
+pause active work, or export a sanitized per-run diagnostic summary. Pausing
+aborts the current attempt before the durable task enters its resumable state.
 
 ### Agent execution design
 
@@ -448,11 +519,16 @@ Run all checks used for normal development:
 npm run typecheck
 npm test
 npm run build
+npm run check:bundle
 ```
 
 Tests cover renderer behavior, IPC, providers, tool execution, permissions,
 approvals, checkpoints, capability acquisition, browser and desktop boundaries,
 task recovery, verification, memory, skills, learning, and the evaluation harness.
+The bundle gate follows the renderer assets referenced by `dist/index.html` and
+limits initial JavaScript and CSS independently. Settings, Library, artifact
+preview, PDF extraction, DOCX extraction, and syntax languages load only when
+their workflows need them.
 
 The evaluation harness runs production-loop tasks in isolated workspaces and
 grades their end state with independent validators. It supports governed corpus
@@ -469,6 +545,23 @@ seed `TaskStore` and recover through `TaskEngine.recoverInterruptedTasks`, not a
 full `MissionController` restart. Expected budget stops and verification blocks
 pass only with exact structural traces and mandatory artifact checks; evaluation
 success does not necessarily mean task completion.
+
+A separate product UX corpus covers nine deterministic setup, recovery,
+intervention, and background-run scenarios. Cases include provider setup
+recovery, unverifiable criteria, unknown pricing, unavailable capabilities,
+approval denial, post-compaction continuation, reload during approval,
+configuration-change recovery, and background mission inspection. Sanitized
+trace metrics measure intervention count, recovery attempts, approval latency,
+user-visible error quality, and false completion. Each case also names the
+executable regression that supplies its evidence, and corpus health checks fail
+when that evidence is missing.
+
+Contributor quality gates include focused ESLint checks for the refactored
+product-quality surfaces and V8 coverage thresholds of 75% statements, 60%
+branches, 70% functions, and 75% lines. The packaged smoke suite runs serious
+and critical axe checks on Welcome, Settings, Run center, mission review, and a
+420 by 740 compact layout. Run `npm run lint`, `npm run test:coverage`, and
+`npm run smoke:packaged` to exercise these gates locally.
 
 Default contributor runs use `MOSS_EVAL_EXECUTION=local` and
 `MOSS_EVAL_PURPOSE=iteration`: three pilot cases or 20 representative development
@@ -564,8 +657,12 @@ window title, and controls exposed through Windows UI Automation.
 
 ### A task remains blocked after a failed check
 
-Inspect the task status and evidence, correct the underlying failure, then use
-the Resume action. Moss does not convert failed verification into completion.
+Use the recovery action shown with the blocker. Verification failures reopen the
+mission contract so you can edit the criterion or verification method. Budget
+failures reopen mission review. Credential and unavailable-service blockers open
+Settings, while user-decision blockers focus the composer for guidance.
+Resumable external interruptions retain the Resume action. Moss does not convert
+failed verification into completion or blindly repeat the same failed check.
 
 ## Additional documentation
 

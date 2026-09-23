@@ -55,7 +55,7 @@ export function JevSettings(): React.ReactElement {
       </label>
       <div className="flex items-center gap-2">
         <button type="button" title="Save TypeSafe API key" aria-label="Save TypeSafe API key"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-emerald-600 text-white disabled:opacity-40"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-emerald-700 text-white disabled:opacity-40"
           disabled={busy || !apiKey.trim()} onClick={() => void save(false)}><Save size={16} /></button>
         <button type="button" title="Remove TypeSafe API key" aria-label="Remove TypeSafe API key"
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-neutral-200 dark:bg-neutral-800 disabled:opacity-40"

@@ -7,6 +7,7 @@
 import type { EmbedConfig, InjectionMode, ProviderConfig, ProviderKind } from "@common/types";import { DEFAULT_PERSONALITY_ID } from "@common/personalities";
 
 import type { ModelRate } from "./pricing";
+import { modelRate } from "./pricing";
 import { createPersistentStore } from "./persistentStore";
 
 export interface ProviderPreset {
@@ -25,6 +26,29 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: "xai", label: "xAI (Grok)", kind: "openai-compatible", baseUrl: "https://api.x.ai/v1" },
   { id: "custom", label: "Custom", kind: "openai-compatible", baseUrl: "" },
 ];
+
+export type ReadinessProfileId = "chat" | "coding" | "research" | "desktop" | "custom";
+
+export interface ReadinessProfile {
+  id: ReadinessProfileId;
+  label: string;
+  description: string;
+}
+
+export const READINESS_PROFILES: readonly ReadinessProfile[] = [
+  { id: "chat", label: "Chat only", description: "Model conversation without workspace tools" },
+  { id: "coding", label: "Coding", description: "Workspace tools with explicit approval and verification" },
+  { id: "research", label: "Research", description: "Browser-capable tools with explicit approval" },
+  { id: "desktop", label: "Desktop automation", description: "Windows automation with explicit approval" },
+  { id: "custom", label: "Custom", description: "Keep full control of every setting" },
+];
+
+export interface ReadinessItem {
+  id: "provider" | "workspace" | "tools" | "verification" | "automation" | "pricing" | "services";
+  label: string;
+  detail: string;
+  status: "ready" | "attention" | "optional";
+}
 
 export interface MossSettings {
   /** index into PROVIDER_PRESETS; the matching preset seeds kind + baseUrl */
@@ -91,6 +115,8 @@ export interface MossSettings {
   /** UI color theme; "dark" preserves the original look and stays the default,
    *  "auto" follows the OS prefers-color-scheme. */
   theme: "dark" | "light" | "auto";
+  /** Last guided setup profile applied. Older settings load as custom. */
+  readinessProfile?: ReadinessProfileId;
 }
 
 const DEFAULT_SETTINGS: MossSettings = {
@@ -129,7 +155,129 @@ const DEFAULT_SETTINGS: MossSettings = {
   injectionMode: "flag",
   modelRates: {},
   theme: "dark",
+  readinessProfile: "custom",
 };
+
+export function readinessItems(
+  settings: MossSettings,
+  providerConnected: boolean | null = null,
+): ReadinessItem[] {
+  const providerReady = Boolean((settings.baseUrl ?? "").trim() && (settings.model ?? "").trim());
+  const connectedDetail = providerConnected === false
+    ? "Connection failed. Run the provider diagnostic."
+    : providerConnected === true
+      ? `${settings.model} responded to model discovery.`
+      : providerReady
+        ? `${settings.model} is selected; connection not tested yet.`
+        : "Choose a provider and model.";
+  const hasAutomation = settings.browserEnabled || settings.desktopEnabled;
+  const automationScoped = (!settings.browserEnabled || Boolean((settings.browserAllowedDomains ?? "").trim()))
+    && (!settings.desktopEnabled || (
+      Boolean((settings.desktopAllowedProcesses ?? "").trim())
+      && Boolean((settings.desktopAllowedWindows ?? "").trim())
+    ));
+  const hasOptionalService = Boolean(
+    (settings.sttBaseUrl ?? "").trim()
+    || (settings.emailApiKey ?? "").trim()
+    || (settings.embedBaseUrl ?? "").trim()
+    || settings.jevEnabled,
+  );
+  const rateKnown = Boolean(settings.model && modelRate(settings.model, settings.modelRates));
+  return [
+    {
+      id: "provider",
+      label: "Provider and model",
+      detail: connectedDetail,
+      status: providerReady && providerConnected !== false ? "ready" : "attention",
+    },
+    {
+      id: "workspace",
+      label: "Workspace",
+      detail: settings.workspaceRoot ?? "No workspace selected.",
+      status: settings.workspaceRoot ? "ready" : settings.enableTools ? "attention" : "optional",
+    },
+    {
+      id: "tools",
+      label: "Tools and approval",
+      detail: settings.enableTools
+        ? settings.autoApproveTools ? "Tools enabled with automatic mutation approval." : "Tools enabled with explicit mutation approval."
+        : "Chat-only mode; tools are disabled.",
+      status: settings.enableTools && !settings.workspaceRoot ? "attention" : "ready",
+    },
+    {
+      id: "verification",
+      label: "Verification",
+      detail: settings.verifyEnabled && (settings.verifyCommands ?? "").trim()
+        ? `${(settings.verifyCommands ?? "").split("\n").filter((command) => command.trim()).length} command(s) configured.`
+        : "No command verification configured.",
+      status: settings.verifyEnabled && (settings.verifyCommands ?? "").trim() ? "ready" : "optional",
+    },
+    {
+      id: "automation",
+      label: "Automation scopes",
+      detail: hasAutomation && automationScoped
+        ? `${settings.browserEnabled ? "Browser" : ""}${settings.browserEnabled && settings.desktopEnabled ? " and " : ""}${settings.desktopEnabled ? "desktop" : ""} automation enabled with explicit scopes.`
+        : hasAutomation
+          ? "Automation is enabled but its allowlist is incomplete."
+        : "Browser and desktop automation are off.",
+      status: hasAutomation ? automationScoped ? "ready" : "attention" : "optional",
+    },
+    {
+      id: "pricing",
+      label: "Model pricing",
+      detail: rateKnown ? "A model rate is available for cost estimates." : "Rate unknown; cost-bounded missions need a configured rate.",
+      status: rateKnown ? "ready" : "attention",
+    },
+    {
+      id: "services",
+      label: "Optional services",
+      detail: hasOptionalService ? "One or more optional services are configured." : "Embeddings, speech, email, and Jev are optional.",
+      status: hasOptionalService ? "ready" : "optional",
+    },
+  ];
+}
+
+export function readinessProfilePatch(
+  profile: ReadinessProfileId,
+  current: MossSettings,
+): Partial<MossSettings> {
+  const shared = { readinessProfile: profile, autoApproveTools: false } as const;
+  if (profile === "chat") {
+    return {
+      ...shared,
+      enableTools: false,
+      browserEnabled: false,
+      desktopEnabled: false,
+      verifyEnabled: false,
+    };
+  }
+  if (profile === "coding") {
+    return {
+      ...shared,
+      enableTools: true,
+      browserEnabled: false,
+      desktopEnabled: false,
+      verifyEnabled: Boolean((current.verifyCommands ?? "").trim()),
+    };
+  }
+  if (profile === "research") {
+    return {
+      ...shared,
+      enableTools: true,
+      browserEnabled: true,
+      desktopEnabled: false,
+    };
+  }
+  if (profile === "desktop") {
+    return {
+      ...shared,
+      enableTools: true,
+      browserEnabled: false,
+      desktopEnabled: true,
+    };
+  }
+  return { readinessProfile: "custom" };
+}
 
 export const settingsStore = createPersistentStore<MossSettings>(
   "moss.settings",

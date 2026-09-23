@@ -104,14 +104,14 @@ describe("Sidebar", () => {
     expect(onOpenLibrary).toHaveBeenCalledTimes(1);
   });
 
-  it("disables conversation actions while a turn is busy", () => {
+  it("allows safe conversation browsing while a turn is busy", () => {
     vi.mocked(sessions.useSessions).mockReturnValue({
       sessions: [{ id: "a", title: "First chat", messages: [], createdAt: 0, updatedAt: 0 }],
       currentId: "a",
     });
     render(<Sidebar busy={true} onOpenSettings={noop} onOpenLibrary={noop} />);
-    expect((screen.getByText("+ New chat") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByText("First chat") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("+ New chat") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByText("First chat") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("filters the conversation list by the search query", () => {

@@ -6,6 +6,14 @@ import { MissionAuthorityBroker } from "./mission-authority";
 const REQUEST: MissionAuthorizationRequest = {
   objective: "Implement the feature",
   workspaceRoot: "C:\\workspace",
+  acceptanceCriteria: [{
+    id: "done",
+    description: "The feature exists",
+    mandatory: true,
+    verification: { kind: "file-exists", path: "feature.ts" },
+  }],
+  constraints: [],
+  assumptions: [],
   policy: {
     authority: "policy-scoped",
     requestedCapabilities: ["read_file", "write_file"],

@@ -86,6 +86,7 @@ vi.mock("../lib/settings", () => ({
   modelsStore: { use: () => ["gpt-4"] },
   toProviderConfig: () => ({}),
   toEmbedConfig: () => ({ baseUrl: "http://localhost:11434/v1", model: "nomic-embed-text" }),
+  readinessItems: () => [],
   updateSettings: vi.fn(),
 }));
 
@@ -115,10 +116,11 @@ vi.mock("../lib/dictation", () => ({
 let eventHandler: ((payload: ChatEventPayload) => void) | null = null;
 const off = vi.fn();
 const openChats = vi.fn();
+const openSettings = vi.fn();
 
 function Harness(): React.ReactElement {
   const [busy, setBusy] = useState(false);
-  return <ChatPanel busy={busy} setBusy={setBusy} onOpenChats={openChats} onOpenSettings={vi.fn()} />;
+  return <ChatPanel busy={busy} setBusy={setBusy} onOpenChats={openChats} onOpenSettings={openSettings} />;
 }
 
 function startTurn(): string {
@@ -130,6 +132,19 @@ function startTurn(): string {
 function emit(turnId: string, event: MossEvent): void {
   act(() => {
     eventHandler?.({ turnId, event });
+  });
+}
+
+async function prepareMissionReview(): Promise<void> {
+  mockSettings.workspaceRoot = "C:\\workspace";
+  mockSettings.verifyEnabled = true;
+  mockSettings.verifyCommands = "npm test";
+  render(<Harness />);
+  fireEvent.click(screen.getByRole("button", { name: "Mission" }));
+  await waitFor(() => expect(mockMissionCapabilities).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByText("Review mission"));
+  fireEvent.change(screen.getByLabelText("Acceptance criterion 1"), {
+    target: { value: "The requested outcome passes the configured test command" },
   });
 }
 
@@ -163,6 +178,7 @@ function taskSnapshot(state: TaskState, blocker?: TaskSnapshot["blocker"]): Task
 beforeEach(() => {
   eventHandler = null;
   openChats.mockReset();
+  openSettings.mockReset();
   mockExtractPdfText.mockReset();
   mockContinueInNewSession.mockReset();
   mockSummarize.mockReset();
@@ -311,9 +327,7 @@ describe("ChatPanel", () => {
   });
 
   it("launches a supervised mission with host-reviewed capabilities and budgets", async () => {
-    render(<Harness />);
-    fireEvent.click(screen.getByRole("button", { name: "Mission" }));
-    await waitFor(() => expect(mockMissionCapabilities).toHaveBeenCalledTimes(1));
+    await prepareMissionReview();
     const composer = screen.getByPlaceholderText("Message…");
     fireEvent.change(composer, { target: { value: "Inspect and verify this repository" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
@@ -322,7 +336,10 @@ describe("ChatPanel", () => {
     expect(window.moss.chat.send).toHaveBeenCalledWith(expect.objectContaining({
       taskSpec: expect.objectContaining({
         objective: "Inspect and verify this repository",
-        acceptanceCriteria: [expect.objectContaining({ mandatory: true })],
+        acceptanceCriteria: [expect.objectContaining({
+          mandatory: true,
+          verification: { kind: "commands", commands: ["npm test"] },
+        })],
         budget: { maxDurationMs: 900000, maxTokens: 50000, maxActions: 24, maxCostUsd: 5 },
       }),
       mission: {
@@ -334,11 +351,17 @@ describe("ChatPanel", () => {
     }));
   });
 
-  it("native-authorizes a policy-scoped mission immediately before sending", async () => {
+  it("keeps launch disabled until the mission has a verifiable outcome contract", async () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole("button", { name: "Mission" }));
     await waitFor(() => expect(mockMissionCapabilities).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByText("Review mission"));
+
+    expect(screen.getByRole("button", { name: "Launch" })).toHaveProperty("disabled", true);
+    expect(screen.getByText("Criterion 1 needs a measurable outcome.")).toBeDefined();
+  });
+
+  it("native-authorizes a policy-scoped mission immediately before sending", async () => {
+    await prepareMissionReview();
     fireEvent.click(screen.getByRole("button", { name: "Policy-scoped" }));
     fireEvent.click(screen.getByLabelText(/write_file/));
     fireEvent.change(screen.getByPlaceholderText("Message…"), { target: { value: "Apply the bounded change" } });
@@ -362,10 +385,7 @@ describe("ChatPanel", () => {
 
   it("does not send when native mission authorization is cancelled", async () => {
     mockMissionAuthorize.mockResolvedValue(null);
-    render(<Harness />);
-    fireEvent.click(screen.getByRole("button", { name: "Mission" }));
-    await waitFor(() => expect(mockMissionCapabilities).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByText("Review mission"));
+    await prepareMissionReview();
     fireEvent.click(screen.getByRole("button", { name: "Policy-scoped" }));
     fireEvent.change(screen.getByPlaceholderText("Message…"), { target: { value: "Do not lose this draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
@@ -425,7 +445,7 @@ describe("ChatPanel", () => {
     expect(window.moss.chat.send).not.toHaveBeenCalled();
   });
 
-  it("resumes and cancels a blocked durable task", async () => {
+  it("routes verification blockers into mission revision and still allows cancellation", async () => {
     render(<Harness />);
     const turnId = startTurn();
     emit(turnId, {
@@ -433,17 +453,42 @@ describe("ChatPanel", () => {
       task: taskSnapshot("blocked", { kind: "verification", summary: "Tests failed", resumable: true, createdAt: "2026-01-01T00:00:00.000Z" }),
     });
 
-    fireEvent.click(screen.getByText("Resume"));
-    await waitFor(() => expect(window.moss.task.resume).toHaveBeenCalledWith("task-1"));
-    expect(screen.getByLabelText("Task status").textContent).toContain("executing");
-    expect(window.moss.chat.send).toHaveBeenCalledWith(expect.objectContaining({
-      taskId: "task-1",
-      taskSpec: expect.objectContaining({ objective: "Complete the durable task" }),
-    }));
+    expect(screen.queryByText("Resume")).toBeNull();
+    fireEvent.click(screen.getByText("Edit verification"));
+    expect((screen.getByPlaceholderText("Message…") as HTMLTextAreaElement).value).toBe("Complete the durable task");
+    expect(screen.getByRole("button", { name: "Mission" }).getAttribute("aria-pressed")).toBe("true");
 
     fireEvent.click(screen.getByText("Cancel"));
     await waitFor(() => expect(window.moss.task.cancel).toHaveBeenCalledWith("task-1"));
     expect(screen.getByLabelText("Task status").textContent).toContain("cancelled");
+  });
+
+  it("routes credential blockers to settings and keeps resumable external blockers retryable", async () => {
+    const view = render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, {
+      type: "task-state",
+      task: taskSnapshot("blocked", {
+        kind: "credential",
+        summary: "Provider credential required",
+        resumable: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    });
+    fireEvent.click(screen.getByText("Configure credentials"));
+    expect(openSettings).toHaveBeenCalledTimes(1);
+
+    emit(turnId, {
+      type: "task-state",
+      task: taskSnapshot("blocked", {
+        kind: "external",
+        summary: "External dependency was unavailable",
+        resumable: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    });
+    expect(screen.getByRole("button", { name: "Resume" })).toBeDefined();
+    view.unmount();
   });
 
   it("does not offer Resume while a durable approval is pending", () => {
@@ -1533,6 +1578,27 @@ describe("ChatPanel", () => {
     expect(mockSetSessionMessages).toHaveBeenCalledTimes(1);
     expect(mockSetSessionMessages.mock.calls[0][0]).toBe("s1");
     expect(window.moss.chat.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps in-flight output bound to its owning conversation during background inspection", () => {
+    const { rerender } = render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "text-delta", text: "owner-only output" });
+    expect(screen.getByText("owner-only output")).toBeDefined();
+
+    mockSession.value = { ...mockSession.value, id: "s2", title: "Other conversation" };
+    rerender(<Harness />);
+
+    expect(screen.queryByText("owner-only output")).toBeNull();
+    expect(screen.getByText(/Another conversation has an active run/)).toBeDefined();
+    expect((screen.getByText("Send") as HTMLButtonElement).disabled).toBe(true);
+
+    emit(turnId, { type: "turn-complete", messages: [{ role: "assistant", content: "finished in owner" }] });
+    expect(mockSetSessionMessages).toHaveBeenCalledWith(
+      "s1",
+      expect.arrayContaining([expect.objectContaining({ content: "finished in owner" })]),
+    );
+    expect(screen.queryByText("finished in owner")).toBeNull();
   });
 
   it("aborts the active turn from the Stop button", () => {

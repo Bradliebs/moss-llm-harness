@@ -20,10 +20,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
       - run: npm run test:deterministic
+      - run: npm run test:coverage
       - name: Scripted-provider behavior and sandbox routing
         run: npm test -- --run electron/backend/moss/evals/representative-corpus.e2e.test.ts electron/backend/moss/evals/sandbox-tools.test.ts
       - run: npm run build
+      - name: Enforce renderer bundle budget
+        run: npm run check:bundle
+      - name: Build unsigned packaged application
+        run: npm run pack:ci
+      - name: Run packaged critical-path smoke
+        run: npm run smoke:packaged
       - name: Validate representative corpus and graders
         shell: pwsh
         run: |

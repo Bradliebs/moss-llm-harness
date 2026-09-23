@@ -11,6 +11,8 @@ import {
   applyPreset,
   modelsStore,
   PROVIDER_PRESETS,
+  readinessItems,
+  readinessProfilePatch,
   setModelRate,
   settingsStore,
   toEmbedConfig,
@@ -160,6 +162,49 @@ describe("setModelRate", () => {
   it("stores a rate under a normalized lowercased model key", () => {
     setModelRate("GPT-4o", { inputPer1M: 1, outputPer1M: 2 });
     expect(settingsStore.get().modelRates).toEqual({ "gpt-4o": { inputPer1M: 1, outputPer1M: 2 } });
+  });
+
+  describe("readiness profiles", () => {
+    it("derives setup attention without hiding optional capabilities", () => {
+      const items = readinessItems({ ...baseline, enableTools: true }, false);
+      expect(items.find((item) => item.id === "provider")).toMatchObject({
+        status: "attention",
+        detail: "Connection failed. Run the provider diagnostic.",
+      });
+      expect(items.find((item) => item.id === "workspace")?.status).toBe("attention");
+      expect(items.find((item) => item.id === "automation")?.status).toBe("optional");
+    });
+
+    it("applies safe profile defaults without inventing verification commands or auto-approval", () => {
+      expect(readinessProfilePatch("coding", { ...baseline, verifyCommands: "" })).toMatchObject({
+        readinessProfile: "coding",
+        enableTools: true,
+        autoApproveTools: false,
+        verifyEnabled: false,
+      });
+      expect(readinessProfilePatch("research", baseline)).toMatchObject({
+        browserEnabled: true,
+        desktopEnabled: false,
+        autoApproveTools: false,
+      });
+      expect(readinessProfilePatch("desktop", baseline)).toMatchObject({
+        browserEnabled: false,
+        desktopEnabled: true,
+        autoApproveTools: false,
+      });
+    });
+
+    it("flags enabled automation until its allowlist is complete", () => {
+      const items = readinessItems({
+        ...baseline,
+        browserEnabled: true,
+        browserAllowedDomains: "",
+      });
+      expect(items.find((item) => item.id === "automation")).toMatchObject({
+        status: "attention",
+        detail: "Automation is enabled but its allowlist is incomplete.",
+      });
+    });
   });
 
   it("removes the override when both rates are zero", () => {

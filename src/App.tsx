@@ -1,14 +1,22 @@
 // src/App.tsx
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import { ChatPanel } from "./components/ChatPanel";
-import { LibraryPanel } from "./components/LibraryPanel";
-import { SettingsPanel } from "./components/SettingsPanel";
 import { Sidebar } from "./components/Sidebar";
 import { initializeProviderCredential, settingsStore } from "./lib/settings";
 
-type Overlay = "none" | "settings" | "library";
+const LibraryPanel = lazy(() =>
+  import("./components/LibraryPanel").then(({ LibraryPanel }) => ({ default: LibraryPanel })),
+);
+const SettingsPanel = lazy(() =>
+  import("./components/SettingsPanel").then(({ SettingsPanel }) => ({ default: SettingsPanel })),
+);
+const RunCenter = lazy(() =>
+  import("./components/RunCenter").then(({ RunCenter }) => ({ default: RunCenter })),
+);
+
+type Overlay = "none" | "settings" | "library" | "runs";
 
 export default function App(): React.JSX.Element {
   const [overlay, setOverlay] = useState<Overlay>("none");
@@ -40,6 +48,7 @@ export default function App(): React.JSX.Element {
         onClose={() => setChatsOpen(false)}
         onOpenSettings={() => setOverlay("settings")}
         onOpenLibrary={() => setOverlay("library")}
+        onOpenRuns={() => setOverlay("runs")}
       />
       <ChatPanel
         busy={busy}
@@ -47,8 +56,11 @@ export default function App(): React.JSX.Element {
         onOpenChats={() => setChatsOpen(true)}
         onOpenSettings={() => setOverlay("settings")}
       />
-      {overlay === "settings" ? <SettingsPanel onClose={() => setOverlay("none")} /> : null}
-      {overlay === "library" ? <LibraryPanel onClose={() => setOverlay("none")} /> : null}
+      <Suspense fallback={<div className="sr-only" role="status">Loading panel…</div>}>
+        {overlay === "settings" ? <SettingsPanel onClose={() => setOverlay("none")} /> : null}
+        {overlay === "library" ? <LibraryPanel onClose={() => setOverlay("none")} /> : null}
+        {overlay === "runs" ? <RunCenter onClose={() => setOverlay("none")} /> : null}
+      </Suspense>
     </div>
   );
 }
