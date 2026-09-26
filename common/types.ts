@@ -489,7 +489,7 @@ export type MossEvent =
   | { type: "round-start"; round: number; toolsEnabled: boolean }
   | { type: "round-end"; round: number; toolCallCount: number; finish: "tools" | "complete" | "rejected" | "error" }
   | { type: "tool-call"; callId: string; name: string; arguments: string }
-  | { type: "tool-approval-request"; callId: string; name: string; arguments: string; risk?: ToolRisk }
+  | { type: "tool-approval-request"; callId: string; name: string; arguments: string; risk?: ToolRisk; provenance?: ApprovalProvenance }
   | { type: "tool-result"; callId: string; name: string; ok: boolean; content: string; autoApproved: boolean; risk?: ToolRisk; durationMs?: number }
   | { type: "notice"; level: "info" | "warn"; message: string }
   | { type: "context-compaction"; reason: "proactive" | "overflow"; droppedCount: number }
@@ -499,6 +499,8 @@ export type MossEvent =
   | { type: "confidence"; mode: ConfidenceMode; note: string }
   | { type: "turn-complete"; messages: AgentMessage[] }
   | { type: "turn-aborted"; messages: AgentMessage[] }
+  | { type: "working-state"; state: WorkingState }
+  | { type: "supervisor"; action: "warn" | "stop"; stalledRounds: number; reason: string }
   | {
     type: "turn-error";
     message: string;
@@ -567,6 +569,115 @@ export interface ChatStartRequest {
    *  drops the oldest messages once history exceeds a fraction of it. Provider
    *  overflow can still trigger one reactive compaction when absent or 0. */
   contextLimit?: number;
+  /** adapt tools and guidance to the stored capability profile; absent means on */
+  adaptiveScaffolding?: boolean;
+  /** model routing on the same provider connection */
+  routing?: ModelRouting;
+  /** record every model call in this turn to a local replayable trace */
+  recordTrace?: boolean;
+  /** conversation working state: invariants, protected paths, decisions, facts, questions */
+  workingState?: WorkingState;
+  /** stop after this many rounds without progress; 0 disables; default 5 */
+  stallLimit?: number;
+}
+
+export interface ModelRouting {
+  /** cheaper or faster model for context summaries and read-only subagents */
+  fastModel?: string;
+  /** stronger model the turn switches to after repeated rejected work */
+  escalationModel?: string;
+  /** rejected completions or failed verifications before escalating; default 2 */
+  escalateAfter?: number;
+}
+
+// --- Turn traces and replay ---
+
+export interface TraceCall {
+  index: number;
+  startedAt: string;
+  durationMs: number;
+  model: string;
+  request: {
+    messages: AgentMessage[];
+    toolNames: string[];
+    maxTokens?: number;
+  };
+  response: {
+    text: string;
+    toolCalls: ToolCall[];
+    usage?: TokenUsage;
+  };
+  error?: string;
+}
+
+export interface TurnTrace {
+  schemaVersion: 1;
+  id: string;
+  createdAt: string;
+  providerKind: ProviderKind;
+  endpoint: string;
+  primaryModel: string;
+  tools: ToolDefinition[];
+  calls: TraceCall[];
+  outcome?: "completed" | "aborted" | "failed";
+  escalatedTo?: string;
+  verification?: { passed: number; failed: number };
+}
+
+export interface TurnTraceSummary {
+  id: string;
+  createdAt: string;
+  primaryModel: string;
+  escalatedTo?: string;
+  callCount: number;
+  toolCallCount: number;
+  outcome?: TurnTrace["outcome"];
+  preview: string;
+}
+
+export type ReplayAgreement = "same-action" | "different-tool" | "answered-instead" | "called-tool-instead" | "error";
+
+export interface ReplayCallResult {
+  index: number;
+  baseline: { toolNames: string[]; answered: boolean };
+  candidate: {
+    toolNames: string[];
+    answered: boolean;
+    validArguments: boolean;
+    unknownArguments: string[];
+    text: string;
+    durationMs: number;
+    outputTokens?: number;
+    error?: string;
+  };
+  agreement: ReplayAgreement;
+}
+
+export interface ReplayReport {
+  schemaVersion: 1;
+  traceId: string;
+  baselineModel: string;
+  candidateModel: string;
+  baselineOutcome?: TurnTrace["outcome"];
+  replayedAt: string;
+  calls: ReplayCallResult[];
+  summary: {
+    calls: number;
+    sameAction: number;
+    agreementRate: number;
+    validArgumentRate: number;
+    errors: number;
+    medianLatencyMs?: number;
+    baselineMedianLatencyMs?: number;
+    inputTokens: number;
+    outputTokens: number;
+  };
+}
+
+export interface TraceReplayRequest {
+  traceId: string;
+  config: ProviderConfig;
+  timeoutSeconds?: number;
 }
 
 export interface ToolApprovalResponse {
@@ -616,6 +727,100 @@ export interface VerificationSuggestion {
   source: string;
 }
 
+// --- Model capability profiling ---
+
+export type CapabilityDimension =
+  | "tool-calling"
+  | "tool-selection"
+  | "tool-restraint"
+  | "structured-output"
+  | "instruction-following"
+  | "usable-context"
+  | "plan-coherence";
+
+export interface CapabilityTrial {
+  id: string;
+  passed: boolean;
+  /** 0..1; partial credit where a probe allows it */
+  score: number;
+  note?: string;
+  durationMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  /** the request failed or timed out, so the trial measures availability, not capability */
+  errored?: boolean;
+}
+
+export interface CapabilityProbeResult {
+  dimension: CapabilityDimension;
+  /** 0..1 mean trial score */
+  score: number;
+  passed: number;
+  total: number;
+  summary: string;
+  trials: CapabilityTrial[];
+  durationMs: number;
+  /** probe-specific measurements such as usableContextTokens or maxCoherentSteps */
+  metrics?: Record<string, number>;
+}
+
+export type ModelCapabilityTier = "strong" | "capable" | "limited" | "unreliable";
+
+export interface ModelScaffoldingRecommendation {
+  scaffolding: "light" | "moderate" | "heavy";
+  toolUse: "reliable" | "supervised" | "avoid";
+  structuredOutput: "direct" | "repair";
+  usableContextTokens?: number;
+  maxCoherentSteps?: number;
+  /** existing Moss settings the measurements support; never includes approval bypasses */
+  settings: { enableTools?: boolean; maxToolRounds?: number; contextLimit?: number };
+  notes: string[];
+}
+
+export interface ModelCapabilityProfile {
+  schemaVersion: 1;
+  suiteVersion: string;
+  providerKind: ProviderKind;
+  /** endpoint origin and path, without credentials or query */
+  endpoint: string;
+  model: string;
+  probedAt: string;
+  durationMs: number;
+  maxContextTested: number;
+  results: CapabilityProbeResult[];
+  /** 0..1 weighted across the dimensions that completed at least one trial */
+  overall: number;
+  tier: ModelCapabilityTier;
+  usage: TokenUsage;
+  /** median and 90th-percentile latency of completed short requests */
+  latency?: { medianMs: number; p90Ms: number };
+  /** requests that failed or timed out; their trials are excluded from scores */
+  failedRequests: number;
+  /** time for the untimed warm-up request, which includes loading a local model */
+  warmupMs?: number;
+  recommendation: ModelScaffoldingRecommendation;
+}
+
+export interface ModelProbeOptions {
+  /** largest needle-in-haystack prompt to attempt, in estimated tokens */
+  maxContextTokens?: number;
+  dimensions?: CapabilityDimension[];
+  /** per-request timeout for short probes, in seconds */
+  timeoutSeconds?: number;
+}
+
+export interface ModelProbeRequest {
+  config: ProviderConfig;
+  options?: ModelProbeOptions;
+}
+
+export interface ModelProbeProgress {
+  dimension: CapabilityDimension;
+  completedDimensions: number;
+  totalDimensions: number;
+  message: string;
+}
+
 // --- Durable memory & skills (Phase 5) ---
 
 export type MemoryCategory = "preference" | "fact" | "decision" | "context";
@@ -642,6 +847,50 @@ export interface Skill {
   createdBy?: "user" | "agent" | "import";
   /** False when the skill may only be loaded explicitly by name. */
   modelInvocable?: boolean;
+  /** Earned trust from verified use; absent before the ledger has seen the skill. */
+  trust?: SkillTrust;
+}
+
+export type SkillTrustStatus = "candidate" | "trusted" | "demoted";
+
+export interface SkillTrust {
+  status: SkillTrustStatus;
+  version: number;
+  uses: number;
+  verifiedSuccesses: number;
+  failures: number;
+  /** verified successes on the current version; promotion needs PROMOTE_AFTER */
+  versionSuccesses: number;
+  consecutiveFailures: number;
+  lastUsedAt?: string;
+  /** unused for the decay period; stale skills are demoted on their next failure */
+  stale: boolean;
+  statusReason: string;
+}
+
+// --- Governed working state ---
+
+export type WorkingStateKind = "invariant" | "protected" | "decision" | "fact" | "question";
+
+export interface WorkingStateEntry {
+  id: string;
+  kind: WorkingStateKind;
+  text: string;
+  rationale?: string;
+  source: "user" | "model";
+  createdAt: string;
+}
+
+export interface WorkingState {
+  schemaVersion: 1;
+  entries: WorkingStateEntry[];
+}
+
+/** Why an approval was forced: untrusted content entered the turn before this side effect. */
+export interface ApprovalProvenance {
+  untrustedSources: string[];
+  /** the arguments contain text or URLs copied from that untrusted content */
+  copiedFromUntrusted: boolean;
 }
 
 export interface SkillImportResult {

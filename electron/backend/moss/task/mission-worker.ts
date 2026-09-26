@@ -8,6 +8,7 @@ import type {
 import { runTurn, type CompletionContext } from "../agent-runner";
 import type { CheckpointRecorder } from "../checkpoint/checkpoint-store";
 import type { ChatProvider } from "../providers/types";
+import type { WorkingStateStore } from "../governed/working-state";
 import type { Tool } from "../tools";
 import type { MissionWorker, MissionWorkerExecution, MissionWorkOrder } from "./mission-controller";
 import type { ModelRate } from "../../../../common/pricing";
@@ -28,6 +29,9 @@ export interface RunTurnMissionWorkerOptions {
   verify?: VerifyConfig;
   maxRounds?: number;
   contextLimit?: number;
+  /** conversation working state rendered into each step and enforced for protected paths */
+  workingState?: WorkingStateStore;
+  stallLimit?: number;
 }
 
 export class RunTurnMissionWorker implements MissionWorker {
@@ -115,6 +119,8 @@ export class RunTurnMissionWorker implements MissionWorker {
       ...(this.options.checkpoint ? { checkpoint: this.options.checkpoint } : {}),
       ...(this.options.maxRounds ? { maxRounds: this.options.maxRounds } : {}),
       ...(this.options.contextLimit ? { contextLimit: this.options.contextLimit } : {}),
+      ...(this.options.workingState ? { workingState: this.options.workingState } : {}),
+      ...(this.options.stallLimit !== undefined ? { stallLimit: this.options.stallLimit } : {}),
       ...(Number.isFinite(outputTokenLimit) ? { maxOutputTokens: Math.max(1, outputTokenLimit) } : {}),
     });
 

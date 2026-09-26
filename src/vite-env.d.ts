@@ -17,7 +17,11 @@ import type {
   MissionAuthorizationRequest,
   MissionCapabilitiesRequest,
   MissionCapabilityDescriptor,
+  ModelCapabilityProfile,
+  ModelProbeProgress,
+  ModelProbeRequest,
   ProviderConfig,
+  ProviderKind,
   ProductDiagnosticEntry,
   ProductDiagnosticsConfig,
   Skill,
@@ -25,6 +29,8 @@ import type {
   SkillImportResult,
   SkillUpdateRequest,
   SkillRenameRequest,
+  SkillTrust,
+  SkillTrustStatus,
   TaskArtifactContent,
   TaskHistoryEntry,
   TaskSnapshot,
@@ -32,6 +38,9 @@ import type {
   ToolApprovalDecision,
   TranscribeRequest,
   TranscribeResult,
+  ReplayReport,
+  TraceReplayRequest,
+  TurnTraceSummary,
   VerificationSuggestion,
   WorkspaceFilePreview,
 } from "@common/types";
@@ -90,6 +99,21 @@ declare global {
       window?: {
         focus: () => Promise<void>;
       };
+      model?: {
+        probe: (request: ModelProbeRequest) => Promise<ModelCapabilityProfile>;
+        cancelProbe: () => Promise<void>;
+        profile: (kind: ProviderKind, baseUrl: string, model: string) => Promise<ModelCapabilityProfile | null>;
+        profiles: () => Promise<ModelCapabilityProfile[]>;
+        onProbeProgress: (handler: (progress: ModelProbeProgress) => void) => () => void;
+      };
+      traces?: {
+        list: () => Promise<{ count: number; traces: TurnTraceSummary[]; dir: string }>;
+        clear: () => Promise<void>;
+        openFolder: () => Promise<string | null>;
+        replay: (request: TraceReplayRequest) => Promise<ReplayReport>;
+        cancelReplay: () => Promise<void>;
+        onReplayProgress: (handler: (progress: { completed: number; total: number }) => void) => () => void;
+      };
       memory: {
         list: () => Promise<MemoryEntry[]>;
         add: (fact: string, category: MemoryCategory) => Promise<MemoryEntry | null>;
@@ -107,6 +131,9 @@ declare global {
         update: (request: SkillUpdateRequest) => Promise<Skill | null>;
         rename: (request: SkillRenameRequest) => Promise<Skill | null>;
         importFolder: () => Promise<SkillImportResult | null>;
+        setTrust?: (id: string, status: SkillTrustStatus) => Promise<SkillTrust | null>;
+        history?: (id: string) => Promise<Array<{ version: number; savedAt: string; description: string; instructions: string }>>;
+        rollback?: (id: string, version: number) => Promise<Skill | null>;
       };
       mcp: {
         status: () => Promise<McpServerStatus[]>;

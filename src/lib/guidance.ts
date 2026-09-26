@@ -38,6 +38,12 @@ export function explainToolFailure(content: string | undefined): ToolFailureExpl
       settingsCategory: "automation",
     };
   }
+  if (/^Protected path:/.test(content)) {
+    return {
+      rule: "Protected path (working state)",
+      detail: "This conversation's working state protects that path. Remove the protection from the State panel if the change is intended.",
+    };
+  }
   if (/Path escapes the workspace sandbox/.test(content)) {
     return {
       rule: "Workspace sandbox",

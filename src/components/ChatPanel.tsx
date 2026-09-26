@@ -3,7 +3,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Check, Copy, FileText, Menu, PanelRightOpen, RefreshCw, X } from "lucide-react";
 
-import type { AgentMessage, ChatEventPayload, ConfidenceMode, DocumentAttachment, MissionCapabilityDescriptor, MissionLaunchPolicy, Skill, TaskBudget, TaskHistoryEntry, TaskSnapshot, TaskSpec, TokenUsage } from "@common/types";
+import type { AgentMessage, ApprovalProvenance, ChatEventPayload, ConfidenceMode, DocumentAttachment, MissionCapabilityDescriptor, MissionLaunchPolicy, Skill, TaskBudget, TaskHistoryEntry, TaskSnapshot, TaskSpec, TokenUsage } from "@common/types";
 import { PERSONALITY_PRESETS } from "@common/personalities";
 import { parseClarification } from "@common/clarification";
 
@@ -22,6 +22,7 @@ import {
   getSessionMessages,
   getSessionPersonality,
   getSessionTitle,
+  getSessionWorkingState,
   selectSession,
   sessionTokenUsage,
   sessionToolUsage,
@@ -30,6 +31,7 @@ import {
   setSessionPersonality,
   setSessionTaskId,
   setSessionTitle,
+  setSessionWorkingState,
   useSessions,
 } from "../lib/sessions";
 import { modelsStore, readinessItems, toEmbedConfig, toProviderConfig, updateSettings, useSettings } from "../lib/settings";
@@ -50,6 +52,7 @@ import { TurnUndo } from "./TurnUndo";
 import { bindSuggestedCommand, VerificationSuggestions } from "./VerificationSuggestions";
 
 const ArtifactWorkspace = lazy(() => import("./ArtifactWorkspace").then((module) => ({ default: module.ArtifactWorkspace })));
+const WorkingStatePanel = lazy(() => import("./WorkingStatePanel").then((module) => ({ default: module.WorkingStatePanel })));
 const loadStoredArtifact = (taskId: string, artifactId: string) => window.moss.task.artifact(taskId, artifactId);
 async function copyArtifact(content: string): Promise<void> {
   if (!await window.moss.clipboard.write(content)) throw new Error("Copy failed");
@@ -79,6 +82,8 @@ interface ToolView {
   autoApproved?: boolean;
   /** content risk tier for run_command, surfaced on the approval prompt */
   risk?: "readonly" | "mutating" | "destructive";
+  /** set when untrusted content entered the turn before this approval */
+  provenance?: ApprovalProvenance;
 }
 
 interface MessageView {
@@ -161,6 +166,12 @@ function ToolCard({
       <div className="border-t border-neutral-200/70 px-3 py-2 dark:border-neutral-700/70">
         {tool.status === "approval" ? (
           <>
+            {tool.provenance ? (
+              <div className="mb-2 rounded-md border border-red-500/50 bg-red-500/10 px-2 py-1.5 text-xs text-red-900 dark:text-red-100" role="alert" aria-label="Untrusted content warning">
+                <span className="font-semibold">Untrusted content is in play.</span> This action follows content from {tool.provenance.untrustedSources.join(", ")}, which can contain instructions written by someone else. Approve only if it serves your request.
+                {tool.provenance.copiedFromUntrusted ? <span className="mt-1 block font-semibold">Its arguments include text or links copied from that content.</span> : null}
+              </div>
+            ) : null}
             <div className="text-[10px] font-medium uppercase text-neutral-600 dark:text-neutral-300">Review</div>
             <div className="mt-1">
               <ToolPreview name={tool.name} args={tool.args} risk={tool.risk} workspaceRoot={workspaceRoot} />
@@ -465,6 +476,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [errorGuidance, setErrorGuidance] = useState<ProviderErrorGuidance | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [workingStateOpen, setWorkingStateOpen] = useState(false);
   const dictation = useDictation((text) =>
     setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text)),
   );
@@ -673,7 +685,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     } else if (ev.type === "tool-approval-request") {
       setActivity((prev) =>
         prev.map((it) =>
-          it.kind === "tool" && it.callId === ev.callId ? { ...it, status: "approval", risk: ev.risk } : it,
+          it.kind === "tool" && it.callId === ev.callId ? { ...it, status: "approval", risk: ev.risk, ...(ev.provenance ? { provenance: ev.provenance } : {}) } : it,
         ),
       );
       setAnnouncement(`Approval required for ${ev.name}.`);
@@ -687,6 +699,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             : it,
         ),
       );
+    } else if (ev.type === "working-state") {
+      const sessionId = turnSessionRef.current ?? taskSessionRef.current;
+      if (sessionId) setSessionWorkingState(sessionId, ev.state);
     } else if (ev.type === "token-usage") {
       // Usage is persisted per-message via the runner's committed messages and
       // shown once the turn lands; nothing to accumulate live here.
@@ -807,6 +822,19 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       showConfidence: activeSettings.showConfidence,
       injectionMode: activeSettings.injectionMode,
       contextLimit: activeSettings.contextLimit,
+      ...(getSessionWorkingState(sessionId)?.entries.length ? { workingState: getSessionWorkingState(sessionId) } : {}),
+      ...(typeof activeSettings.stallLimit === "number" ? { stallLimit: activeSettings.stallLimit } : {}),
+      adaptiveScaffolding: activeSettings.adaptiveScaffolding !== false,
+      ...(activeSettings.fastModel || activeSettings.escalationModel
+        ? {
+            routing: {
+              ...(activeSettings.fastModel ? { fastModel: activeSettings.fastModel } : {}),
+              ...(activeSettings.escalationModel ? { escalationModel: activeSettings.escalationModel } : {}),
+              ...(activeSettings.escalateAfter ? { escalateAfter: activeSettings.escalateAfter } : {}),
+            },
+          }
+        : {}),
+      ...(activeSettings.recordTraces ? { recordTrace: true } : {}),
     });
   }
 
@@ -1369,6 +1397,16 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             Clear
           </button>
         ) : null}
+        {current ? (
+          <button
+            type="button"
+            className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600"
+            onClick={() => setWorkingStateOpen(true)}
+            title="Invariants, protected paths, decisions, facts, and open questions for this conversation"
+          >
+            State{current.workingState?.entries.length ? ` (${current.workingState.entries.length})` : ""}
+          </button>
+        ) : null}
         <button className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600" onClick={() => onOpenSettings()}>
           Settings
         </button>
@@ -1860,6 +1898,11 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           <ArtifactWorkspace key={`${current?.id}:${task.id}`} artifacts={task.artifacts ?? []} selectedId={selectedArtifact.id} onSelect={openArtifact} onClose={() => setArtifactSelection(null)} loadArtifact={loadStoredArtifact} onCopy={copyArtifact} />
         </Suspense>
       </div>
+    ) : null}
+    {workingStateOpen && current ? (
+      <Suspense fallback={null}>
+        <WorkingStatePanel sessionId={current.id} state={current.workingState} onClose={() => setWorkingStateOpen(false)} />
+      </Suspense>
     ) : null}
     </div>
   );

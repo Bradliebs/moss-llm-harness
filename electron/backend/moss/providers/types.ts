@@ -7,6 +7,8 @@ export interface ChatRequest {
   messages: AgentMessage[];
   tools?: ToolDefinition[];
   maxTokens?: number;
+  /** sampling temperature; omitted means the provider default */
+  temperature?: number;
 }
 
 /** Low-level provider stream events. The agent runner accumulates these into the

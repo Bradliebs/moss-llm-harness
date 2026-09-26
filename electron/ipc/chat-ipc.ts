@@ -4,6 +4,7 @@
 // ApprovalBroker per in-flight turn.
 
 import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
 
 import { BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
 
@@ -18,17 +19,21 @@ import type {
   MissionCapabilitiesRequest,
   MissionCapabilityDescriptor,
   MissionLaunchPolicy,
+  ModelProbeRequest,
   MossEvent,
   ProductDiagnosticEntry,
   ProductDiagnosticKind,
   ProductDiagnosticsConfig,
+  ProviderKind,
   SkillCreateRequest,
   SkillUpdateRequest,
   SkillRenameRequest,
+  SkillTrustStatus,
   TaskSnapshot,
   TaskBudget,
   TaskSpec,
   ToolApprovalDecision,
+  TraceReplayRequest,
   TranscribeRequest,
   TranscribeResult,
 } from "../../common/types";
@@ -58,9 +63,18 @@ import {
 } from "../backend/moss/mcp/mcp-config";
 import { mcpManager } from "../backend/moss/mcp/mcp-manager";
 import { readWorkspacePreview, suggestVerificationCommands } from "../backend/moss/workspace/workspace-insights";
+import { CONTEXT_LEVELS, DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_TIMEOUT_SECONDS, runCapabilityProbes } from "../backend/moss/models/capability-probes";
+import { buildCapabilityProfile } from "../backend/moss/models/capability-profile";
+import { modelProfileStore } from "../backend/moss/models/model-profile-store";
+import { DEFAULT_ESCALATE_AFTER, EscalatingProvider, EscalationMonitor } from "../backend/moss/models/escalation";
+import { applyScaffoldingMessages, planScaffolding } from "../backend/moss/models/scaffolding";
+import { RecordingProvider, TraceRecorder, traceStore } from "../backend/moss/models/trace-recorder";
+import { replayTrace } from "../backend/moss/models/trace-replay";
+import { skillLedger, type SkillOutcome } from "../backend/moss/skills/skill-ledger";
+import { normalizeWorkingState, WorkingStateStore } from "../backend/moss/governed/working-state";
 import { RunJournal } from "../backend/moss/learning/run-journal";
 import { createRetrospective } from "../backend/moss/learning/retrospective";
-import { LessonStore } from "../backend/moss/learning/lesson-store";
+import { LessonStore, renderLessons } from "../backend/moss/learning/lesson-store";
 import { memoryStore } from "../backend/moss/memory/memory-store";
 import { memoryReviewQueue } from "../backend/moss/governed/review-queue";
 import { providerCredentials } from "../backend/moss/provider-credentials";
@@ -281,6 +295,85 @@ export function registerChatIpc(): void {
     window.focus();
   });
 
+  let activeProbe: AbortController | null = null;
+  ipcMain.handle(IPC.modelProbeRun, async (event, request: ModelProbeRequest) => {
+    const config = request?.config;
+    if (!config || typeof config.model !== "string" || !config.model.trim() || typeof config.baseUrl !== "string") {
+      throw new Error("Choose a provider and model before running the capability probe");
+    }
+    if (activeProbe) throw new Error("A capability probe is already running");
+    const controller = new AbortController();
+    activeProbe = controller;
+    try {
+      const maxContextTokens = Math.min(CONTEXT_LEVELS.at(-1)!, Math.max(CONTEXT_LEVELS[0], Number(request.options?.maxContextTokens) || DEFAULT_MAX_CONTEXT_TOKENS));
+      const startedAt = Date.now();
+      const timeoutSeconds = Math.min(600, Math.max(15, Number(request.options?.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS));
+      const { results, warmupMs } = await runCapabilityProbes(
+        { provider: createProvider(config), model: config.model, signal: controller.signal, timeoutMs: timeoutSeconds * 1_000 },
+        {
+          maxContextTokens,
+          dimensions: request.options?.dimensions,
+          onProgress: (progress) => {
+            if (!event.sender.isDestroyed()) event.sender.send(IPC.modelProbeProgress, progress);
+          },
+        },
+      );
+      const profile = buildCapabilityProfile({
+        providerKind: config.kind,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        results,
+        startedAt,
+        finishedAt: Date.now(),
+        maxContextTested: Math.max(...CONTEXT_LEVELS.filter((level) => level <= maxContextTokens)),
+        warmupMs,
+      });
+      await modelProfileStore.save(profile);
+      return profile;
+    } finally {
+      if (activeProbe === controller) activeProbe = null;
+    }
+  });
+  ipcMain.handle(IPC.modelProbeCancel, () => {
+    activeProbe?.abort();
+  });
+  ipcMain.handle(IPC.modelProfileGet, (_event, kind: ProviderKind, baseUrl: unknown, model: unknown) =>
+    typeof baseUrl === "string" && typeof model === "string" && model ? modelProfileStore.get(kind, baseUrl, model) : null);
+  ipcMain.handle(IPC.modelProfileList, () => modelProfileStore.list());
+
+  ipcMain.handle(IPC.tracesList, async () => ({ count: await traceStore.count(), traces: await traceStore.list(20), dir: traceStore.dir() }));
+  ipcMain.handle(IPC.tracesClear, () => traceStore.clear());
+  ipcMain.handle(IPC.tracesOpenFolder, async () => {
+    const dir = traceStore.dir();
+    await mkdir(dir, { recursive: true });
+    const error = await shell.openPath(dir);
+    return error ? null : dir;
+  });
+  let activeReplay: AbortController | null = null;
+  ipcMain.handle(IPC.traceReplayRun, async (event, request: TraceReplayRequest) => {
+    if (typeof request?.traceId !== "string" || !request.config?.model?.trim()) throw new Error("Choose a trace and a candidate model");
+    if (activeReplay) throw new Error("A replay is already running");
+    const trace = await traceStore.get(request.traceId);
+    if (!trace) throw new Error("Trace not found");
+    const controller = new AbortController();
+    activeReplay = controller;
+    try {
+      const timeoutSeconds = Math.min(600, Math.max(15, Number(request.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS));
+      return await replayTrace(trace, createProvider(request.config), request.config.model, {
+        signal: controller.signal,
+        timeoutMs: timeoutSeconds * 1_000,
+        onProgress: (completed, total) => {
+          if (!event.sender.isDestroyed()) event.sender.send(IPC.traceReplayProgress, { completed, total });
+        },
+      });
+    } finally {
+      if (activeReplay === controller) activeReplay = null;
+    }
+  });
+  ipcMain.handle(IPC.traceReplayCancel, () => {
+    activeReplay?.abort();
+  });
+
   ipcMain.handle(IPC.memoryList, () => memoryStore.list());
   ipcMain.handle(IPC.memoryAdd, (_event, fact: string, category: MemoryCategory) =>
     memoryStore.add(fact, category, "user"),
@@ -294,7 +387,19 @@ export function registerChatIpc(): void {
   ipcMain.handle(IPC.memoryReviewApprove, (_event, id: string) => memoryReviewQueue.approve(id));
   ipcMain.handle(IPC.memoryReviewReject, (_event, id: string) => memoryReviewQueue.reject(id));
 
-  ipcMain.handle(IPC.skillsList, () => skillsStore.list());
+  ipcMain.handle(IPC.skillsList, () => skillLedger.sync(skillsStore.list()));
+  ipcMain.handle(IPC.skillSetTrust, (_event, id: unknown, status: unknown) => {
+    if (typeof id !== "string" || !["trusted", "candidate", "demoted"].includes(String(status))) throw new Error("Invalid skill trust request");
+    return skillLedger.setStatus(id, status as SkillTrustStatus);
+  });
+  ipcMain.handle(IPC.skillHistory, (_event, id: unknown) => typeof id === "string" ? skillLedger.history(id) : []);
+  ipcMain.handle(IPC.skillRollback, (_event, id: unknown, version: unknown) => {
+    if (typeof id !== "string" || typeof version !== "number") throw new Error("Invalid skill rollback request");
+    const snapshot = skillLedger.history(id).find((item) => item.version === version);
+    if (!snapshot) throw new Error(`Version ${version} is not available for rollback`);
+    skillLedger.noteEdit(id, "user");
+    return skillsStore.update(id, snapshot.description, snapshot.instructions);
+  });
   ipcMain.handle(IPC.skillCreate, (_event, req: SkillCreateRequest) =>
     skillsStore.create(req.name, req.description, req.instructions),
   );
@@ -302,9 +407,10 @@ export function registerChatIpc(): void {
   ipcMain.handle(IPC.skillToggle, (_event, id: string, enabled: boolean) => {
     skillsStore.setEnabled(id, enabled);
   });
-  ipcMain.handle(IPC.skillUpdate, (_event, req: SkillUpdateRequest) =>
-    skillsStore.update(req.id, req.description, req.instructions),
-  );
+  ipcMain.handle(IPC.skillUpdate, (_event, req: SkillUpdateRequest) => {
+    skillLedger.noteEdit(req.id, "user");
+    return skillsStore.update(req.id, req.description, req.instructions);
+  });
   ipcMain.handle(IPC.skillRename, (_event, req: SkillRenameRequest) =>
     skillsStore.rename(req.id, req.newName),
   );
@@ -388,11 +494,32 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
   let recoveringBlocker = false;
   let recoveringReload = false;
   let pendingDurableApproval: { callId: string; persisted: Promise<TaskSnapshot> } | undefined;
+  let traceRecorder: TraceRecorder | undefined;
+  let escalatingProvider: EscalatingProvider | undefined;
 
   let terminalEvent: Extract<MossEvent, { type: "turn-complete" | "turn-aborted" | "turn-error" }> | undefined;
   const approvalEvents = new Map<string, Extract<MossEvent, { type: "tool-approval-request" }>>();
   const approvalStartedAt = new Map<string, number>();
+  let observeForEscalation: ((mossEvent: MossEvent) => void) | undefined;
+  const verificationCounts = { passed: 0, failed: 0 };
+  let lastVerificationOk: boolean | undefined;
+  const skillCalls = new Map<string, string>();
+  const usedSkillNames = new Set<string>();
   const send = (mossEvent: MossEvent) => {
+    if (mossEvent.type === "verification") {
+      verificationCounts[mossEvent.ok ? "passed" : "failed"] += 1;
+      lastVerificationOk = mossEvent.ok;
+    }
+    if (mossEvent.type === "tool-call" && mossEvent.name === "m_get_skill") {
+      try {
+        const name = (JSON.parse(mossEvent.arguments || "{}") as { name?: unknown }).name;
+        if (typeof name === "string") skillCalls.set(mossEvent.callId, name);
+      } catch {
+        // Malformed arguments cannot identify a skill.
+      }
+    }
+    if (mossEvent.type === "tool-result" && mossEvent.ok && skillCalls.has(mossEvent.callId)) usedSkillNames.add(skillCalls.get(mossEvent.callId)!);
+    observeForEscalation?.(mossEvent);
     if (
       !firstResponseRecorded
       && ["text-delta", "tool-call", "notice", "task-state"].includes(mossEvent.type)
@@ -468,10 +595,22 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     const baseProvider = createProvider(req.config);
     // Attach the daily-budget guard only when the user set a positive cap, so
     // the default path is the bare provider with no behavior change.
-    const provider =
+    const budgetedProvider =
       req.dailyBudgetUsd && req.dailyBudgetUsd > 0
         ? new BudgetEnforcingProvider(baseProvider, req.dailyBudgetUsd, req.modelRates)
         : baseProvider;
+    // Wrapper order matters: escalation rewrites the model before the recorder
+    // and the budget guard see the request, so both account for the model that
+    // actually runs.
+    traceRecorder = req.recordTrace
+      ? new TraceRecorder({ id: req.turnId, providerKind: req.config.kind, baseUrl: req.config.baseUrl, model: req.config.model })
+      : undefined;
+    const recordedProvider = traceRecorder ? new RecordingProvider(budgetedProvider, traceRecorder) : budgetedProvider;
+    const escalationModel = req.routing?.escalationModel?.trim();
+    escalatingProvider = escalationModel && escalationModel !== req.config.model
+      ? new EscalatingProvider(recordedProvider, req.config.model, escalationModel)
+      : undefined;
+    const provider = escalatingProvider ?? recordedProvider;
     const enableTools = req.enableTools !== false;
     const routed = enableTools
       ? routeAvailableTools(req)
@@ -492,6 +631,13 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     const messages = hasSystem
       ? req.messages
       : [buildSystemMessage({ includeSkills: enableTools, includeClarification: !req.taskSpec && !req.taskId, query: lastUser?.content ?? "", customInstructions: req.customInstructions, personalityId: req.personalityId, adaptiveTone: req.adaptiveTone }), ...req.messages];
+    if (!hasSystem && lastUser?.content) {
+      // Episodic memory: verified lessons from earlier runs that match this request.
+      const lessons = renderLessons(await lessonStore.relevant(lastUser.content).catch(() => []));
+      if (lessons) messages[0] = { ...messages[0], content: `${messages[0].content}\n\n${lessons}` };
+    }
+    const workingState = new WorkingStateStore(normalizeWorkingState(req.workingState));
+    const stallLimit = typeof req.stallLimit === "number" && Number.isFinite(req.stallLimit) ? Math.max(0, Math.floor(req.stallLimit)) : undefined;
     // Snapshot file pre-images only when a workspace is selected, so a turn's
     // edits can be reverted. Prune old manifests opportunistically at turn start.
     const workspaceRoot = req.workspaceRoot ?? "";
@@ -545,6 +691,8 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         model: req.config.model,
         tools: routed.tools,
         workspaceRoot,
+        workingState,
+        ...(stallLimit !== undefined ? { stallLimit } : {}),
         checkpoint,
         verify: req.verify,
         maxRounds,
@@ -633,12 +781,41 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         content: renderTaskProgressPacket(packet),
       });
     }
+    // Missions keep their granted capabilities and budget accounting, so model
+    // adaptation and escalation apply to ordinary turns and turn tasks only.
+    const profile = req.adaptiveScaffolding !== false && toolDefinitions.length > 0
+      ? await modelProfileStore.get(req.config.kind, req.config.baseUrl, req.config.model).catch(() => null)
+      : null;
+    const scaffolding = planScaffolding(profile, toolDefinitions, lastUser?.content ?? "");
+    if (scaffolding.notice) send({ type: "notice", level: "info", message: scaffolding.notice });
+    const offeredTools = new Set(scaffolding.tools.map((tool) => tool.name));
+    const scaffoldedRegistry = scaffolding.tools.length === toolDefinitions.length
+      ? toolRegistry
+      : new Map([...toolRegistry].filter(([name]) => offeredTools.has(name)));
+    if (escalatingProvider && escalationModel) {
+      const monitor = new EscalationMonitor(req.routing?.escalateAfter ?? DEFAULT_ESCALATE_AFTER);
+      const escalator = escalatingProvider;
+      observeForEscalation = (observed) => {
+        if (monitor.observe(observed) && escalator.escalate()) {
+          send({
+            type: "notice",
+            level: "warn",
+            message: `Escalating to ${escalationModel} after ${monitor.count} rejected attempt${monitor.count === 1 ? "" : "s"} by ${req.config.model}.`,
+          });
+        }
+      };
+    }
+    const fastModel = req.routing?.fastModel?.trim();
     await runTurn({
       provider,
       model: req.config.model,
-      messages,
-      tools: toolDefinitions,
-      toolRegistry,
+      messages: applyScaffoldingMessages(messages, scaffolding),
+      tools: scaffolding.tools,
+      toolRegistry: scaffoldedRegistry,
+      ...(scaffolding.maxToolCallsPerRound ? { maxToolCallsPerRound: scaffolding.maxToolCallsPerRound } : {}),
+      workingState,
+      ...(stallLimit !== undefined ? { stallLimit } : {}),
+      ...(fastModel && fastModel !== req.config.model ? { auxiliaryModel: fastModel } : {}),
       workspaceRoot,
       signal: controller.signal,
       onEvent: send,
@@ -734,6 +911,31 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         : terminalEvent.type === "turn-aborted"
           ? "aborted"
           : "failed";
+      const skillIds = [...usedSkillNames].map((name) => skillsStore.get(name)?.id).filter((id): id is string => !!id);
+      if (skillIds.length > 0) {
+        // Only host evidence promotes or demotes a skill: task state and verification, never the model's claim.
+        const skillOutcome: SkillOutcome = lastTaskState === "completed"
+          ? "success"
+          : lastTaskState === "blocked" || lastTaskState === "failed" || lastVerificationOk === false
+            ? "failure"
+            : terminalEvent.type === "turn-complete" && lastVerificationOk === true
+              ? "success"
+              : terminalEvent.type === "turn-error" && terminalEvent.source !== "provider-model"
+                ? "failure"
+                : "used";
+        try {
+          skillLedger.recordOutcome(skillIds, skillOutcome);
+        } catch {
+          // Trust tracking must never break turn settlement.
+        }
+      }
+      if (traceRecorder) {
+        void traceStore.save(traceRecorder.finish({
+          outcome,
+          ...(escalatingProvider?.isEscalated ? { escalatedTo: req.routing?.escalationModel?.trim() } : {}),
+          ...(verificationCounts.passed + verificationCounts.failed > 0 ? { verification: verificationCounts } : {}),
+        })).catch(() => undefined);
+      }
       void productDiagnostics.record("turn-settled", { durationMs: Date.now() - startedAt, mission, outcome });
       if (inflightEntry.abortRequestedAt) {
         void productDiagnostics.record("stop-settled", {

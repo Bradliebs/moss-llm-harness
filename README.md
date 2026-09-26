@@ -44,6 +44,9 @@ substantially in tool use, instruction following, and context capacity.
 * Previews file diffs and command context before you approve changes
 * Notifies you when background work needs attention, with per-turn undo
 * Offers a command palette, keyboard shortcuts, larger text, and high contrast
+* Profiles each model's tool, JSON, context, and planning reliability before you rely on it
+* Adapts tools and guidance to the measured model, escalates rejected work to a stronger model, and replays recorded turns against alternatives
+* Keeps protected paths, invariants, and decisions in governed working state, stops unproductive loops, lets skills earn trust, and never lets untrusted content authorize a side effect
 * Reads, writes, searches, and checkpoints files inside the selected workspace
 * Runs shell commands with risk classification and approval controls
 * Uses isolated, domain-allow-listed Playwright browser sessions
@@ -280,6 +283,115 @@ disposable Electron profile without model calls.
 Custom OpenAI-compatible servers must expose model listing and chat completion
 endpoints compatible with `/models` and `/chat/completions`.
 
+### Model capability profiles
+
+Models differ sharply in how reliably they call tools, return JSON, and stay on
+track across several steps. **Settings > Models > Capability profile** measures
+the selected model instead of assuming. The probe sends about 30 short requests
+with fake tools that never run on your system, grades each reply locally, and
+stores the latest profile per provider, endpoint, and model.
+
+| Dimension | What it measures |
+|-----------|------------------|
+| Tool calling | Native function calls with correct arguments, and calls written as text instead |
+| Tool selection | Choosing the right tool from five options |
+| Tool restraint | Answering directly when no tool is needed |
+| Structured output | Exact JSON objects, with partial credit when JSON is wrapped in prose or fences |
+| Instruction following | Verifiable format rules, including one set in the system prompt |
+| Usable context | Recalling a buried passcode at growing prompt sizes, and server-side truncation |
+| Plan coherence | Finishing sequential tool chains of three, five, and seven calls against fake registers |
+
+Each profile has a weighted score, a tier (strong, capable, limited, or
+unreliable), a recommended scaffolding level, median response latency, and notes
+such as Ollama's default context length, tool calls emitted as text, or argument
+names outside the schema. **Apply suggested settings** can set the maximum tool
+rounds and context limit, and turns tools off when tool calling fails most
+probes. It never changes approval or authority settings.
+
+Probes sample at temperature 0 so repeated runs are comparable. An untimed
+warm-up request loads a local model before any probe is timed; a model that
+cannot answer it is reported as unavailable instead of scored. Requests that
+fail or time out are excluded from scores and listed separately, because a slow
+reply says nothing about whether the answer would have been right. A server
+response that the model does not support tools counts as a measured tool
+failure. The usable-context probe recalibrates its prompt size from the
+provider's reported token counts, and only suggests a context limit when a size
+actually fails.
+
+Run the same suite from a terminal to compare models on your own endpoint:
+
+```powershell
+npm run probe -- --model llama3.1:8b --model qwen2.5:7b --max-context 32768 --output profiles.json
+npm run probe -- --kind anthropic --base-url https://api.anthropic.com --api-key-env ANTHROPIC_API_KEY --model claude-sonnet-4-5
+```
+
+The command defaults to local Ollama, reads an API key from the environment
+variable named by `--api-key-env` (default `MOSS_PROBE_API_KEY`), accepts
+`--only tool-calling,plan-coherence` to run selected dimensions and
+`--timeout 240` for slow or reasoning models, and prints a side-by-side table.
+It exits with status 1 when a model is unavailable. Cloud providers charge for
+the tokens used; the profile records the total.
+
+### Adaptive scaffolding
+
+Once a model has a capability profile, Moss adjusts the structure of each tool
+turn to it. Strong models keep every tool and no extra guidance. Capable models
+get guidance to work in small verified steps and at most 24 task-relevant tools.
+Limited and unreliable models get a numbered-plan, one-step-per-response
+instruction, at most 8 task-relevant tools, and only the first tool call of each
+response runs; the model is told to issue the next call on its own. Models that
+ignored a system-prompt rule during probing also get a short reminder in the
+latest user turn. A notice describes each adaptation.
+
+Tool relevance comes from word overlap between the request and each tool's name
+and description, with core workspace tools preferred and housekeeping tools such
+as memory and skill management ranked last unless the request names them. The
+adaptation changes only the model-facing request: saved conversations keep the
+original messages. Missions keep their granted capabilities unchanged. Turn it
+off under **Settings > Models > Routing and adaptation**.
+
+### Routing and escalation
+
+**Settings > Models > Routing and adaptation** can route work across models on
+the current provider connection, including Ollama cloud models:
+
+* A fast model handles context-compaction summaries and read-only subagents
+  started with the `delegate` tool
+* An escalation model takes over a turn after Moss rejects the chat model's
+  work a set number of times (default 2)
+
+Rejections are harness evidence only: a failed tool call, failed verification,
+an empty response, or a refused task completion. Your own denials and policy
+refusals never count, and the model cannot request escalation itself. A plain
+chat answer that is merely unhelpful gives the harness nothing to reject, so it
+does not escalate. Escalation applies to ordinary turns and turn tasks; missions
+keep one model so their budgets stay accurate. Each choice shows the model's
+stored capability tier and latency.
+
+### Turn traces and replay
+
+Turn on **Record turn traces for replay** to save every model request and
+response for a turn under the Moss user data folder. Traces contain conversation
+and workspace content, so recording is off by default, nothing is uploaded, and
+traces are deleted after 14 days or beyond the newest 200. Images are replaced
+with placeholders.
+
+Replay sends each recorded request, with exactly the context the original model
+saw, to another model and compares the decisions: the same tool or answer,
+arguments that fit the tool schema, and latency. No tool runs during replay, so
+it cannot change your workspace; it measures decisions rather than end results.
+A warm-up request loads the candidate model first. Replay from the trace list in
+Settings, or from a terminal:
+
+```powershell
+npm run replay -- --dir "$env:APPDATA\moss\turn-traces" --last 5 --model qwen2.5:7b --model ministral-3:8b
+npm run replay -- --trace path\to\trace.json --model llama3.1:8b --output replay.json
+```
+
+The folder name follows the application's user data directory; **Open folder**
+in Settings shows the exact location. The command reuses each trace's provider
+endpoint unless you pass `--base-url` and `--kind`.
+
 ### Optional endpoints
 
 Moss can reuse the active provider connection for several optional services, or
@@ -370,6 +482,23 @@ cancel an active durable task through the main-process task controller, or
 pause active work, or export a sanitized per-run diagnostic summary. Pausing
 aborts the current attempt before the durable task enters its resumable state.
 
+### Harness layers
+
+Moss treats the model as a replaceable, fallible component and keeps knowledge
+about the task in the harness:
+
+| Layer | How Moss implements it |
+|-------|------------------------|
+| Event record | Durable task journal, checkpoints, and opt-in replayable turn traces |
+| Model profiles | Capability probe suite with stored per-model profiles |
+| Adjustable scaffolding | Tool narrowing, step guidance, and per-round call limits from the profile |
+| Routing | Fast model for summaries and subagents; escalation after harness rejections |
+| Governed state | Per-conversation working state, rendered every round and never summarized away |
+| Independent verification | Host-run checks bound to mission criteria; the model never grades itself |
+| Earned memory | Skill trust ledger with versions, plus recalled lessons from verified runs |
+| Supervisor | No-progress detection, loop reminders, budgets, and a stop that asks you |
+| Provenance security | Untrusted content can inform decisions but never authorize a side effect |
+
 ### Agent execution design
 
 Moss applies selected ideas from [12-Factor Agents](https://github.com/humanlayer/12-factor-agents),
@@ -450,6 +579,60 @@ the skill-resource tool without granting access outside the skill directory.
 Adaptive tone uses remembered preferences to adjust wording, formality, and
 detail without replacing the selected personality or built-in safety guidance.
 
+#### Skills earn trust
+
+Every skill has a trust status that changes only with host evidence: passing
+verification or a completed task, never the model's own claim.
+
+* Skills you write or import start **trusted**. Skills the agent writes, and any
+  version the agent rewrites, start as **candidates**.
+* A candidate becomes trusted after three verified successes on its current
+  version. Candidates are marked as unproven in the model's skill index.
+* A skill is **demoted** after two consecutive failures, three failures in its
+  last five uses, or its first failure after 90 days unused. Demoted skills
+  leave the skill index and cannot be loaded until you restore them.
+* Each content change creates a new version. The Library keeps the last five
+  versions, shows each skill's verified record, and lets you trust, demote,
+  restore, or roll back to an earlier version.
+
+#### Lessons from earlier runs
+
+Completed and failed tasks leave lessons: what worked, what failed, and why.
+When a new request shares key words with a lesson, up to three are added to the
+system prompt as guidance, not instructions. Lessons about failures are recalled
+whenever failures back them; lessons about successes need a success rate of at
+least 50 percent.
+
+### Working state
+
+Long conversations lose detail when older turns are summarized. Moss keeps a
+separate, typed **working state** for each conversation that is never
+summarized away: invariants, protected paths, decisions with their reasons, open
+questions, and established facts. Open it with **State** in the chat header.
+
+* You can add any entry and remove any entry.
+* The model records decisions, facts, and questions with the `working_state`
+  tool. It can retire its own facts and answered questions, but it cannot remove
+  invariants, protected paths, decisions, or anything you wrote.
+* The state is rendered into the system message on every model round and sized
+  to the context window: invariants and protected paths are always included,
+  and older facts are dropped first when space runs short.
+* **Protected paths** accept files, folders, and globs such as `migrations/**`.
+  Moss refuses writes, edits, and moves that touch them, and commands that are
+  not read-only and name them, before any approval prompt appears.
+* **Continue in new chat** carries the working state into the new conversation.
+  Missions render and enforce it too.
+
+### No-progress supervisor
+
+A round makes progress when it produces a new result or a file change Moss has
+not seen before. Repeated identical calls, failed calls, rewriting a file with
+the same content, and edits that undo earlier edits do not count. After three
+stalled rounds Moss tells the model to change approach; at the limit (five by
+default) it stops. An ordinary turn ends with a message asking you how to
+proceed, and a task turn blocks so you can add guidance and resume. Set the
+limit under **Settings > Tools**; 0 turns the stop off.
+
 ## Safety model
 
 Moss separates reversible work from actions that can create external or
@@ -462,11 +645,22 @@ irreversible effects.
 * Desktop sessions require process and window allowlists
 * Tool approvals are tied to runtime call identity instead of model-authored text
 * Destructive commands and final browser or desktop actions require approval
+* Untrusted content can inform a decision but never authorize a side effect
+* Working-state protected paths are enforced by the host
 * Verification failures prevent successful task completion
 * Run journals and learned patterns are sanitized before persistence
 
 Auto-approval can reduce prompts for eligible reversible actions. It does not
 bypass controls for irreversible operations.
+
+Once content from outside your request enters a turn, every later side effect
+needs your explicit approval, even with auto-approve on or under a policy-scoped
+mission grant. Untrusted sources are web search, fetched URLs, MCP servers,
+browser and desktop inspection, and audio transcription. Memory writes and
+deletions are included, so a web page cannot plant or erase durable memories.
+The approval card names the untrusted sources and warns when the arguments
+reuse a URL, email address, long token, or eight-word passage from that content.
+Read-only actions still run without a prompt.
 
 Approval prompts describe the effect instead of showing only raw arguments.
 File writes show a line diff against the file's current workspace content, or
@@ -552,6 +746,8 @@ and image attachment handling in a disposable Electron profile.
 | `npm run test:sandbox` | Run four live containment tests with a provisioned, digest-pinned Linux Node.js image |
 | `npm run eval -- dry-run scripts/eval-pilots.cjs` | Validate the evaluation matrix without invoking a model |
 | `npm run eval:health` | Validate corpus, reference solution, and grader publication health |
+| `npm run probe -- --model NAME` | Profile one or more models' tool, JSON, instruction, context, and planning reliability |
+| `npm run replay -- --trace FILE --model NAME` | Replay recorded turn traces against other models without running tools |
 | `npm run build` | Build the Electron main process and Vite renderer |
 | `npm run check:bundle` | Enforce initial renderer JavaScript and CSS budgets |
 | `npm run pack` | Create an unpacked application directory |

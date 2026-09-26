@@ -351,6 +351,52 @@ still required before closing end-to-end dictation acceptance.
     - Enable larger text and high contrast, reload, and confirm both persist.
       Hide the getting-started guide and restore it from Settings.
 
+19. **Model capability profile**
+    - Select a local Ollama model and open **Settings > Models > Capability
+      profile**. Run the probe at 8K and confirm progress advances through the
+      seven dimensions and **Cancel probe** stops it.
+    - Re-run to completion. Confirm scores, failure details, notes, median
+      latency, and failed-request counts appear, and that the profile reloads
+      after reopening Settings.
+    - Select a model without tool support, such as `gemma3`, and confirm tool
+      dimensions score 0 with a "does not support tools" note rather than
+      counting as failed requests.
+    - Select **Apply suggested settings** and confirm only the listed settings
+      change; auto-approve and mission authority stay unchanged.
+    - Run `npm run probe -- --model A --model B --max-context 8192` and
+      confirm the comparison table matches the profiles shown in Settings.
+
+20. **Adaptation, escalation, and replay**
+    - Profile a small local model, select a workspace, and send a tool request.
+      Confirm a notice names the adaptation and, for a limited model, that only
+      one tool call runs per response.
+    - Choose an escalation model with **After rejections** at 2, then ask the
+      small model to read two files that do not exist. Confirm the escalation
+      notice appears and later rounds use the stronger model.
+    - Deny an approval and confirm the denial alone does not trigger escalation.
+    - Turn on trace recording, complete a turn, and confirm the trace appears in
+      **Recorded traces** with its model, call count, and outcome.
+    - Replay the trace against another model. Confirm the per-call comparison
+      appears, no workspace file changes, and **Cancel replay** stops a run.
+    - Select **Delete all** and confirm the trace folder is emptied.
+
+21. **Working state, supervisor, provenance, and skill trust**
+    - Open **State**, add `secret.txt` as a protected path, and ask the model to
+      overwrite it. Confirm the file is unchanged and the tool card or reply
+      names the protection. Add an invariant and confirm the model follows it
+      after **Continue in new chat**.
+    - Ask the model to record a decision. Confirm it appears in **State** and
+      that the model cannot remove it.
+    - Ask for a task that loops, such as reading the same file repeatedly.
+      Confirm the warning after three stalled rounds and that the turn stops
+      and asks for guidance at the limit.
+    - With auto-approve on, ask the model to fetch a web page and then write a
+      file. Confirm the write asks for approval with the untrusted-content
+      warning, and that a URL copied from the page is flagged.
+    - In the Library, confirm new skills show their trust status and record.
+      Demote a skill and confirm it no longer appears in the model's skill
+      index; restore it and roll back to an earlier version.
+
 ## Pass criteria
 
 - No uncaught errors in the main-process console or the renderer devtools.

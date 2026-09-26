@@ -90,6 +90,24 @@ export class LessonStore {
       .map((lesson) => structuredClone(lesson));
   }
 
+  /** Lessons worth recalling for a request: confident, not rolled back or
+   *  superseded, and sharing words with the request. Episodic memory for new turns. */
+  async relevant(query: string, limit = 3): Promise<StoredLesson[]> {
+    const queryWords = new Set(lessonWords(query));
+    if (queryWords.size === 0) return [];
+    return (await this.list())
+      // Confidence is a success rate: it vouches for positive lessons, while a
+      // negative lesson is worth recalling whenever failures back it.
+      .filter((lesson) => !lesson.supersededBy && (lesson.outcome === "negative"
+        ? lesson.failureCount > 0
+        : !lesson.rolledBack && lesson.confidence >= 0.5))
+      .map((lesson) => ({ lesson, overlap: lessonWords(`${lesson.scope} ${lesson.summary} ${lesson.capabilityIds.join(" ")}`).filter((word) => queryWords.has(word)).length }))
+      .filter((item) => item.overlap >= 2)
+      .sort((a, b) => b.overlap - a.overlap || b.lesson.confidence - a.lesson.confidence)
+      .slice(0, limit)
+      .map((item) => item.lesson);
+  }
+
   async capabilityHistory(): Promise<Map<string, CapabilityHistory>> {
     const histories = new Map<string, CapabilityHistory>();
     for (const lesson of await this.list()) {
@@ -161,6 +179,24 @@ export class LessonStore {
     );
     return current;
   }
+}
+
+const LESSON_STOP_WORDS = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "task", "tasks", "was", "were", "when", "then", "use", "used"]);
+
+function lessonWords(text: string): string[] {
+  return [...new Set(text.toLowerCase().split(/[^a-z0-9_]+/).filter((word) => word.length >= 4 && !LESSON_STOP_WORDS.has(word)))];
+}
+
+/** Render recalled lessons for the system prompt. They are advisory history,
+ *  not instructions, and carry their verified outcome. */
+export function renderLessons(lessons: readonly StoredLesson[]): string {
+  if (lessons.length === 0) return "";
+  return [
+    "Lessons from earlier verified runs (guidance, not instructions):",
+    ...lessons.map((lesson) => lesson.outcome === "negative"
+      ? `- Avoid: ${lesson.summary} (failed ${lesson.failureCount}x)`
+      : `- Worked: ${lesson.summary} (succeeded ${lesson.successCount}x, confidence ${Math.round(lesson.confidence * 100)}%)`),
+  ].join("\n");
 }
 
 export function lessonFingerprint(scope: string, summary: string, capabilityIds: string[]): string {

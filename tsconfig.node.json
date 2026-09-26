@@ -14,5 +14,5 @@
     "types": ["node"]
   },
   "include": ["electron", "common"],
-  "exclude": ["electron/preload.cjs", "**/*.test.ts"]
+  "exclude": ["electron/preload.cjs", "**/*.test.ts", "**/__fixtures__/**"]
 }

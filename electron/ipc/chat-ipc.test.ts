@@ -197,6 +197,13 @@ describe("registerChatIpc", () => {
       IPC.mcpOpenConfig,
       IPC.transcribe,
       IPC.clipboardWrite,
+      IPC.workspacePreview,
+      IPC.workspaceSuggestVerification,
+      IPC.windowFocus,
+      IPC.modelProbeRun,
+      IPC.modelProbeCancel,
+      IPC.modelProfileGet,
+      IPC.modelProfileList,
     ];
     for (const channel of invokeChannels) {
       expect(recorded.handle.has(channel)).toBe(true);
@@ -217,11 +224,11 @@ describe("registerChatIpc", () => {
     recorded.handle.clear();
     registerChatIpc();
 
-    // chatEvent is the only outbound channel (main -> renderer via
-    // event.sender.send), so it is never registered with ipcMain; every other
-    // contract channel is inbound and must have exactly one handler.
+    // chatEvent and the probe and replay progress channels are outbound (main -> renderer
+    // via event.sender.send), so they are never registered with ipcMain; every
+    // other contract channel is inbound and must have exactly one handler.
     const inbound = Object.values(IPC)
-      .filter((channel) => channel !== IPC.chatEvent)
+      .filter((channel) => channel !== IPC.chatEvent && channel !== IPC.modelProbeProgress && channel !== IPC.traceReplayProgress)
       .sort();
     const registered = [...recorded.on.keys(), ...recorded.handle.keys()].sort();
 
@@ -241,5 +248,16 @@ describe("registerChatIpc", () => {
     registerChatIpc();
     const abort = recorded.on.get(IPC.chatAbort)!;
     expect(() => abort(null, "no-such-turn")).not.toThrow();
+  });
+
+  it("rejects a capability probe without a model and tolerates cancel when idle", async () => {
+    recorded.on.clear();
+    recorded.handle.clear();
+    registerChatIpc();
+    const run = recorded.handle.get(IPC.modelProbeRun)!;
+    await expect(run({ sender: { send: vi.fn(), isDestroyed: () => false } }, { config: { kind: "openai-compatible", baseUrl: "http://x", model: " " } }))
+      .rejects.toThrow(/Choose a provider and model/);
+    expect(() => recorded.handle.get(IPC.modelProbeCancel)!(null)).not.toThrow();
+    expect(await recorded.handle.get(IPC.modelProfileGet)!(null, "openai-compatible", "http://x", "")).toBeNull();
   });
 });

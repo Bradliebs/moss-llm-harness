@@ -12,6 +12,7 @@ describe("explainToolFailure", () => {
     expect(explainToolFailure("Window is not allow-listed: Untitled")?.settingsCategory).toBe("automation");
     expect(explainToolFailure("Path escapes the workspace sandbox: ../x")?.settingsCategory).toBe("tools");
     expect(explainToolFailure("No workspace folder selected")?.rule).toBe("Workspace required");
+    expect(explainToolFailure("Protected path: 'a.txt' is protected")?.rule).toBe("Protected path (working state)");
   });
 
   it("explains approval, policy, and time-limit outcomes", () => {

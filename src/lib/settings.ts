@@ -129,6 +129,18 @@ export interface MossSettings {
   onboardingDismissed?: boolean;
   /** Settings category shown when the panel reopens. */
   lastSettingsCategory?: string;
+  /** Adapt tools and guidance to the stored capability profile. Absent means on. */
+  adaptiveScaffolding?: boolean;
+  /** Faster model on the same connection for summaries and read-only subagents. */
+  fastModel?: string;
+  /** Stronger model on the same connection used after repeated rejected work. */
+  escalationModel?: string;
+  /** Rejections before escalating; default 2. */
+  escalateAfter?: number;
+  /** Record every model call to a local, replayable trace. Off by default. */
+  recordTraces?: boolean;
+  /** Stop a turn after this many rounds without progress; 0 never stops. Absent means 5. */
+  stallLimit?: number;
 }
 
 const DEFAULT_SETTINGS: MossSettings = {

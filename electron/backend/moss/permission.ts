@@ -11,6 +11,8 @@ export type Permission = "allow" | "ask" | "deny";
 const AUTO_ALLOW = new Set<string>([
   // plan only mutates in-memory checklist state, never the filesystem.
   "plan",
+  // working_state edits conversation state; protected paths are enforced by the host.
+  "working_state",
   "read_file",
   "list_dir",
   "search_files",
@@ -170,6 +172,9 @@ export interface PolicyDecision {
    *  for run_command (readonly/mutating/destructive) and for file-mutating or
    *  unknown tools, which always carry the "mutating" tier. */
   risk?: CommandRisk;
+  /** true when auto-approval was withheld because untrusted content entered
+   *  the turn; the approval prompt explains why */
+  provenanceGate?: boolean;
 }
 
 export interface PolicyInput {
@@ -180,7 +185,13 @@ export interface PolicyInput {
   autoApprove: boolean;
   executionGrant?: TaskExecutionGrant;
   stepCapabilities?: readonly string[];
+  /** untrusted content (web, MCP, browser, desktop) has entered this turn */
+  untrusted?: boolean;
 }
+
+/** Allow-listed tools that still write durable state and so must not be
+ *  triggered by untrusted content without a human in the loop. */
+const DURABLE_STATE_TOOLS = new Set(["m_remember", "m_forget"]);
 
 const IRREVERSIBLE_ACTION_PATTERN = /\b(delete|destroy|remove|submit|publish|pay|send|confirm|purchase)\b/i;
 const ALWAYS_PROMPT_TOOLS = new Set(["send_email"]);
@@ -196,7 +207,11 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
   }
   const base = classifyTool(input.name);
   if (base === "deny") return { action: "deny", autoApproved: false };
-  if (base === "allow") return { action: "run", autoApproved: false };
+  if (base === "allow") {
+    return input.untrusted && DURABLE_STATE_TOOLS.has(input.name)
+      ? { action: "prompt", autoApproved: false, risk: "mutating", provenanceGate: true }
+      : { action: "run", autoApproved: false };
+  }
 
   if (input.name === "jev_evaluate") return { action: "prompt", autoApproved: false, risk: "mutating" };
 
@@ -220,14 +235,18 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
     // Destructive commands always prompt, even when auto-approve is on.
     if (risk === "destructive") return { action: "prompt", autoApproved: false, risk };
     // Mutating commands: a mission grant replaces the legacy chat-wide switch.
-    return mayAutoApprove(input, risk)
-      ? { action: "run", autoApproved: true, risk }
-      : { action: "prompt", autoApproved: false, risk };
+    return autoOrPrompt(input, risk);
   }
 
-  return mayAutoApprove(input, "mutating")
-    ? { action: "run", autoApproved: true, risk: "mutating" }
-    : { action: "prompt", autoApproved: false, risk: "mutating" };
+  return autoOrPrompt(input, "mutating");
+}
+
+/** Untrusted content may inform a decision but never authorize a side effect:
+ *  whatever auto-approval would otherwise apply is withheld once it is present. */
+function autoOrPrompt(input: PolicyInput, risk: Exclude<ToolRisk, "destructive">): PolicyDecision {
+  if (!mayAutoApprove(input, risk)) return { action: "prompt", autoApproved: false, risk };
+  if (input.untrusted) return { action: "prompt", autoApproved: false, risk, provenanceGate: true };
+  return { action: "run", autoApproved: true, risk };
 }
 
 function mayAutoApprove(input: PolicyInput, risk: Exclude<ToolRisk, "destructive">): boolean {

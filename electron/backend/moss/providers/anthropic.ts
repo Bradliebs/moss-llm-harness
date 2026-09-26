@@ -193,6 +193,7 @@ export class AnthropicProvider implements ChatProvider {
         ...(system ? { system: [{ type: "text", text: system, cache_control: CACHE_BREAKPOINT }] } : {}),
         messages,
         stream: true,
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
         ...(tools ? { tools } : {}),
       }),
       signal,

@@ -108,6 +108,7 @@ export class OpenAiCompatibleProvider implements ChatProvider {
         stream: true,
         stream_options: { include_usage: true },
         ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
         ...(this.options.reasoningEffort !== undefined ? { reasoning_effort: this.options.reasoningEffort } : {}),
         ...(tools ? { tools } : {}),
       }),

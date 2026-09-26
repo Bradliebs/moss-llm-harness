@@ -33,6 +33,17 @@ const CH = {
   workspacePreview: "moss:workspace:preview",
   workspaceSuggestVerification: "moss:workspace:suggestVerification",
   windowFocus: "moss:window:focus",
+  modelProbeRun: "moss:model:probeRun",
+  modelProbeCancel: "moss:model:probeCancel",
+  modelProbeProgress: "moss:model:probeProgress",
+  modelProfileGet: "moss:model:profileGet",
+  modelProfileList: "moss:model:profileList",
+  tracesList: "moss:traces:list",
+  tracesClear: "moss:traces:clear",
+  tracesOpenFolder: "moss:traces:openFolder",
+  traceReplayRun: "moss:traces:replayRun",
+  traceReplayCancel: "moss:traces:replayCancel",
+  traceReplayProgress: "moss:traces:replayProgress",
   memoryList: "moss:memory:list",
   memoryAdd: "moss:memory:add",
   memoryDelete: "moss:memory:delete",
@@ -47,6 +58,9 @@ const CH = {
   skillUpdate: "moss:skills:update",
   skillRename: "moss:skills:rename",
   skillImport: "moss:skills:import",
+  skillSetTrust: "moss:skills:setTrust",
+  skillHistory: "moss:skills:history",
+  skillRollback: "moss:skills:rollback",
   mcpStatus: "moss:mcp:status",
   mcpSetEnabled: "moss:mcp:setEnabled",
   mcpOpenConfig: "moss:mcp:openConfig",
@@ -112,6 +126,29 @@ contextBridge.exposeInMainWorld("moss", {
   window: {
     focus: () => ipcRenderer.invoke(CH.windowFocus),
   },
+  model: {
+    probe: (request) => ipcRenderer.invoke(CH.modelProbeRun, request),
+    cancelProbe: () => ipcRenderer.invoke(CH.modelProbeCancel),
+    profile: (kind, baseUrl, model) => ipcRenderer.invoke(CH.modelProfileGet, kind, baseUrl, model),
+    profiles: () => ipcRenderer.invoke(CH.modelProfileList),
+    onProbeProgress: (handler) => {
+      const listener = (_event, progress) => handler(progress);
+      ipcRenderer.on(CH.modelProbeProgress, listener);
+      return () => ipcRenderer.removeListener(CH.modelProbeProgress, listener);
+    },
+  },
+  traces: {
+    list: () => ipcRenderer.invoke(CH.tracesList),
+    clear: () => ipcRenderer.invoke(CH.tracesClear),
+    openFolder: () => ipcRenderer.invoke(CH.tracesOpenFolder),
+    replay: (request) => ipcRenderer.invoke(CH.traceReplayRun, request),
+    cancelReplay: () => ipcRenderer.invoke(CH.traceReplayCancel),
+    onReplayProgress: (handler) => {
+      const listener = (_event, progress) => handler(progress);
+      ipcRenderer.on(CH.traceReplayProgress, listener);
+      return () => ipcRenderer.removeListener(CH.traceReplayProgress, listener);
+    },
+  },
   memory: {
     list: () => ipcRenderer.invoke(CH.memoryList),
     add: (fact, category) => ipcRenderer.invoke(CH.memoryAdd, fact, category),
@@ -129,6 +166,9 @@ contextBridge.exposeInMainWorld("moss", {
     update: (request) => ipcRenderer.invoke(CH.skillUpdate, request),
     rename: (request) => ipcRenderer.invoke(CH.skillRename, request),
     importFolder: () => ipcRenderer.invoke(CH.skillImport),
+    setTrust: (id, status) => ipcRenderer.invoke(CH.skillSetTrust, id, status),
+    history: (id) => ipcRenderer.invoke(CH.skillHistory, id),
+    rollback: (id, version) => ipcRenderer.invoke(CH.skillRollback, id, version),
   },
   mcp: {
     status: () => ipcRenderer.invoke(CH.mcpStatus),

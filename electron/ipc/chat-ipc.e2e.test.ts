@@ -12,7 +12,7 @@
 // approval-broker <-> toolApprove bridge, and turn-error propagation.
 
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -53,6 +53,10 @@ import { registerChatIpc } from "./chat-ipc";
 import { taskStore } from "../backend/moss/task/task-store";
 import { taskEngine } from "../backend/moss/task/task-engine";
 import { providerCredentials } from "../backend/moss/provider-credentials";
+import { modelProfileStore } from "../backend/moss/models/model-profile-store";
+import { traceStore } from "../backend/moss/models/trace-recorder";
+import { skillLedger } from "../backend/moss/skills/skill-ledger";
+import { skillsStore } from "../backend/moss/skills/skills-store";
 
 function scriptedProvider(rounds: ProviderStreamEvent[][]): ChatProvider {
   let round = 0;
@@ -565,6 +569,116 @@ describe("chat IPC turn (e2e)", () => {
     expect(result).toBeDefined();
     expect((result!.event as { autoApproved: boolean }).autoApproved).toBe(true);
     expect((result!.event as { risk?: string }).risk).toBe("mutating");
+  });
+
+  it("escalates to the stronger model after harness rejections and records the trace", async () => {
+    const models: string[] = [];
+    let round = 0;
+    mockProviderRef.current = {
+      kind: "test",
+      async *streamChat(input) {
+        models.push(input.model);
+        round += 1;
+        if (round > 1) yield { type: "text-delta", text: "done" };
+      },
+      async listModels() { return []; },
+    };
+    const save = vi.spyOn(traceStore, "save").mockResolvedValue(undefined);
+    const sent: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({
+      routing: { escalationModel: "strong-model", escalateAfter: 1 },
+      recordTrace: true,
+    }));
+    await vi.waitFor(() => expect(sent.map((payload) => payload.event.type === "notice" ? `notice:${payload.event.message}` : payload.event.type)).toContain("turn-complete"));
+    expect(models).toEqual(["test-model", "strong-model"]);
+    expect(sent.some((payload) => payload.event.type === "notice" && /Escalating to strong-model after 1 rejected attempt by test-model/.test(payload.event.message))).toBe(true);
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+    const trace = save.mock.calls[0][0];
+    expect(trace).toMatchObject({ id: "t1", primaryModel: "test-model", escalatedTo: "strong-model", outcome: "completed" });
+    expect(trace.calls.map((call) => call.model)).toEqual(["test-model", "strong-model"]);
+    save.mockRestore();
+  });
+
+  it("adapts tools and guidance to a stored heavy-scaffolding profile", async () => {
+    let seen: { tools: string[]; system: string } | undefined;
+    mockProviderRef.current = {
+      kind: "test",
+      async *streamChat(input) {
+        seen = { tools: (input.tools ?? []).map((tool) => tool.name), system: input.messages.find((message) => message.role === "system")?.content ?? "" };
+        yield { type: "text-delta", text: "done" };
+      },
+      async listModels() { return []; },
+    };
+    const get = vi.spyOn(modelProfileStore, "get").mockResolvedValue({
+      schemaVersion: 1, suiteVersion: "1", providerKind: "openai-compatible", endpoint: "http://x", model: "test-model",
+      probedAt: "2026-09-26T00:00:00.000Z", durationMs: 1, maxContextTested: 1024, results: [], overall: 0.4, tier: "limited",
+      usage: {}, failedRequests: 0,
+      recommendation: { scaffolding: "heavy", toolUse: "supervised", structuredOutput: "repair", settings: {}, notes: [] },
+    });
+    const sent: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({ enableTools: true, workspaceRoot: "" }));
+    await vi.waitFor(() => expect(sent.some((payload) => payload.event.type === "turn-complete")).toBe(true));
+    expect(seen!.tools.length).toBeLessThanOrEqual(8);
+    expect(seen!.system).toContain("Scaffolding for this model");
+    expect(sent.some((payload) => payload.event.type === "notice" && /Adapted to test-model.s measured profile \(limited\)/.test(payload.event.message))).toBe(true);
+
+    get.mockClear();
+    recorded.on.get(IPC.chatStart)!(fakeEvent([]), request({ turnId: "t2", enableTools: true, adaptiveScaffolding: false }));
+    await vi.waitFor(() => expect(seen!.system).not.toContain("Scaffolding for this model"));
+    expect(get).not.toHaveBeenCalled();
+    get.mockRestore();
+  });
+
+  it("enforces working-state protected paths from the request and reports model updates", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "moss-ws-e2e-"));
+    try {
+      writeFileSync(join(workspace, "secret.txt"), "original");
+      mockProviderRef.current = scriptedProvider([
+        [{ type: "tool-call", toolCall: { id: "w", name: "write_file", arguments: JSON.stringify({ path: "secret.txt", content: "changed" }) } }],
+        [{ type: "tool-call", toolCall: { id: "s", name: "working_state", arguments: JSON.stringify({ action: "record_fact", text: "secret.txt is protected" }) } }],
+        [{ type: "text-delta", text: "done" }],
+      ]);
+      const sent: ChatEventPayload[] = [];
+      recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({
+        enableTools: true,
+        autoApproveTools: true,
+        workspaceRoot: workspace,
+        workingState: { schemaVersion: 1, entries: [{ id: "p1", kind: "protected", text: "secret.txt", source: "user", createdAt: "2026-09-26T00:00:00.000Z" }] },
+      }));
+      await vi.waitFor(() => expect(sent.some((payload) => payload.event.type === "turn-complete")).toBe(true));
+      const result = sent.find((payload) => payload.event.type === "tool-result" && payload.event.callId === "w")!.event as { ok: boolean; content: string };
+      expect(result.ok).toBe(false);
+      expect(result.content).toMatch(/^Protected path:/);
+      expect(readFileSync(join(workspace, "secret.txt"), "utf8")).toBe("original");
+      const update = sent.find((payload) => payload.event.type === "working-state")!.event as { state: { entries: Array<{ text: string }> } };
+      expect(update.state.entries.map((entry) => entry.text)).toEqual(["secret.txt", "secret.txt is protected"]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("attributes loaded skills to the turn outcome", async () => {
+    const skill = { id: "deploy", name: "deploy", description: "Deploy", instructions: "Steps", enabled: true, createdAt: "", createdBy: "user" as const };
+    const list = vi.spyOn(skillsStore, "list").mockReturnValue([skill]);
+    const get = vi.spyOn(skillsStore, "get").mockReturnValue(skill);
+    const resources = vi.spyOn(skillsStore, "listResources").mockReturnValue([]);
+    const record = vi.spyOn(skillLedger, "recordOutcome").mockImplementation(() => undefined);
+    const sync = vi.spyOn(skillLedger, "sync").mockImplementation((skills) => [...skills]);
+    try {
+      mockProviderRef.current = scriptedProvider([
+        [{ type: "tool-call", toolCall: { id: "k", name: "m_get_skill", arguments: JSON.stringify({ name: "deploy" }) } }],
+        [{ type: "text-delta", text: "followed the skill" }],
+      ]);
+      const sent: ChatEventPayload[] = [];
+      recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({ enableTools: true }));
+      await vi.waitFor(() => expect(record).toHaveBeenCalledWith(["deploy"], "used"));
+    } finally {
+      list.mockRestore();
+      get.mockRestore();
+      resources.mockRestore();
+      record.mockRestore();
+      sync.mockRestore();
+    }
   });
 
   it("propagates a provider failure as turn-error over IPC", async () => {

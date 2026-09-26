@@ -11,6 +11,7 @@ import { memoryStore } from "./memory/memory-store";
 import { buildRuntimeContext } from "./runtime-context";
 import { formatSkillsForSystemPrompt } from "./skills/skill-parse";
 import { skillsStore } from "./skills/skills-store";
+import { skillLedger } from "./skills/skill-ledger";
 
 const BASE_INSTRUCTIONS = `You are Moss, a helpful AI assistant running in a desktop app.
 Use available tools for concrete workspace actions rather than speculation. Be concise.
@@ -62,7 +63,7 @@ export function buildSystemMessage(opts: {
 
   if (opts.includeSkills) {
     sections.push(SKILL_MEMORY_INSTRUCTIONS);
-    const skills = formatSkillsForSystemPrompt(skillsStore.list());
+    const skills = formatSkillsForSystemPrompt(skillLedger.sync(skillsStore.list()));
     if (skills) sections.push(skills);
   }
 

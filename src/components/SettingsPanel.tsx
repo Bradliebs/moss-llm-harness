@@ -36,6 +36,8 @@ import { LiveStatus } from "./LiveStatus";
 import { ProductDiagnosticsSettings } from "./ProductDiagnosticsSettings";
 import { AutomationSettings } from "./AutomationSettings";
 import { AccessibilitySettings } from "./AccessibilitySettings";
+import { ModelProfileSettings } from "./ModelProfileSettings";
+import { RoutingSettings } from "./RoutingSettings";
 
 type SettingsCategory = "readiness" | "diagnostics" | "general" | "models" | "tools" | "automation" | "knowledge" | "services" | "safety";
 
@@ -44,7 +46,7 @@ const SETTINGS_CATEGORIES: readonly { id: SettingsCategory | "all"; label: strin
   { id: "readiness", label: "Readiness", keywords: "setup profile diagnostics connection" },
   { id: "diagnostics", label: "Diagnostics", keywords: "local telemetry retention export clear privacy" },
   { id: "general", label: "General", keywords: "appearance theme avatar personality instructions confidence context accessibility text size contrast notifications shortcuts keyboard" },
-  { id: "models", label: "Models", keywords: "provider model api key pricing budget" },
+  { id: "models", label: "Models", keywords: "provider model api key pricing budget capability probe profile routing escalation trace replay" },
   { id: "tools", label: "Tools", keywords: "tools workspace verification" },
   { id: "automation", label: "Automation", keywords: "browser desktop windows scopes" },
   { id: "knowledge", label: "Knowledge", keywords: "memory index embeddings mcp" },
@@ -663,6 +665,25 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 })}
               />
             </label>
+            <label className="flex items-center justify-between gap-2">
+              <span>Stop after rounds without progress (0 = never)</span>
+              <input
+                type="number"
+                min={0}
+                max={20}
+                aria-label="Stop after rounds without progress"
+                className="w-20 rounded bg-neutral-200 px-2 py-1 dark:bg-neutral-800"
+                value={settings.stallLimit ?? 5}
+                disabled={!settings.enableTools}
+                onChange={(e) => updateSettings({ stallLimit: Math.min(20, Math.max(0, Math.floor(Number(e.target.value) || 0))) })}
+              />
+            </label>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              A round makes progress when it produces a new result or file change. Repeated calls, failures, and edits that undo
+              earlier edits do not count. Moss warns the model after 3 stalled rounds and stops to ask you at this limit.
+              Once web, MCP, browser, or desktop content enters a turn, every later change needs your approval, even with
+              auto-approve on.
+            </p>
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
               Read-only tools always run automatically. When auto-approve is off, tools that write
               files or run commands pause for your approval before each call. Turn it on to skip those
@@ -873,6 +894,10 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               content). It never changes the answer and makes no extra model calls.
             </p>
           </section>
+
+          <ModelProfileSettings className={sectionClass("models", "capability probe profile benchmark tool calling context coherence")} />
+
+          <RoutingSettings className={sectionClass("models", "routing escalation fast model adaptive scaffolding trace replay record")} />
 
           <section className={sectionClass("models", "budget daily cost cap")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Budget</h3>

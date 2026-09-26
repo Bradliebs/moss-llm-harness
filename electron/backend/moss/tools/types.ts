@@ -3,6 +3,7 @@
 import type { EmailConfig, EmbedConfig, SttConfig } from "../../../../common/types";
 import type { CheckpointRecorder } from "../checkpoint/checkpoint-store";
 import type { PlanStore } from "../task/plan-store";
+import type { WorkingStateStore } from "../governed/working-state";
 
 export interface ToolContext {
   /** absolute sandbox root; empty string means no workspace selected */
@@ -26,6 +27,8 @@ export interface ToolContext {
   /** checklist state for the plan tool; scoped to the turn unless the caller
    *  supplies a longer-lived store */
   plan?: PlanStore;
+  /** conversation working state for the working_state tool */
+  workingState?: WorkingStateStore;
   /** runs a read-only subagent in its own conversation and resolves its report.
    *  Absent when the host has not wired delegation, or inside a subagent, where
    *  the depth cap withholds it to stop unbounded recursion. */
