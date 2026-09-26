@@ -32,6 +32,7 @@ export interface RunTurnMissionWorkerOptions {
   /** conversation working state rendered into each step and enforced for protected paths */
   workingState?: WorkingStateStore;
   stallLimit?: number;
+  provenanceGate?: boolean;
 }
 
 export class RunTurnMissionWorker implements MissionWorker {
@@ -121,6 +122,7 @@ export class RunTurnMissionWorker implements MissionWorker {
       ...(this.options.contextLimit ? { contextLimit: this.options.contextLimit } : {}),
       ...(this.options.workingState ? { workingState: this.options.workingState } : {}),
       ...(this.options.stallLimit !== undefined ? { stallLimit: this.options.stallLimit } : {}),
+      ...(this.options.provenanceGate === false ? { provenanceGate: false } : {}),
       ...(Number.isFinite(outputTokenLimit) ? { maxOutputTokens: Math.max(1, outputTokenLimit) } : {}),
     });
 

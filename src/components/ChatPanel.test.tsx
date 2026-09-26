@@ -1517,10 +1517,22 @@ describe("ChatPanel", () => {
     }
   });
 
+  it("sends the untrusted-content gate only when the user turns it off", () => {
+    Object.assign(mockSettings, { untrustedContentGate: false });
+    try {
+      render(<Harness />);
+      startTurn();
+      expect((window.moss.chat.send as ReturnType<typeof vi.fn>).mock.calls[0][0].untrustedContentGate).toBe(false);
+    } finally {
+      Reflect.deleteProperty(mockSettings, "untrustedContentGate");
+    }
+  });
+
   it("omits routing and tracing by default and keeps adaptation on", () => {
     render(<Harness />);
     startTurn();
     const req = (window.moss.chat.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(req.untrustedContentGate).toBeUndefined();
     expect(req.adaptiveScaffolding).toBe(true);
     expect(req.routing).toBeUndefined();
     expect(req.recordTrace).toBeUndefined();

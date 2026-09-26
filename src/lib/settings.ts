@@ -141,6 +141,8 @@ export interface MossSettings {
   recordTraces?: boolean;
   /** Stop a turn after this many rounds without progress; 0 never stops. Absent means 5. */
   stallLimit?: number;
+  /** Require approval for changes that follow untrusted content, even under auto-approve. Absent means on. */
+  untrustedContentGate?: boolean;
 }
 
 const DEFAULT_SETTINGS: MossSettings = {

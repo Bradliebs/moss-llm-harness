@@ -110,6 +110,30 @@ describe("provenance gate", () => {
   });
 });
 
+describe("provenance gate setting", () => {
+  it("lets auto-approve cover changes after untrusted content when the user turns the gate off", async () => {
+    const provider = scripted([
+      [call("f", "fetch_url", { url: "https://docs.example" })],
+      [call("w", "run_command", { command: "npm install left-pad" })],
+      [{ type: "text-delta", text: "done" }],
+    ]);
+    const { events, approvals } = await run(provider, [fakeTool("fetch_url", "page"), fakeTool("run_command", "installed")], { autoApprove: true, provenanceGate: false });
+    expect(approvals).toEqual([]);
+    const result = events.find((event) => event.type === "tool-result" && event.callId === "w") as Extract<MossEvent, { type: "tool-result" }>;
+    expect(result.autoApproved).toBe(true);
+  });
+
+  it("still asks for destructive commands with the gate off", async () => {
+    const provider = scripted([
+      [call("f", "fetch_url", { url: "https://docs.example" })],
+      [call("d", "run_command", { command: "rm -rf build" })],
+      [{ type: "text-delta", text: "done" }],
+    ]);
+    const { approvals } = await run(provider, [fakeTool("fetch_url", "page"), fakeTool("run_command", "removed")], { autoApprove: true, provenanceGate: false });
+    expect(approvals).toEqual(["d"]);
+  });
+});
+
 describe("no-progress supervisor", () => {
   it("warns, then stops a chat turn and asks the user", async () => {
     const requests: ChatRequest[] = [];

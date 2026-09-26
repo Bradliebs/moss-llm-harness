@@ -579,6 +579,8 @@ export interface ChatStartRequest {
   workingState?: WorkingState;
   /** stop after this many rounds without progress; 0 disables; default 5 */
   stallLimit?: number;
+  /** false lets auto-approve cover changes that follow untrusted content; absent means gated */
+  untrustedContentGate?: boolean;
 }
 
 export interface ModelRouting {

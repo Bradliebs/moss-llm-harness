@@ -138,6 +138,8 @@ export interface RunTurnOptions {
   workingState?: WorkingStateStore;
   /** Stop after this many consecutive rounds without progress; 0 never stops. */
   stallLimit?: number;
+  /** When false, untrusted content no longer withholds auto-approval. Default true. */
+  provenanceGate?: boolean;
 }
 
 interface TurnGuards {
@@ -761,7 +763,7 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
     autoApprove: opts.autoApprove === true,
     ...(opts.executionGrant ? { executionGrant: opts.executionGrant } : {}),
     ...(opts.stepCapabilities ? { stepCapabilities: opts.stepCapabilities } : {}),
-    ...(guards?.provenance.tainted ? { untrusted: true } : {}),
+    ...(guards?.provenance.tainted && opts.provenanceGate !== false ? { untrusted: true } : {}),
   });
   if (decision.action === "deny") {
     return { result: { ok: false, content: `Denied by policy: ${call.name}` }, autoApproved: false };

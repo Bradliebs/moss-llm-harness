@@ -393,6 +393,10 @@ still required before closing end-to-end dictation acceptance.
     - With auto-approve on, ask the model to fetch a web page and then write a
       file. Confirm the write asks for approval with the untrusted-content
       warning, and that a URL copied from the page is flagged.
+    - Turn off **Ask before changes that follow web, MCP, or browser content**
+      under **Settings > Safety** and repeat. Confirm the write runs under
+      auto-approve, while a destructive command such as `rm -rf build` still
+      asks.
     - In the Library, confirm new skills show their trust status and record.
       Demote a skill and confirm it no longer appears in the model's skill
       index; restore it and roll back to an earlier version.

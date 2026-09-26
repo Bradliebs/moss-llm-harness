@@ -51,7 +51,7 @@ const SETTINGS_CATEGORIES: readonly { id: SettingsCategory | "all"; label: strin
   { id: "automation", label: "Automation", keywords: "browser desktop windows scopes" },
   { id: "knowledge", label: "Knowledge", keywords: "memory index embeddings mcp" },
   { id: "services", label: "Services", keywords: "speech email jev" },
-  { id: "safety", label: "Safety", keywords: "external content injection approval" },
+  { id: "safety", label: "Safety", keywords: "external content injection approval untrusted provenance ask auto-approve" },
 ];
 
 function isSettingsCategory(value: string | undefined): value is SettingsCategory | "all" {
@@ -876,6 +876,23 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               and keeps the content; block withholds high-confidence hits from the model. Content is
               always wrapped as untrusted regardless of this setting.
             </p>
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-emerald-600"
+                checked={settings.untrustedContentGate !== false}
+                onChange={(e) => updateSettings({ untrustedContentGate: e.target.checked })}
+              />
+              <span>
+                Ask before changes that follow web, MCP, or browser content
+                <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+                  On by default. Once untrusted content enters a turn, every later change asks for approval, even with
+                  auto-approve on, because a page or tool result could contain instructions written by someone else. Turn
+                  this off to let auto-approve cover those changes too. Destructive commands and irreversible actions
+                  still always ask.
+                </span>
+              </span>
+            </label>
           </section>
 
           <section className={sectionClass("general", "confidence indicator")}>

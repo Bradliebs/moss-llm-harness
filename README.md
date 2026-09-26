@@ -662,6 +662,11 @@ The approval card names the untrusted sources and warns when the arguments
 reuse a URL, email address, long token, or eight-word passage from that content.
 Read-only actions still run without a prompt.
 
+If you rely on browser or MCP automation and accept the risk, turn off **Ask
+before changes that follow web, MCP, or browser content** under **Settings >
+Safety**. Auto-approve then covers those changes too; destructive commands,
+email, and irreversible browser or desktop actions still always ask.
+
 Approval prompts describe the effect instead of showing only raw arguments.
 File writes show a line diff against the file's current workspace content, or
 mark the file as new. Edits show the replaced snippet, moves show both paths,
@@ -972,6 +977,16 @@ because Windows associates them with an installed app shortcut.
 Global shortcuts pause while a dialog such as Settings or Run center is open,
 except `Ctrl+K`, which still closes the command palette. Close the dialog first,
 or open **Settings > General > Keyboard shortcuts** for the full list.
+
+### Moss keeps asking to approve browser or MCP steps
+
+After web search, a fetched page, or MCP or browser output enters a turn, Moss
+asks before every later change, even with auto-approve on, and the approval card
+shows an untrusted-content warning. MCP tools count as changes because Moss
+cannot tell which of them only read. If you accept the risk, turn off **Ask
+before changes that follow web, MCP, or browser content** under **Settings >
+Safety** and keep auto-approve on under **Settings > Tools**. Destructive
+commands, email, and irreversible actions still ask.
 
 ### An approval shows no diff
 

@@ -824,6 +824,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       contextLimit: activeSettings.contextLimit,
       ...(getSessionWorkingState(sessionId)?.entries.length ? { workingState: getSessionWorkingState(sessionId) } : {}),
       ...(typeof activeSettings.stallLimit === "number" ? { stallLimit: activeSettings.stallLimit } : {}),
+      ...(activeSettings.untrustedContentGate === false ? { untrustedContentGate: false } : {}),
       adaptiveScaffolding: activeSettings.adaptiveScaffolding !== false,
       ...(activeSettings.fastModel || activeSettings.escalationModel
         ? {
