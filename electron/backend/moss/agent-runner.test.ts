@@ -91,6 +91,7 @@ async function run(
     approvalComment?: string;
     toolOutputStore?: ToolOutputStore;
     toolCallGuard?: (call: { id: string; name: string; arguments: string }) => { allow: boolean; reason?: string };
+    stallLimit?: number;
   },
 ): Promise<Harness> {
   const events: MossEvent[] = [];
@@ -138,6 +139,7 @@ async function run(
     ...(opts?.now !== undefined ? { now: opts.now } : {}),
     ...(opts?.toolOutputStore !== undefined ? { toolOutputStore: opts.toolOutputStore } : {}),
     ...(opts?.toolCallGuard !== undefined ? { toolCallGuard: opts.toolCallGuard } : {}),
+    ...(opts?.stallLimit !== undefined ? { stallLimit: opts.stallLimit } : {}),
   });
 
   return { events, approvals };
@@ -446,7 +448,8 @@ describe("runTurn", () => {
   it("stops with an error when a provider calls a tool during finalization", async () => {
     // This provider ignores the empty tool definition list in the final round.
     const provider = scriptedProvider([[call("c1", "read_file")]]);
-    const h = await run(provider, [tool("read_file", { ok: true, content: "again" })]);
+    // The no-progress supervisor would stop this identical loop first; disable it to test the round cap.
+    const h = await run(provider, [tool("read_file", { ok: true, content: "again" })], { stallLimit: 0 });
 
     const err = h.events.find((e) => e.type === "turn-error") as Extract<MossEvent, { type: "turn-error" }>;
     expect(err.message).toContain("tool rounds");

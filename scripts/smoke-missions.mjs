@@ -81,10 +81,32 @@ try {
   await page.getByRole("heading", { name: "Moss", exact: true }).waitFor();
   await page.evaluate(({ baseUrl, workspace }) => {
     const settings = JSON.parse(localStorage.getItem("moss.settings") ?? "{}");
-    localStorage.setItem("moss.settings", JSON.stringify({ ...settings, presetIndex: 0, kind: "openai-compatible", baseUrl, model: "mission-fixture", enableTools: true, maxToolRounds: 8, autoApproveTools: false, workspaceRoot: workspace, theme: "light" }));
+    localStorage.setItem("moss.settings", JSON.stringify({
+      ...settings,
+      presetIndex: 0,
+      kind: "openai-compatible",
+      baseUrl,
+      model: "mission-fixture",
+      enableTools: true,
+      maxToolRounds: 8,
+      autoApproveTools: false,
+      workspaceRoot: workspace,
+      verifyEnabled: true,
+      verifyCommands: "npm test",
+      modelRates: {
+        ...(settings.modelRates ?? {}),
+        "mission-fixture": { inputPer1M: 1, outputPer1M: 1 },
+      },
+      theme: "light",
+    }));
     localStorage.setItem("moss.models", JSON.stringify(["mission-fixture"]));
   }, { baseUrl, workspace });
   await page.reload();
+  await page.getByRole("banner").getByRole("button", { name: "Settings", exact: true }).click();
+  const settingsDialog = page.getByRole("dialog", { name: "Settings", exact: true });
+  await settingsDialog.getByRole("checkbox", { name: "Verify edits with commands", exact: true }).check();
+  await settingsDialog.getByPlaceholder("npm run typecheck\nnpm test", { exact: true }).fill("npm test");
+  await settingsDialog.getByRole("button", { name: "Close settings", exact: true }).click();
 
   async function observeTasks() {
     await page.evaluate(async () => {
@@ -107,22 +129,35 @@ try {
     await page.getByRole("button", { name: "Mission", exact: true }).click();
     await page.getByText("Review mission", { exact: true }).click();
     const review = page.getByLabel("Mission review", { exact: true });
+    await review.getByLabel("Acceptance criterion 1").fill("The disposable mission fixture passes its configured test command");
+    await review.getByLabel("Verification method 1").selectOption("commands");
+    const verificationCommand = review.getByRole("checkbox", { name: "npm test", exact: true });
+    await verificationCommand.uncheck();
+    await verificationCommand.check();
     if (policyOnly) await review.getByRole("button", { name: "Policy-scoped", exact: true }).click();
-    await review.getByRole("checkbox", { name: /^read_file / }).waitFor();
-    for (const checkbox of await review.getByRole("checkbox").all()) await checkbox.uncheck();
-    await review.getByRole("checkbox", { name: /^read_file / }).check();
-    if (next !== "read") await review.getByRole("checkbox", { name: /^write_file / }).check();
+    const capabilities = review.getByRole("group", { name: "Capabilities", exact: true });
+    await capabilities.getByRole("checkbox", { name: /^read_file / }).waitFor();
+    for (const checkbox of await capabilities.getByRole("checkbox").all()) await checkbox.uncheck();
+    await capabilities.getByRole("checkbox", { name: /^read_file / }).check();
+    if (next !== "read") await capabilities.getByRole("checkbox", { name: /^write_file / }).check();
     for (const [label, value] of [["Minutes", "2"], ["Tokens", "20000"], ["Actions", "4"], ["Cost USD", "1"]]) {
       await page.getByLabel(`Mission ${label}`, { exact: true }).fill(value);
     }
     await page.getByText("Review mission", { exact: true }).click();
     const objective = `${next}: inspect the disposable fixture${next === "read" ? "" : " and write the approved artifact"}`;
-    await page.locator("textarea").fill(objective);
-    await page.getByRole("button", { name: "Launch", exact: true }).click();
+    const composer = page.getByPlaceholder("Message…", { exact: true });
+    await composer.fill(objective);
+    const launchButton = page.getByRole("button", { name: "Launch", exact: true });
+    assert.equal(
+      await launchButton.isEnabled(),
+      true,
+      `Mission preflight remained blocked: ${await page.locator("span.text-amber-700").allTextContents()}`,
+    );
+    await launchButton.click();
     if (policyOnly) {
       console.log(JSON.stringify({ nativeDecision: "cancel", processId: await application.evaluate(() => process.pid), workspace }));
       await page.getByText("Mission launch cancelled.", { exact: true }).waitFor();
-      assert.equal(await page.locator("textarea").inputValue(), objective);
+      assert.equal(await composer.inputValue(), objective);
       assert.deepEqual(await page.evaluate(() => window.moss.task.list()), []);
       console.log("PASS native cancellation preserves draft and launches no task");
       await page.getByRole("button", { name: "Launch", exact: true }).click();

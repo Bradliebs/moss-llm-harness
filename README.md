@@ -2,7 +2,7 @@
 title: Moss
 description: A local-first agentic desktop harness for completing and verifying work across files, commands, browsers, and desktop applications
 author: Moss contributors
-ms.date: 2026-09-05
+ms.date: 2026-09-23
 ms.topic: overview
 keywords:
   - ai agent
@@ -10,7 +10,7 @@ keywords:
   - ollama
   - model context protocol
   - desktop automation
-estimated_reading_time: 8
+estimated_reading_time: 12
 ---
 
 <p align="center">
@@ -37,6 +37,16 @@ substantially in tool use, instruction following, and context capacity.
 
 * Runs multi-step tasks through an explicit, recoverable lifecycle
 * Requires task evidence and configured verification before claiming completion
+* Starts missions from editable Coding, Research, and Automation templates
+* Monitors background missions from an accessible Run center
+* Guides setup through readiness profiles and categorized, searchable Settings
+* Records opt-in, content-free product diagnostics locally
+* Previews file diffs and command context before you approve changes
+* Notifies you when background work needs attention, with per-turn undo
+* Offers a command palette, keyboard shortcuts, larger text, and high contrast
+* Profiles each model's tool, JSON, context, and planning reliability before you rely on it
+* Adapts tools and guidance to the measured model, constrains small local models to schema-valid tool calls, escalates rejected work to a stronger model on any provider, and replays recorded turns against alternatives
+* Keeps protected paths, invariants, and decisions in governed working state, stops unproductive loops, lets skills earn trust, and never lets untrusted content authorize a side effect
 * Reads, writes, searches, and checkpoints files inside the selected workspace
 * Runs shell commands with risk classification and approval controls
 * Uses isolated, domain-allow-listed Playwright browser sessions
@@ -44,7 +54,7 @@ substantially in tool use, instruction following, and context capacity.
 * Connects to local or remote MCP servers over standard I/O or HTTP
 * Stores durable memories and reusable skills between conversations
 * Indexes a codebase through a configurable embeddings endpoint
-* Supports image and text attachments, dictation, and optional email delivery
+* Supports image, Word (.docx), PDF, and text attachments, dictation, and optional email delivery
 * Streams safe GitHub-flavored Markdown with highlighted, copyable code
 * Tracks token usage, context consumption, estimated cost, and tool history
 * Persists multiple independent conversations with search and management controls
@@ -86,6 +96,40 @@ After the application opens:
 5. Choose a workspace before enabling file or command tools.
 6. Configure optional verification commands for coding tasks.
 7. Start a conversation and describe the outcome you want.
+
+### Guided readiness and profiles
+
+The welcome screen summarizes provider, workspace, tools, verification,
+automation, pricing, and optional-service readiness. Open **Settings** for the
+complete checklist and a provider connection test.
+
+Settings includes safe starting profiles:
+
+* Chat only disables tools and automation
+* Coding enables workspace tools while retaining explicit mutation approval
+* Research enables browser tooling while retaining explicit approval
+* Desktop automation enables Windows automation while retaining explicit
+  approval
+* Custom preserves direct control of every setting
+
+Profiles never enable automatic mutation approval or invent verification
+commands. Search Settings or use its category routes to focus on readiness,
+diagnostics, models, tools, automation, knowledge, services, safety, or general
+preferences.
+The **Copy diagnostics** action exports a local readiness snapshot without API
+keys or the workspace path.
+
+The separate **Diagnostics** category can enable local product diagnostics.
+Collection is off by default. When enabled, Moss retains bounded timing, outcome,
+approval, blocker, verification, startup, first-response, stop-settlement, and
+recovery categories for 7, 30, or 90 days. It never stores prompts, responses,
+file contents, API keys, workspace paths, or raw tool arguments. You can inspect
+recent event categories, clear them, or export the redacted JSON from Settings.
+
+Status notifications use consistent info, success, warning, and error severity.
+Errors remain assertive for assistive technology and include a stable local
+reference when no correlation identifier is supplied. Recovery actions can be
+attached to the same notification instead of being presented as unrelated UI.
 
 ## Optional TypeSafe Jev integration
 
@@ -137,10 +181,18 @@ Each conversation keeps its own message history and personality override. Moss
 persists conversations locally, restores the selected conversation after a
 reload, and derives a title from the first user message.
 
-Use the left sidebar to create, search, select, rename, export, copy, or delete
-conversations. In a compact window, open the same conversation list from the
-menu button in the chat header. Creating or selecting a conversation closes the
-compact list and displays that conversation's history.
+Use the left sidebar to create, search, select, rename, pin, export, copy, or
+delete conversations. Pinned conversations stay at the top of the list. Choose
+**Select conversations** to export several conversations into one Markdown file
+or delete them together after a confirmation. Collapse the sidebar to a narrow
+rail with its toolbar button or `Ctrl+B`; Moss remembers the choice. In a compact
+window, open the same conversation list from the menu button in the chat header.
+Creating or selecting a conversation closes the compact list and displays that
+conversation's history.
+
+Select **Edit** on an earlier message to load it into the composer. The original
+conversation is unchanged until you send the edit, which replaces that message
+and everything after it. **Cancel edit** or `Esc` restores the empty composer.
 
 The **Clear** action removes messages from the selected conversation while
 keeping its entry. **Continue in new chat** creates a separate conversation with
@@ -231,6 +283,190 @@ disposable Electron profile without model calls.
 Custom OpenAI-compatible servers must expose model listing and chat completion
 endpoints compatible with `/models` and `/chat/completions`.
 
+### Model capability profiles
+
+Models differ sharply in how reliably they call tools, return JSON, and stay on
+track across several steps. **Settings > Models > Capability profile** measures
+the selected model instead of assuming. The probe sends about 30 short requests
+with fake tools that never run on your system, grades each reply locally, and
+stores the latest profile per provider, endpoint, and model.
+
+| Dimension | What it measures |
+|-----------|------------------|
+| Tool calling | Native function calls with correct arguments, and calls written as text instead |
+| Tool selection | Choosing the right tool from five options |
+| Tool restraint | Answering directly when no tool is needed |
+| Structured output | Exact JSON objects, with partial credit when JSON is wrapped in prose or fences |
+| Instruction following | Verifiable format rules, including one set in the system prompt |
+| Usable context | Recalling a buried passcode at growing prompt sizes, and server-side truncation |
+| Plan coherence | Finishing sequential tool chains of three, five, and seven calls against fake registers |
+
+Each profile has a weighted score, a tier (strong, capable, limited, or
+unreliable), a recommended scaffolding level, median response latency, and notes
+such as Ollama's default context length, tool calls emitted as text, or argument
+names outside the schema. When a native tool call fails, the probe also records
+whether Moss's tool-call repair would have recovered a correct call; scores stay
+native. **Apply suggested settings** can set the maximum tool rounds and context
+limit. For Anthropic it turns tools off when tool calling fails most probes; for
+OpenAI-compatible endpoints such as Ollama it leaves tools on, because
+constrained tool output carries those models instead. It never changes approval
+or authority settings.
+
+Probes sample at temperature 0 so repeated runs are comparable. An untimed
+warm-up request loads a local model before any probe is timed; a model that
+cannot answer it is reported as unavailable instead of scored. Requests that
+fail or time out are excluded from scores and listed separately, because a slow
+reply says nothing about whether the answer would have been right. A server
+response that the model does not support tools counts as a measured tool
+failure. The usable-context probe recalibrates its prompt size from the
+provider's reported token counts, and only suggests a context limit when a size
+actually fails.
+
+Run the same suite from a terminal to compare models on your own endpoint:
+
+```powershell
+npm run probe -- --model llama3.1:8b --model qwen2.5:7b --max-context 32768 --output profiles.json
+npm run probe -- --kind anthropic --base-url https://api.anthropic.com --api-key-env ANTHROPIC_API_KEY --model claude-sonnet-4-5
+```
+
+The command defaults to local Ollama, reads an API key from the environment
+variable named by `--api-key-env` (default `MOSS_PROBE_API_KEY`), accepts
+`--only tool-calling,plan-coherence` to run selected dimensions and
+`--timeout 240` for slow or reasoning models, and prints a side-by-side table.
+It exits with status 1 when a model is unavailable. Cloud providers charge for
+the tokens used; the profile records the total.
+
+### Adaptive scaffolding
+
+Once a model has a capability profile, Moss adjusts the structure of each tool
+turn to it. Strong models keep every tool and no extra guidance. Capable models
+get guidance to work in small verified steps and at most 24 task-relevant tools.
+Limited and unreliable models get a numbered-plan, one-step-per-response
+instruction, at most 8 task-relevant tools, and only the first tool call of each
+response runs; the model is told to issue the next call on its own. Models that
+ignored a system-prompt rule during probing also get a short reminder in the
+latest user turn. A notice describes each adaptation.
+
+Tool relevance starts from word overlap between the request and each tool's name
+and description, with core workspace tools preferred and housekeeping tools such
+as memory and skill management ranked last unless the request names them. Turn
+on **Rank tools and lessons by meaning** under **Routing and adaptation** to add
+each tool's similarity in meaning, using the embeddings model from **Settings >
+Knowledge** (for example `nomic-embed-text` on Ollama). "Why is CI red?" then
+keeps `run_command` although it shares no words with it. The option is off by
+default because each request's text goes to the embeddings endpoint. Tool
+vectors are cached; a slow first request falls back to words and finishes in the
+background for the next turn, and an endpoint that fails is left alone for 10
+minutes. Whenever tools are narrowed, the model also
+gets `find_tool`: it describes what it needs, and the best matching hidden tools
+become available on its next step. Calling a hidden tool by name brings it in
+too. A tool the harness withheld never counts toward escalation.
+
+The adaptation changes only the model-facing request: saved conversations keep
+the original messages. Missions keep their granted capabilities unchanged. Turn
+it off under **Settings > Models > Routing and adaptation**.
+
+### Constrained tool output and repair
+
+Small local models often know which tool to use but write the call as text, use
+argument names outside the schema, or wander between prose and JSON. Moss fixes
+this in the provider adapter rather than hoping the model improves.
+
+**Constrained output.** For OpenAI-compatible endpoints such as Ollama, each
+request can carry a JSON schema instead of native tool definitions. Every
+response must be either a call to one offered tool, with arguments that match
+its schema, or a final answer, and the server enforces this with
+grammar-constrained decoding. Moss turns each step back into an ordinary tool
+call, so approvals, verification, and traces are unchanged. It also works for
+models without native tool support, such as `gemma3`. On a three-step lookup
+task through the real turn loop, `qwen2.5:1.5b` went from 0 of 3 with native
+tool calling to 2 of 3 constrained, and `gemma3` from 0 of 3 to 3 of 3.
+
+Choose it per model under **Routing and adaptation > Constrained tool output**:
+**Automatic** (the default) turns it on for models whose stored profile is
+limited or unreliable, **Always** forces it, and **Never** keeps native tool
+calling. Automatic follows adaptive scaffolding, so turning adaptation off turns
+it off too. Anthropic always uses native tools. Constrained answers arrive in
+one piece rather than streaming, and a notice names the models it applies to.
+
+**Tool-call repair** runs on every model, constrained or not, before anything
+executes:
+
+* Calls written as text are recovered from `<tool_call>` tags, `[TOOL_CALLS]`,
+  JSON code blocks, bare JSON, and `name({...})`. Only offered tool names are
+  accepted, so prose and code samples are not misread as calls.
+* Tool names that differ only in case or punctuation are corrected.
+* Argument names outside the schema are mapped by alias (`file` to `path`), by
+  close spelling, or when one unknown argument matches the one missing required
+  argument. Echoed schemas such as `{"type":"string","value":"Paris"}` are
+  unwrapped, and numbers and strings are converted to the declared type.
+* A call that still misses required arguments does not run. The model gets a
+  precise error naming the missing and expected properties.
+
+Each repair appears as a notice. The first schema error per tool is treated as a
+correction rather than a rejection, so one fixable mistake does not trigger
+escalation.
+
+### Routing and escalation
+
+**Settings > Models > Routing and adaptation** can route work across models and
+providers:
+
+* A fast model handles context-compaction summaries and read-only subagents
+  started with the `delegate` tool
+* An escalation model takes over a turn after Moss rejects the chat model's
+  work a set number of times (default 2)
+
+Each route picks a provider and a model. **This connection** uses a model on the
+current provider, including Ollama cloud models. Any other provider you have
+configured, such as Anthropic or OpenAI, can be chosen too, so a local
+`llama3.1:8b` can do most of the turns and escalate to Claude, or a cloud chat
+model can hand summaries down to a local model. API keys stay in secure storage;
+the main process looks up each provider's saved key, so select a provider under
+**Provider** once to save its key before routing to it. Each route gets its own
+daily budget guard, trace recording, and constrained-output decision.
+
+Escalating off your machine sends the conversation and workspace context with
+it. Settings warns when a route leaves the machine, and each escalation that
+crosses from a local model to a remote one shows a notice naming the
+destination, for example `api.anthropic.com` or Ollama's cloud service for
+`:cloud` models served through a local Ollama.
+
+Rejections are harness evidence only: a failed tool call, failed verification,
+an empty response, or a refused task completion. Your own denials, policy
+refusals, and tools the harness withheld never count, and the model cannot
+request escalation itself. A plain chat answer that is merely unhelpful gives
+the harness nothing to reject, so it does not escalate. Escalation applies to
+ordinary turns, turn tasks, and missions. Mission budgets price every step at
+the model that actually ran it, so a local step costs nothing unless you set a
+rate for it and an escalated cloud step is charged at the cloud rate; a
+cost-capped mission still refuses a remote model with no known rate. Each choice
+shows the model's stored capability tier and latency.
+
+### Turn traces and replay
+
+Turn on **Record turn traces for replay** to save every model request and
+response for a turn under the Moss user data folder. Traces contain conversation
+and workspace content, so recording is off by default, nothing is uploaded, and
+traces are deleted after 14 days or beyond the newest 200. Images are replaced
+with placeholders.
+
+Replay sends each recorded request, with exactly the context the original model
+saw, to another model and compares the decisions: the same tool or answer,
+arguments that fit the tool schema, and latency. No tool runs during replay, so
+it cannot change your workspace; it measures decisions rather than end results.
+A warm-up request loads the candidate model first. Replay from the trace list in
+Settings, or from a terminal:
+
+```powershell
+npm run replay -- --dir "$env:APPDATA\moss\turn-traces" --last 5 --model qwen2.5:7b --model ministral-3:8b
+npm run replay -- --trace path\to\trace.json --model llama3.1:8b --output replay.json
+```
+
+The folder name follows the application's user data directory; **Open folder**
+in Settings shows the exact location. The command reuses each trace's provider
+endpoint unless you pass `--base-url` and `--kind`.
+
 ### Optional endpoints
 
 Moss can reuse the active provider connection for several optional services, or
@@ -251,9 +487,41 @@ resume, cancellation, failure, and evidence-gated completion. Verification can
 combine task-specific evidence with newline-separated commands configured in
 Settings, such as tests, type checks, or builds.
 
-When a turn changes files, Moss creates a checkpoint. The response footer shows
-the changed-file count and provides a revert action while the checkpoint remains
-available.
+### Mission contract preflight
+
+Before launch, every mandatory acceptance criterion needs a measurable outcome
+and an explicit verification method. The mission review supports configured
+commands, file existence, file content, and HTTP status checks. File and command
+checks also require a selected workspace. Commands must exactly match entries
+enabled under **Settings > Verification**.
+
+Launch remains disabled until the contract passes preflight. Constraints and
+assumptions are optional, but become part of the reviewed mission specification
+when supplied. Policy-scoped authorization binds the complete contract,
+capabilities, budgets, and automation scopes to its token. Editing any bound
+field requires fresh authorization.
+
+Mission intake includes Coding, Research, and Automation templates. Each template
+prefills an editable objective, outcome contract, verification method,
+capabilities, constraints, assumptions, and budget. Missing workspace,
+verification, browser, or desktop prerequisites remain visible and continue to
+block launch. Templates use the same preflight and native authorization paths as
+manually authored missions.
+
+When a workspace is selected, mission review suggests verification commands
+inferred from project files such as `package.json` scripts, `pyproject.toml`,
+`Cargo.toml`, `go.mod`, .NET projects, Maven, Gradle, and Makefile test targets.
+Suggestions stay inactive until you select **Use**, which enables the command
+under **Settings > Verification** and binds it to the first eligible mandatory
+criterion.
+
+While a mission runs, the task status bar warns when any action, token, cost,
+or time budget reaches 80 percent, before the mission blocks on exhaustion.
+
+When a turn changes files, Moss creates a checkpoint. The response footer lists
+each changed file and whether the turn created or modified it. **Undo turn**
+asks for confirmation, then restores modified files and deletes created ones
+while the checkpoint remains available.
 
 ### Durable approvals and task history
 
@@ -272,6 +540,40 @@ Each task also exposes an ordered, read-only timeline derived from its append-on
 journal. The renderer receives concise transitions, attempts, approval outcomes,
 and evidence results. Raw snapshots, tool arguments, approval comments, model
 output, and evidence summaries are excluded from this history projection.
+
+### Run center and background inspection
+
+Use **Run center** in the conversation sidebar to inspect active, waiting,
+blocked, paused, completed, failed, and cancelled missions. Each run remains
+bound to the conversation that launched it. Switching conversations does not
+interrupt durable work, and transient output never appears in another
+conversation. While a run is active elsewhere, other conversations remain
+read-only until you return to the owning conversation or cancel the run.
+
+The sidebar marks conversations with mission state. Run center summarizes step
+progress, consumed budgets, passing evidence, and artifact counts. It can open
+the owning conversation, route paused or blocked work to its recovery controls,
+cancel an active durable task through the main-process task controller, or
+pause active work, or export a sanitized per-run diagnostic summary. Pausing
+aborts the current attempt before the durable task enters its resumable state.
+
+### Harness layers
+
+Moss treats the model as a replaceable, fallible component and keeps knowledge
+about the task in the harness:
+
+| Layer | How Moss implements it |
+|-------|------------------------|
+| Event record | Durable task journal, checkpoints, and opt-in replayable turn traces |
+| Model profiles | Capability probe suite with stored per-model profiles |
+| Model adapter | Constrained step protocol for weak tool callers and tool-call repair for every model |
+| Adjustable scaffolding | Meaning-ranked tool narrowing with `find_tool`, step guidance, and per-round call limits |
+| Routing | Fast and escalation routes on any configured provider, with per-model mission pricing |
+| Governed state | Per-conversation working state, rendered every round and never summarized away |
+| Independent verification | Host-run checks bound to mission criteria; the model never grades itself |
+| Earned memory | Skill trust ledger with versions, plus recalled lessons from verified runs |
+| Supervisor | No-progress detection, loop reminders, budgets, and a stop that asks you |
+| Provenance security | Untrusted content can inform decisions but never authorize a side effect |
 
 ### Agent execution design
 
@@ -334,6 +636,16 @@ Moss can connect to MCP servers using standard I/O or HTTP transports. The
 Library and Settings surfaces expose server status and management, while the
 runtime adapts MCP tool names to provider-safe identifiers.
 
+MCP tools ask for approval by default, because Moss cannot verify what they do.
+Servers can annotate tools as read-only or destructive. A **destructive**
+annotation is always honored, since it only adds a prompt. A **read-only**
+annotation relaxes the policy, so it counts only for servers you trust: check
+**trust read-only** next to a connected server under **Settings > Knowledge**. The
+count shows how many tools that server declares read-only. Trusted read-only
+tools run without a prompt, also after untrusted content, unless their
+arguments derive from that content. The setting is stored as
+`trustAnnotations` in `mcp-servers.json`.
+
 Server configuration may include commands, arguments, working directories,
 environment variables, URLs, and headers. Treat third-party MCP servers as code
 with the same access as the account running Moss.
@@ -353,6 +665,61 @@ the skill-resource tool without granting access outside the skill directory.
 Adaptive tone uses remembered preferences to adjust wording, formality, and
 detail without replacing the selected personality or built-in safety guidance.
 
+#### Skills earn trust
+
+Every skill has a trust status that changes only with host evidence: passing
+verification or a completed task, never the model's own claim.
+
+* Skills you write or import start **trusted**. Skills the agent writes, and any
+  version the agent rewrites, start as **candidates**.
+* A candidate becomes trusted after three verified successes on its current
+  version. Candidates are marked as unproven in the model's skill index.
+* A skill is **demoted** after two consecutive failures, three failures in its
+  last five uses, or its first failure after 90 days unused. Demoted skills
+  leave the skill index and cannot be loaded until you restore them.
+* Each content change creates a new version. The Library keeps the last five
+  versions, shows each skill's verified record, and lets you trust, demote,
+  restore, or roll back to an earlier version.
+
+#### Lessons from earlier runs
+
+Completed and failed tasks leave lessons: what worked, what failed, and why.
+When a new request shares key words with a lesson, or is close in meaning to it
+with **Rank tools and lessons by meaning** on, up to three are added to the
+system prompt as guidance, not instructions. Lessons about failures are recalled
+whenever failures back them; lessons about successes need a success rate of at
+least 50 percent.
+
+### Working state
+
+Long conversations lose detail when older turns are summarized. Moss keeps a
+separate, typed **working state** for each conversation that is never
+summarized away: invariants, protected paths, decisions with their reasons, open
+questions, and established facts. Open it with **State** in the chat header.
+
+* You can add any entry and remove any entry.
+* The model records decisions, facts, and questions with the `working_state`
+  tool. It can retire its own facts and answered questions, but it cannot remove
+  invariants, protected paths, decisions, or anything you wrote.
+* The state is rendered into the system message on every model round and sized
+  to the context window: invariants and protected paths are always included,
+  and older facts are dropped first when space runs short.
+* **Protected paths** accept files, folders, and globs such as `migrations/**`.
+  Moss refuses writes, edits, and moves that touch them, and commands that are
+  not read-only and name them, before any approval prompt appears.
+* **Continue in new chat** carries the working state into the new conversation.
+  Missions render and enforce it too.
+
+### No-progress supervisor
+
+A round makes progress when it produces a new result or a file change Moss has
+not seen before. Repeated identical calls, failed calls, rewriting a file with
+the same content, and edits that undo earlier edits do not count. After three
+stalled rounds Moss tells the model to change approach; at the limit (five by
+default) it stops. An ordinary turn ends with a message asking you how to
+proceed, and a task turn blocks so you can add guidance and resume. Set the
+limit under **Settings > Tools**; 0 turns the stop off.
+
 ## Safety model
 
 Moss separates reversible work from actions that can create external or
@@ -365,11 +732,52 @@ irreversible effects.
 * Desktop sessions require process and window allowlists
 * Tool approvals are tied to runtime call identity instead of model-authored text
 * Destructive commands and final browser or desktop actions require approval
+* Untrusted content can inform a decision but never authorize a side effect
+* Working-state protected paths are enforced by the host
 * Verification failures prevent successful task completion
 * Run journals and learned patterns are sanitized before persistence
 
 Auto-approval can reduce prompts for eligible reversible actions. It does not
 bypass controls for irreversible operations.
+
+Once content from outside your request enters a turn, every later change needs
+your explicit approval, even with auto-approve on or under a policy-scoped
+mission grant. Untrusted sources are web search, fetched URLs, MCP servers,
+browser and desktop inspection, and audio transcription. Memory writes and
+deletions are included, so a web page cannot plant or erase durable memories.
+Read-only actions still run without a prompt.
+
+Reads that reach the network are tracked at the data level, so research does not
+drown in prompts. Under auto-approve, `web_search`, `fetch_url`, and
+`browser_navigate` keep running after untrusted content in two cases:
+
+* Following a link that appeared verbatim in the content, because it discloses
+  nothing the page did not already contain.
+* A search that does not reuse a long token or eight-word passage from the
+  content.
+
+Any other URL asks first, including a changed link on a host the content named
+or one of its subdomains, because a URL's host and path can carry data to
+wherever the content pointed. Trusted read-only MCP tools follow the same rule
+for their arguments.
+
+The approval card names the untrusted sources, warns when the arguments reuse a
+URL, email address, long token, or eight-word passage from that content, and
+states the rule that required approval.
+
+If you rely on browser or MCP automation and accept the risk, turn off **Ask
+before changes that follow web, MCP, or browser content** under **Settings >
+Safety**. Auto-approve then covers those changes too; destructive commands,
+email, and irreversible browser or desktop actions still always ask.
+
+Approval prompts describe the effect instead of showing only raw arguments.
+File writes show a line diff against the file's current workspace content, or
+mark the file as new. Edits show the replaced snippet, moves show both paths,
+and commands show the working folder and time limit. The raw arguments remain
+available beneath the preview. When a tool is blocked, the tool card names the
+rule that applied, such as the workspace sandbox, a browser or desktop
+allow-list, mission authority, or your denial, and links to the Settings
+category that controls it.
 
 ## Response experience
 
@@ -382,6 +790,55 @@ blockquotes, inline code, highlighted code blocks, copy controls, regeneration,
 checkpoint reversion, token details, and a streaming indicator. User messages
 remain compact bubbles while assistant responses use a wider document layout.
 
+Recognized provider failures include a short fix and a direct action: rejected
+API keys, unavailable models, unreachable providers, and spending caps open model
+settings; rate limits and temporary server errors offer **Retry**; context
+overflow offers **Continue in new chat**.
+
+### Notifications, shortcuts, and accessibility
+
+Moss shows a Windows notification when background work needs approval, a
+mission blocks, or a reply finishes or fails while the window is unfocused or
+you are viewing another conversation. Selecting the notification focuses Moss
+and opens the owning conversation. Turn this off under **Settings > General**.
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+K` | Open the command palette for actions and conversations |
+| `Ctrl+N` | Start a new chat |
+| `Ctrl+,` | Open Settings |
+| `Ctrl+J` | Open Run center |
+| `Ctrl+Shift+L` | Open Library |
+| `Ctrl+L` | Focus the message box |
+| `Ctrl+B` | Collapse or expand the sidebar |
+| `Esc` | Stop the current response, or cancel an edit |
+
+Shortcuts avoid Electron's reload and developer-tools accelerators. **Settings >
+General** also offers larger text, a high-contrast mode with stronger borders and
+focus outlines, and a keyboard shortcut reference. Screen readers hear concise
+announcements when a reply completes, fails, or needs approval, instead of every
+streamed token. Settings reopens on the category you last used.
+
+New installations show a three-step getting-started guide: connect a model,
+choose an optional workspace, and try a safe read-only request. Hide it from the
+welcome screen and restore it from **Settings > General**.
+
+### Chat attachments
+
+Use Attach, drop files onto the composer, or paste files from the clipboard.
+Images are limited to 10 MB each and require a model that supports the image
+format. Common image extensions are recognized even when MIME metadata is missing.
+Markdown (`.md`, including `.MD`) and other text files are limited to 256 KB each.
+
+Word `.docx` and PDF files are limited to 10 MB each. Moss extracts their text
+locally and attaches it as a document, with a 256 KB extracted-text limit.
+Word formatting and embedded images are not included; scanned PDFs require OCR
+outside Moss. Empty, unreadable, or oversized documents produce an error.
+Legacy `.doc` files must be saved as `.docx` before attaching.
+
+Run `node scripts/smoke-attachments.mjs` after building to check Word, Markdown,
+and image attachment handling in a disposable Electron profile.
+
 ## Development commands
 
 | Command | Purpose |
@@ -390,14 +847,21 @@ remain compact bubbles while assistant responses use a wider document layout.
 | `npm run dev:renderer` | Start the Vite renderer server without Electron preload APIs |
 | `npm run start` | Launch Electron from existing build output |
 | `npm run typecheck` | Type-check the renderer and Electron projects |
+| `npm run lint` | Lint the product-quality surfaces with zero warnings allowed |
 | `npm test` | Run the Vitest test suite once |
 | `npm run test:deterministic` | Run the deterministic CI test tier |
+| `npm run test:coverage` | Run the deterministic tier with focused V8 coverage thresholds |
 | `npm run test:sandbox` | Run four live containment tests with a provisioned, digest-pinned Linux Node.js image |
 | `npm run eval -- dry-run scripts/eval-pilots.cjs` | Validate the evaluation matrix without invoking a model |
 | `npm run eval:health` | Validate corpus, reference solution, and grader publication health |
+| `npm run probe -- --model NAME` | Profile one or more models' tool, JSON, instruction, context, and planning reliability |
+| `npm run replay -- --trace FILE --model NAME` | Replay recorded turn traces against other models without running tools |
 | `npm run build` | Build the Electron main process and Vite renderer |
+| `npm run check:bundle` | Enforce initial renderer JavaScript and CSS budgets |
 | `npm run pack` | Create an unpacked application directory |
-| `npm run smoke:packaged` | Check the built Windows application through its packaged Electron bridge |
+| `npm run pack:ci` | Create an unsigned unpacked application for CI and local smoke checks |
+| `npm run smoke:packaged` | Check packaged setup, Run center, templates, diagnostics, accessibility, and compact layout |
+| `node scripts/smoke-missions.mjs` | Run supervised approval, denial, reload, and recovery mission smokes |
 | `npm run dist` | Build a Windows NSIS installer |
 
 The renderer alone expects APIs injected by `electron/preload.cjs`. Running
@@ -430,13 +894,23 @@ Run all checks used for normal development:
 
 ```powershell
 npm run typecheck
+npm run lint
 npm test
+npm run test:coverage
 npm run build
+npm run check:bundle
 ```
+
+Before a release, also run `npm run pack:ci`, `npm run smoke:packaged`, and
+`node scripts/smoke-missions.mjs`.
 
 Tests cover renderer behavior, IPC, providers, tool execution, permissions,
 approvals, checkpoints, capability acquisition, browser and desktop boundaries,
 task recovery, verification, memory, skills, learning, and the evaluation harness.
+The bundle gate follows the renderer assets referenced by `dist/index.html` and
+limits initial JavaScript and CSS independently. Settings, Library, Run center,
+the command palette, artifact preview, PDF extraction, DOCX extraction, and
+syntax languages load only when their workflows need them.
 
 The evaluation harness runs production-loop tasks in isolated workspaces and
 grades their end state with independent validators. It supports governed corpus
@@ -453,6 +927,23 @@ seed `TaskStore` and recover through `TaskEngine.recoverInterruptedTasks`, not a
 full `MissionController` restart. Expected budget stops and verification blocks
 pass only with exact structural traces and mandatory artifact checks; evaluation
 success does not necessarily mean task completion.
+
+A separate product UX corpus covers nine deterministic setup, recovery,
+intervention, and background-run scenarios. Cases include provider setup
+recovery, unverifiable criteria, unknown pricing, unavailable capabilities,
+approval denial, post-compaction continuation, reload during approval,
+configuration-change recovery, and background mission inspection. Sanitized
+trace metrics measure intervention count, recovery attempts, approval latency,
+user-visible error quality, and false completion. Each case also names the
+executable regression that supplies its evidence, and corpus health checks fail
+when that evidence is missing.
+
+Contributor quality gates include focused ESLint checks for the refactored
+product-quality surfaces and V8 coverage thresholds of 75% statements, 60%
+branches, 70% functions, and 75% lines. The packaged smoke suite runs serious
+and critical axe checks on Welcome, Settings, Run center, mission review, and a
+420 by 740 compact layout. Run `npm run lint`, `npm run test:coverage`, and
+`npm run smoke:packaged` to exercise these gates locally.
 
 Default contributor runs use `MOSS_EVAL_EXECUTION=local` and
 `MOSS_EVAL_PURPOSE=iteration`: three pilot cases or 20 representative development
@@ -497,6 +988,24 @@ Historical reports, including the earlier auto-approval mismatch, remain unchang
 Real dictation still requires a configured Whisper-compatible endpoint. Release
 acceptance and baseline promotion remain subject to the evidence and review gates.
 
+The September 22 harness and UX audit verification passed 1,483 deterministic
+tests with four gated live tests skipped, 18 mission IPC end-to-end tests, focused
+lint, and coverage of 92.1% statements and 82.51% branches. The production build
+measured 625.2 KiB of initial JavaScript and 62.9 KiB of CSS. The unsigned package
+passed axe serious and critical checks on Welcome, Settings, Run center, mission
+review, and the compact layout, plus supervised mission smokes. Production
+dependencies reported no npm audit vulnerabilities. Remaining advisories affect
+development tooling only and require the gated Vitest and electron-builder major
+upgrades.
+
+The September 23 UX follow-up passed 1,531 deterministic tests with four gated
+live tests skipped, 18 mission IPC end-to-end tests, focused lint, and coverage
+of 94.04% statements and 85.57% branches. The initial renderer bundle measured
+656.1 KiB of JavaScript and 66.5 KiB of CSS. The packaged smoke added axe checks
+for the command palette and verified the getting-started guide; supervised
+mission smokes passed. Windows notifications and approval diffs still need the
+interactive checks in the [GUI smoke checklist](docs/e42-gui-smoke-checklist.md).
+
 See the [harness feedback loop guide](docs/harness-feedback-loop.md) for corpus
 selection, provider runs, report inspection, resume behavior, and CI tiers.
 
@@ -534,12 +1043,14 @@ Electron preload bridge and is not designed to run as a standalone website.
 ### A task cannot use files or commands
 
 Choose a workspace in Settings and confirm tools are enabled. Operations outside
-that workspace are rejected by design.
+that workspace are rejected by design. The tool card names the rule that blocked
+the call and links to the Settings category that controls it.
 
 ### Browser navigation is denied
 
 Add the destination hostname to the browser domain allowlist. Every redirect and
-request must remain within the configured set.
+request must remain within the configured set. **Open settings** on the blocked
+tool card opens the Automation category directly.
 
 ### Desktop controls are unavailable
 
@@ -548,8 +1059,58 @@ window title, and controls exposed through Windows UI Automation.
 
 ### A task remains blocked after a failed check
 
-Inspect the task status and evidence, correct the underlying failure, then use
-the Resume action. Moss does not convert failed verification into completion.
+Use the recovery action shown with the blocker. Verification failures reopen the
+mission contract so you can edit the criterion or verification method. Budget
+failures reopen mission review. Credential and unavailable-service blockers open
+Settings, while user-decision blockers focus the composer for guidance.
+Resumable external interruptions retain the Resume action. Moss does not convert
+failed verification into completion or blindly repeat the same failed check.
+
+### Notifications do not appear
+
+Confirm **Settings > General > Notify me when background work needs approval,
+blocks, or finishes** is on, and that Windows notifications are allowed for Moss
+under **Settings > System > Notifications**. Moss only notifies when its window
+is unfocused or you are viewing a different conversation. Unpackaged
+development builds started with `npm run dev` may not show Windows notifications,
+because Windows associates them with an installed app shortcut.
+
+### A keyboard shortcut does nothing
+
+Global shortcuts pause while a dialog such as Settings or Run center is open,
+except `Ctrl+K`, which still closes the command palette. Close the dialog first,
+or open **Settings > General > Keyboard shortcuts** for the full list.
+
+### Moss keeps asking to approve browser or MCP steps
+
+After web search, a fetched page, or MCP or browser output enters a turn, Moss
+asks before every later change, even with auto-approve on, and the approval card
+shows an untrusted-content warning with the rule that applied. Searches that do
+not reuse that content, and links followed exactly as the content wrote them,
+keep running.
+MCP tools count as changes unless their server declares them read-only and you
+trust its annotations: check **trust read-only** next to the server under
+**Settings > Knowledge**. If you accept the remaining risk, turn off **Ask before
+changes that follow web, MCP, or browser content** under **Settings > Safety**
+and keep auto-approve on under **Settings > Tools**. Destructive commands, email,
+and irreversible actions still ask.
+
+### A small local model writes tool calls as text
+
+Moss repairs calls written as text automatically. If the model still misuses
+tools, profile it under **Settings > Models > Capability profile**; limited and
+unreliable models then use constrained tool output automatically. You can also
+set **Constrained tool output** to **Always** for the current model under
+**Routing and adaptation**. Constrained output needs an OpenAI-compatible
+endpoint whose server supports JSON-schema `response_format`, which current
+Ollama versions do.
+
+### An approval shows no diff
+
+Comparing an overwrite with the existing file needs a selected workspace;
+without one, Moss shows only the new content. Files larger than 256 KB, binary
+files, and changes over 1,500 combined lines show a summary instead. Expand
+**Raw arguments** to review the exact request.
 
 ## Additional documentation
 
@@ -557,3 +1118,4 @@ the Resume action. Moss does not convert failed verification into completion.
 * [Electron 42 GUI smoke checklist](docs/e42-gui-smoke-checklist.md)
 * [Planned Electron Builder 26 upgrade](docs/electron-builder-26-upgrade.md)
 * [Harness feedback loop](docs/harness-feedback-loop.md)
+* [Harness reliability audit (September 2026)](docs/harness-reliability-audit-2026-09-18.md)

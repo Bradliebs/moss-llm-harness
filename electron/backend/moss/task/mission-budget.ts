@@ -1,8 +1,16 @@
-import { estimateCost, modelRate, type ModelRate } from "../../../../common/pricing";
+import { modelRate, type ModelRate } from "../../../../common/pricing";
 import type { TaskBudget, TokenUsage } from "../../../../common/types";
 import type { ChatProvider, ChatRequest, ProviderStreamEvent } from "../providers/types";
 
 export class MissionBudgetError extends Error {}
+
+/** Maps a request's model to the model that actually runs (after routing) and
+ *  whether it runs locally. Local models without a configured rate cost nothing. */
+export type ModelResolver = (model: string) => { model: string; local: boolean };
+
+function costOf(usage: TokenUsage, rate: ModelRate | undefined): number {
+  return rate ? ((usage.inputTokens ?? 0) * rate.inputPer1M + (usage.outputTokens ?? 0) * rate.outputPer1M) / 1_000_000 : 0;
+}
 
 export class MissionBudgetProvider implements ChatProvider {
   readonly usage = { inputTokens: 0, outputTokens: 0 };
@@ -15,13 +23,19 @@ export class MissionBudgetProvider implements ChatProvider {
     private readonly provider: ChatProvider,
     private readonly budget: TaskBudget,
     private readonly rates?: Record<string, ModelRate>,
+    private readonly resolve?: ModelResolver,
   ) {}
+
+  private rateFor(model: string): ModelRate | undefined {
+    const route = this.resolve?.(model) ?? { model, local: false };
+    return modelRate(route.model, this.rates) ?? (route.local ? { inputPer1M: 0, outputPer1M: 0 } : undefined);
+  }
 
   listModels(): Promise<string[]> { return this.provider.listModels(); }
 
   async *streamChat(request: ChatRequest, signal: AbortSignal): AsyncIterable<ProviderStreamEvent> {
     signal.throwIfAborted();
-    const rate = modelRate(request.model, this.rates);
+    const rate = this.rateFor(request.model);
     if (this.budget.maxCostUsd !== undefined && (!rate || !Number.isFinite(rate.inputPer1M) || !Number.isFinite(rate.outputPer1M) || rate.inputPer1M < 0 || rate.outputPer1M < 0)) {
       throw new MissionBudgetError("Mission cost budget requires a known or configured model rate");
     }
@@ -49,7 +63,7 @@ export class MissionBudgetProvider implements ChatProvider {
         yield event;
         const current = { inputTokens: reported.inputTokens ?? promptAllowance, outputTokens: reported.outputTokens ?? 0 };
         if (this.usage.inputTokens + this.usage.outputTokens + current.inputTokens + current.outputTokens > (this.budget.maxTokens ?? Infinity)
-          || this.estimatedCostUsd + (estimateCost(current, request.model, this.rates) ?? 0) > (this.budget.maxCostUsd ?? Infinity)) {
+          || this.estimatedCostUsd + costOf(current, rate) > (this.budget.maxCostUsd ?? Infinity)) {
           throw new MissionBudgetError("Mission model usage exceeded the admitted budget; further execution stopped");
         }
       }
@@ -59,7 +73,7 @@ export class MissionBudgetProvider implements ChatProvider {
       const charged = { inputTokens: reported.inputTokens ?? promptAllowance, outputTokens: reported.outputTokens ?? outputAllowance };
       this.usage.inputTokens += charged.inputTokens;
       this.usage.outputTokens += charged.outputTokens;
-      this.estimatedCostUsd += estimateCost(charged, request.model, this.rates) ?? 0;
+      this.estimatedCostUsd += costOf(charged, rate);
     }
   }
 }

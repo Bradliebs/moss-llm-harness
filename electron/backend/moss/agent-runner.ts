@@ -16,6 +16,11 @@ import { exceedsInlineLimit, spillPreview } from "./context/tool-output-spill";
 import type { ToolOutputStore } from "./context/tool-output-store";
 import { classifyConfidenceMode, describeConfidence } from "./governed/confidence";
 import { RepeatToolReminder } from "./governed/repeat-tool-reminder";
+import { DEFAULT_STALL_LIMIT, DEFAULT_STALL_WARN, ProgressSupervisor, supervisorStopMessage, supervisorWarning, type RoundObservation } from "./governed/progress-supervisor";
+import { protectedPathViolation, renderWorkingState, withWorkingState, workingStateBudget, type WorkingStateStore } from "./governed/working-state";
+import { ProvenanceTracker } from "./safety/provenance";
+import { parseTextToolCalls, repairToolCall } from "./models/tool-repair";
+import { semanticIndex } from "./models/tool-index";
 import { resolvePermission } from "./permission";
 import { classifyTool } from "./permission";
 import type { CommandRisk } from "./permission";
@@ -126,6 +131,28 @@ export interface RunTurnOptions {
    *  a subagent runs at 1 and is denied the delegate tool, so recursion cannot
    *  run away. Callers should not set this. */
   delegateDepth?: number;
+  /** Faster model for context summaries and read-only subagents; defaults to `model`. */
+  auxiliaryModel?: string;
+  /** When set, only the first N tool calls of a round run; the model is told to
+   *  issue the rest one step at a time. Used as scaffolding for weaker models. */
+  maxToolCallsPerRound?: number;
+  /** Conversation working state rendered into every round and enforced for protected paths. */
+  workingState?: WorkingStateStore;
+  /** Stop after this many consecutive rounds without progress; 0 never stops. */
+  stallLimit?: number;
+  /** When false, untrusted content no longer withholds auto-approval. Default true. */
+  provenanceGate?: boolean;
+  /** Every tool the turn may use. When larger than `tools`, find_tool and direct
+   *  calls can bring hidden tools into the offered set. The registry must cover it. */
+  toolCatalog?: ToolDefinition[];
+  /** embeddings for ranking find_tool results by meaning; word overlap without it */
+  rankingEmbed?: EmbedConfig;
+}
+
+interface TurnGuards {
+  provenance: ProvenanceTracker;
+  workingState?: WorkingStateStore;
+  findTools?: (need: string, signal: AbortSignal) => Promise<string>;
 }
 
 export interface CompletionContext {
@@ -145,7 +172,25 @@ export interface CompletionDecision {
 }
 
 export async function runTurn(opts: RunTurnOptions): Promise<void> {
-  const { provider, model, tools, signal, onEvent } = opts;
+  const { provider, model, signal, onEvent } = opts;
+  // Tools offered this turn; find_tool can add hidden tools from the catalog.
+  const offered = [...opts.tools];
+  const currentTools = (): ToolDefinition[] => offered;
+  const catalog = opts.toolCatalog ?? opts.tools;
+  const offerTool = (name: string): void => {
+    const tool = catalog.find((item) => item.name === name);
+    if (tool && !offered.some((item) => item.name === name)) offered.push(tool);
+  };
+  const findTools = catalog.some((tool) => !offered.some((item) => item.name === tool.name))
+    ? async (need: string, findSignal: AbortSignal): Promise<string> => {
+      const hidden = catalog.filter((tool) => !offered.some((item) => item.name === tool.name));
+      if (hidden.length === 0) return "Every available tool is already offered.";
+      const found = await semanticIndex.rankTools(hidden, need, 3, opts.rankingEmbed, findSignal);
+      for (const tool of found) offerTool(tool.name);
+      onEvent({ type: "notice", level: "info", message: `find_tool enabled ${found.map((tool) => tool.name).join(", ")}.` });
+      return `Enabled for your next step:\n${found.map((tool) => `- ${tool.name}: ${tool.description.split("\n")[0].slice(0, 200)}`).join("\n")}`;
+    }
+    : undefined;
   const jsonArtifactGuard = opts.jsonArtifactRequirements?.length
     ? new JsonArtifactGuard(opts.jsonArtifactRequirements, opts.workspaceRoot)
     : undefined;
@@ -167,10 +212,18 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
   // are never dropped.
   const compaction = compactIfNeeded(seeded, { contextLimit: opts.contextLimit ?? 0, reserveTokens: 640 });
   let conversation = compaction.messages;
+  const workingStateBudgetTokens = workingStateBudget(opts.contextLimit);
+  let renderedWorkingStateVersion = -1;
+  let emittedWorkingStateVersion = opts.workingState?.version ?? 0;
+  const refreshWorkingState = (): void => {
+    if (!opts.workingState || opts.workingState.version === renderedWorkingStateVersion) return;
+    renderedWorkingStateVersion = opts.workingState.version;
+    conversation = withWorkingState(conversation, renderWorkingState(opts.workingState.snapshot(), workingStateBudgetTokens));
+  };
   if (compaction.compacted) {
     const summary = await summarizeCompactedContext(
       provider,
-      model,
+      opts.auxiliaryModel ?? model,
       droppedMessages(seeded, compaction.droppedCount),
       { signal, contextLimit: opts.contextLimit },
     );
@@ -211,6 +264,8 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
   // Falls back to a turn-scoped checklist when the caller supplies no store.
   const plan = opts.plan ?? new PlanStore();
   const delegate = makeDelegate(opts);
+  const guards: TurnGuards = { provenance: new ProvenanceTracker(), ...(opts.workingState ? { workingState: opts.workingState } : {}), ...(findTools ? { findTools } : {}) };
+  const supervisor = new ProgressSupervisor(DEFAULT_STALL_WARN, opts.stallLimit ?? DEFAULT_STALL_LIMIT);
   let failureSource: Extract<MossEvent, { type: "turn-error" }>["source"] = "harness-orchestration";
 
   try {
@@ -223,6 +278,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         onEvent({ type: "turn-aborted", messages: newMessages });
         return;
       }
+      refreshWorkingState();
 
       pendingText = "";
       onEvent({ type: "round-start", round, toolsEnabled: round < maxRounds });
@@ -245,7 +301,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         let usageOut = 0;
         let sawUsage = false;
         try {
-          const roundTools = round < maxRounds ? tools : [];
+          const roundTools = round < maxRounds ? currentTools() : [];
           for await (const ev of provider.streamChat({
             model,
             messages: conversation,
@@ -277,7 +333,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
             if (overflowCompaction.compacted) {
               const summary = await summarizeCompactedContext(
                 provider,
-                model,
+                opts.auxiliaryModel ?? model,
                 droppedMessages(conversation, overflowCompaction.droppedCount),
                 { signal, contextLimit: opts.contextLimit },
               );
@@ -312,9 +368,40 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         return;
       }
 
+      // Repair before anything runs: calls written as text, argument names
+      // outside the schema, and echoed schemas are fixed and reported; calls
+      // that still fail validation get a schema error instead of running.
+      const offeredTools = round < maxRounds ? catalog : [];
+      let repairedFromText = false;
+      if (calls.length === 0 && offeredTools.length > 0 && pendingText.trim()) {
+        const parsed = parseTextToolCalls(pendingText, offeredTools);
+        if (parsed.length > 0) {
+          calls = parsed;
+          repairedFromText = true;
+          onEvent({ type: "notice", level: "info", message: `Recovered ${parsed.length} tool call${parsed.length === 1 ? "" : "s"} the model wrote as text.` });
+        }
+      }
+      const invalidCalls = new Map<string, string>();
+      calls = calls.map((original) => {
+        const repaired = repairToolCall(original, offeredTools);
+        if (repaired.repairs.length > 0) {
+          onEvent({ type: "notice", level: "info", message: `Repaired ${repaired.call.name} call: ${repaired.repairs.join("; ")}.` });
+        }
+        if (repaired.error) invalidCalls.set(repaired.call.id, repaired.error);
+        // Calling a hidden catalog tool directly brings it into the offered set.
+        offerTool(repaired.call.name);
+        return repaired.call;
+      });
+
+      let deferredCalls = 0;
+      if (opts.maxToolCallsPerRound && calls.length > opts.maxToolCallsPerRound) {
+        deferredCalls = calls.length - opts.maxToolCallsPerRound;
+        calls = calls.slice(0, opts.maxToolCallsPerRound);
+      }
+
       const assistantMsg: AgentMessage = {
         role: "assistant",
-        content: pendingText,
+        content: repairedFromText ? "" : pendingText,
         ...(calls.length > 0 ? { toolCalls: calls } : {}),
         ...(roundUsage ? { usage: roundUsage } : {}),
         ...(opts.turnId ? { turnId: opts.turnId } : {}),
@@ -378,6 +465,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
 
       onEvent({ type: "round-end", round, toolCallCount: calls.length, finish: "tools" });
 
+      const roundObservations: RoundObservation[] = [];
       for (const call of calls) {
         if (signal.aborted) break;
         usedToolNames.add(call.name);
@@ -385,14 +473,24 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         if (signal.aborted) break;
         const startedAt = Date.now();
         failureSource = "tool";
-        const admission = opts.toolCallGuard?.(call);
+        const admission = invalidCalls.has(call.id)
+          ? { allow: false, reason: invalidCalls.get(call.id) }
+          : opts.toolCallGuard?.(call);
         const { result, autoApproved, risk } = admission?.allow === false
           ? {
               result: { ok: false, content: admission.reason?.trim() || "Tool call denied by host policy" },
               autoApproved: false,
               risk: undefined,
             }
-          : await executeCallWithRecovery(call, opts, failedActionSignatures, plan, delegate);
+          : await executeCallWithRecovery(call, opts, failedActionSignatures, plan, delegate, guards);
+        // Record provenance after the call: the content a tool returns can shape
+        // later calls, but never the call that fetched it.
+        guards.provenance.observe(call.name, result.content);
+        if (opts.workingState && opts.workingState.version !== emittedWorkingStateVersion) {
+          emittedWorkingStateVersion = opts.workingState.version;
+          onEvent({ type: "working-state", state: opts.workingState.snapshot() });
+        }
+        roundObservations.push({ name: call.name, arguments: call.arguments, ok: result.ok, content: result.content });
         failureSource = "harness-orchestration";
         jsonArtifactGuard?.observe(call.name, call.arguments, result);
         const durationMs = Date.now() - startedAt;
@@ -446,6 +544,41 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
           ...(risk ? { risk } : {}),
           durationMs,
         });
+      }
+
+      if (!signal.aborted) {
+        const verdict = supervisor.observeRound(roundObservations);
+        if (verdict.action !== "continue") {
+          onEvent({ type: "supervisor", action: verdict.action, stalledRounds: verdict.stalledRounds, reason: verdict.reason ?? "" });
+        }
+        if (verdict.action === "warn") {
+          const lastToolMessage = conversation[conversation.length - 1];
+          if (lastToolMessage?.role === "tool") lastToolMessage.content = `${lastToolMessage.content}\n\n${supervisorWarning(verdict)}`;
+          onEvent({ type: "notice", level: "warn", message: `No progress in ${verdict.stalledRounds} rounds (${verdict.reason}); Moss asked the model to change approach.` });
+        } else if (verdict.action === "stop") {
+          onEvent({ type: "notice", level: "warn", message: `Stopped after ${verdict.stalledRounds} rounds without progress (${verdict.reason}).` });
+          if (opts.completionGuard) {
+            onEvent({
+              type: "turn-error",
+              message: `Stopped after ${verdict.stalledRounds} rounds without progress: ${verdict.reason}. Add guidance, then resume.`,
+              messages: newMessages,
+              source: "harness-orchestration",
+            });
+            return;
+          }
+          const stopMessage: AgentMessage = { role: "assistant", content: supervisorStopMessage(verdict), ...(opts.turnId ? { turnId: opts.turnId } : {}) };
+          onEvent({ type: "text-delta", text: stopMessage.content });
+          newMessages.push(stopMessage);
+          onEvent({ type: "turn-complete", messages: newMessages });
+          return;
+        }
+      }
+
+      if (deferredCalls > 0 && !signal.aborted) {
+        const lastToolMessage = conversation[conversation.length - 1];
+        const note = `Moss ran only the first tool call from your last response and skipped ${deferredCalls} more. Review this result, then issue the next call on its own.`;
+        if (lastToolMessage?.role === "tool") lastToolMessage.content = `${lastToolMessage.content}\n\n${note}`;
+        onEvent({ type: "notice", level: "info", message: `Skipped ${deferredCalls} extra tool call${deferredCalls === 1 ? "" : "s"}; this model runs one tool call per step.` });
       }
 
       // After a round that successfully changed files, run the configured
@@ -536,9 +669,12 @@ function makeDelegate(opts: RunTurnOptions): DelegateFn | undefined {
     let failure = "";
     await runTurn({
       ...opts,
+      model: opts.auxiliaryModel ?? opts.model,
       messages: [{ role: "user", content: task }],
       tools: toolDefs,
       toolRegistry: readOnly,
+      // find_tool may only surface tools the subagent can actually run.
+      toolCatalog: opts.toolCatalog?.filter((t) => readOnly.has(t.name)),
       delegateDepth: depth + 1,
       signal,
       autoApprove: false,
@@ -573,6 +709,7 @@ async function executeCallWithRecovery(
   failedActionSignatures: string[],
   plan: PlanStore,
   delegate?: DelegateFn,
+  guards?: TurnGuards,
 ): Promise<ExecOutcome> {
   const signature = `${call.name}:${call.arguments}`;
   const recoveryPolicy = new RecoveryPolicy({
@@ -580,7 +717,7 @@ async function executeCallWithRecovery(
   });
   let retryCount = 0;
   for (;;) {
-    const outcome = await executeCall(call, opts, plan, delegate);
+    const outcome = await executeCall(call, opts, plan, delegate, guards);
     if (outcome.result.ok) {
       if (retryCount > 0) {
         opts.onEvent({
@@ -655,7 +792,7 @@ interface ExecOutcome {
   risk?: CommandRisk;
 }
 
-async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore, delegate?: DelegateFn): Promise<ExecOutcome> {
+async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore, delegate?: DelegateFn, guards?: TurnGuards): Promise<ExecOutcome> {
   const tool = opts.toolRegistry.get(call.name);
   if (!tool) return { result: { ok: false, content: `Unknown tool: ${call.name}` }, autoApproved: false };
 
@@ -669,6 +806,13 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
     };
   }
 
+  const protectedViolation = guards?.workingState
+    ? protectedPathViolation(call.name, args, guards.workingState.protectedPatterns(), opts.workspaceRoot)
+    : undefined;
+  if (protectedViolation) return { result: { ok: false, content: protectedViolation }, autoApproved: false };
+
+  const gated = guards?.provenance.tainted === true && opts.provenanceGate !== false;
+  const derivation = guards?.provenance.tainted ? guards.provenance.derivation(call.arguments) : undefined;
   const decision = resolvePermission({
     name: call.name,
     command: call.name === "run_command" ? String(args.command ?? "") : undefined,
@@ -676,6 +820,9 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
     autoApprove: opts.autoApprove === true,
     ...(opts.executionGrant ? { executionGrant: opts.executionGrant } : {}),
     ...(opts.stepCapabilities ? { stepCapabilities: opts.stepCapabilities } : {}),
+    ...(gated && derivation ? { untrusted: true, untrustedDerivation: derivation } : {}),
+    ...(tool.readOnly ? { readOnly: true } : {}),
+    ...(tool.destructive ? { destructive: true } : {}),
   });
   if (decision.action === "deny") {
     return { result: { ok: false, content: `Denied by policy: ${call.name}` }, autoApproved: false };
@@ -689,6 +836,15 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
       name: call.name,
       arguments: call.arguments,
       risk: decision.risk,
+      ...(guards?.provenance.tainted
+        ? {
+            provenance: {
+              untrustedSources: guards.provenance.untrustedSources,
+              copiedFromUntrusted: derivation?.kind !== "none",
+              ...(decision.rule ? { rule: decision.rule } : {}),
+            },
+          }
+        : {}),
     });
     const approval = await opts.requestApproval(call.id);
     if (!approval.approved) {
@@ -706,7 +862,7 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
 
   try {
     opts.signal.throwIfAborted();
-    const execute = (signal: AbortSignal) => tool.execute(args, { workspaceRoot: opts.workspaceRoot, signal, stt: opts.stt, email: opts.email, embed: opts.embed, checkpoint: opts.checkpoint, approvalGranted, gatedMemory: opts.gatedMemory, plan, delegate });
+    const execute = (signal: AbortSignal) => tool.execute(args, { workspaceRoot: opts.workspaceRoot, signal, stt: opts.stt, email: opts.email, embed: opts.embed, checkpoint: opts.checkpoint, approvalGranted, gatedMemory: opts.gatedMemory, plan, delegate, ...(guards?.workingState ? { workingState: guards.workingState } : {}), ...(guards?.findTools ? { findTools: guards.findTools } : {}) });
     const timeoutMs = tool.timeoutMs === undefined ? undefined : opts.toolTimeoutMs ?? tool.timeoutMs;
     const result = timeoutMs === undefined
       ? await execute(opts.signal)

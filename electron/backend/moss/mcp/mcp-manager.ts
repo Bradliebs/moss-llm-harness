@@ -10,7 +10,7 @@
 // its CommonJS output at runtime via the package `"require"` export condition.
 // Types come from the local ambient declarations in mcp-sdk.d.ts.
 
-import { Client, type McpCallToolResult } from "@modelcontextprotocol/sdk/client/index.js";
+import { Client, type McpCallToolResult, type McpToolInfo } from "@modelcontextprotocol/sdk/client/index.js";
 import {
   getDefaultEnvironment,
   StdioClientTransport,
@@ -67,10 +67,22 @@ function createTransport(config: McpServerConfig): { close(): Promise<void> } {
   });
 }
 
+/** Annotations are claims made by the server. A read-only claim relaxes the
+ *  permission policy, so it counts only for servers the user trusts; a
+ *  destructive claim only tightens it, so it counts for every server. */
+export function mcpToolRisk(info: Pick<McpToolInfo, "annotations">, trustAnnotations: boolean): { readOnly?: true; destructive?: true } {
+  const hints = info.annotations;
+  if (!hints || typeof hints !== "object") return {};
+  if (hints.destructiveHint === true && hints.readOnlyHint !== true) return { destructive: true };
+  if (trustAnnotations && hints.readOnlyHint === true && hints.destructiveHint !== true) return { readOnly: true };
+  return {};
+}
+
 export function adaptMcpTool(
   serverId: string,
   client: Pick<Client, "callTool">,
-  info: { name: string; description?: string; inputSchema: Record<string, unknown> },
+  info: Pick<McpToolInfo, "name" | "description" | "inputSchema" | "annotations">,
+  options: { trustAnnotations?: boolean } = {},
 ): Tool {
   const name = adaptToolName(serverId, info.name);
   const parameters = info.inputSchema && typeof info.inputSchema === "object"
@@ -80,6 +92,7 @@ export function adaptMcpTool(
     description: info.description ?? `MCP tool "${info.name}" from server "${serverId}"`,
     parameters,
     timeoutMs: 180_000,
+    ...mcpToolRisk(info, options.trustAnnotations === true),
     async execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
       try {
         const result = await client.callTool({ name: info.name, arguments: args }, undefined, { signal: ctx.signal });
@@ -141,7 +154,7 @@ class McpManager {
       transport = createTransport(config);
       await client.connect(transport);
       const { tools } = await client.listTools();
-      const adapted = tools.map((t) => adaptMcpTool(config.id, client, t));
+      const adapted = tools.map((t) => adaptMcpTool(config.id, client, t, { trustAnnotations: config.trustAnnotations === true }));
       for (const tool of adapted) {
         if (this.tools.some((existing) => existing.name === tool.name)) {
           log.warn(`duplicate tool name ${tool.name} from server ${config.id} skipped`);
@@ -156,6 +169,8 @@ class McpManager {
         connected: true,
         toolCount: adapted.length,
         tools: tools.map((t) => t.name),
+        ...(config.trustAnnotations === true ? { trustAnnotations: true } : {}),
+        readOnlyTools: tools.filter((t) => t.annotations?.readOnlyHint === true && t.annotations.destructiveHint !== true).map((t) => t.name),
       });
       log.info(`server ${config.id}: ${adapted.length} tool(s)`);
     } catch (err) {

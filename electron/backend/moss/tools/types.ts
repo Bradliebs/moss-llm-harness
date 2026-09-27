@@ -3,6 +3,7 @@
 import type { EmailConfig, EmbedConfig, SttConfig } from "../../../../common/types";
 import type { CheckpointRecorder } from "../checkpoint/checkpoint-store";
 import type { PlanStore } from "../task/plan-store";
+import type { WorkingStateStore } from "../governed/working-state";
 
 export interface ToolContext {
   /** absolute sandbox root; empty string means no workspace selected */
@@ -26,6 +27,10 @@ export interface ToolContext {
   /** checklist state for the plan tool; scoped to the turn unless the caller
    *  supplies a longer-lived store */
   plan?: PlanStore;
+  /** conversation working state for the working_state tool */
+  workingState?: WorkingStateStore;
+  /** enables hidden tools that match a need; present only when the turn narrowed its tools */
+  findTools?: (need: string, signal: AbortSignal) => Promise<string>;
   /** runs a read-only subagent in its own conversation and resolves its report.
    *  Absent when the host has not wired delegation, or inside a subagent, where
    *  the depth cap withholds it to stop unbounded recursion. */
@@ -49,6 +54,11 @@ export interface Tool {
   /** Cooperative execution deadline. Declaring a deadline requires execute()
    *  to observe ctx.signal and settle after cancellation. */
   timeoutMs?: number;
+  /** Declared read-only by a source the user trusts (an MCP server whose
+   *  annotations they opted into); the permission policy runs it without a prompt. */
+  readOnly?: boolean;
+  /** Declared destructive; always prompts, even under auto-approve. */
+  destructive?: boolean;
   dispose?(): Promise<void>;
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }

@@ -4,7 +4,7 @@
 // session store yet). Each session holds its own message history so the left
 // nav can switch between conversations and they survive a reload.
 
-import type { AgentMessage, TokenUsage, ToolRisk } from "@common/types";
+import type { AgentMessage, TokenUsage, ToolRisk, WorkingState, WorkingStateEntry, WorkingStateKind } from "@common/types";
 
 import type { ModelRate } from "./pricing";
 import { estimateCost, formatUsd } from "./pricing";
@@ -19,6 +19,10 @@ export interface Session {
   /** per-chat personality override; undefined inherits the global default */
   personalityId?: string;
   taskId?: string;
+  /** pinned conversations sort above the rest of the list */
+  pinned?: boolean;
+  /** governed working state: invariants, protected paths, decisions, facts, questions */
+  workingState?: WorkingState;
 }
 
 interface SessionsState {
@@ -123,11 +127,64 @@ export function selectSession(id: string): void {
 }
 
 export function deleteSession(id: string): void {
+  deleteSessions([id]);
+}
+
+/** Delete several conversations at once, keeping a valid current selection. */
+export function deleteSessions(ids: readonly string[]): void {
+  const doomed = new Set(ids);
   sessionsState.update((prev) => {
-    const sessions = prev.sessions.filter((s) => s.id !== id);
-    const currentId = prev.currentId === id ? (sessions[0]?.id ?? null) : prev.currentId;
+    const sessions = prev.sessions.filter((s) => !doomed.has(s.id));
+    const currentId = prev.currentId && doomed.has(prev.currentId) ? (sessions[0]?.id ?? null) : prev.currentId;
     return { sessions, currentId };
   });
+}
+
+export function setSessionPinned(id: string, pinned: boolean): void {
+  sessionsState.update((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((s) => (s.id === id ? { ...s, pinned } : s)),
+  }));
+}
+
+export function getSessionWorkingState(id: string): WorkingState | undefined {
+  return sessionsState.get().sessions.find((s) => s.id === id)?.workingState;
+}
+
+export function setSessionWorkingState(id: string, workingState: WorkingState): void {
+  sessionsState.update((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((s) => (s.id === id ? { ...s, workingState } : s)),
+  }));
+}
+
+/** User edits to working state. Users can add any kind and remove any entry. */
+export function addWorkingStateEntry(id: string, kind: WorkingStateKind, text: string, rationale?: string): void {
+  const clean = text.trim().slice(0, 500);
+  if (!clean) return;
+  const current = getSessionWorkingState(id) ?? { schemaVersion: 1 as const, entries: [] };
+  if (current.entries.some((entry) => entry.kind === kind && entry.text.toLowerCase() === clean.toLowerCase())) return;
+  const prefix = { invariant: "i", protected: "p", decision: "d", fact: "f", question: "q" }[kind];
+  const entry: WorkingStateEntry = {
+    id: `${prefix}${current.entries.filter((item) => item.kind === kind).length + 1}-${crypto.randomUUID().slice(0, 4)}`,
+    kind,
+    text: clean,
+    ...(rationale?.trim() ? { rationale: rationale.trim().slice(0, 500) } : {}),
+    source: "user",
+    createdAt: new Date().toISOString(),
+  };
+  setSessionWorkingState(id, { schemaVersion: 1, entries: [...current.entries, entry] });
+}
+
+export function removeWorkingStateEntry(id: string, entryId: string): void {
+  const current = getSessionWorkingState(id);
+  if (!current) return;
+  setSessionWorkingState(id, { ...current, entries: current.entries.filter((entry) => entry.id !== entryId) });
+}
+
+/** Pinned conversations first, otherwise preserving the stored order. */
+export function sortSessionsForDisplay(list: readonly Session[]): Session[] {
+  return [...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)];
 }
 
 /** Empty a conversation in place: drop its messages and reset the title to the
@@ -297,6 +354,8 @@ export function continueInNewSession(id: string, modelSummary?: string): string 
         createdAt: now,
         updatedAt: now,
         ...(source.personalityId ? { personalityId: source.personalityId } : {}),
+        // Working state is authoritative and must survive the handoff intact.
+        ...(source.workingState?.entries.length ? { workingState: structuredClone(source.workingState) } : {}),
       },
       ...prev.sessions,
     ],

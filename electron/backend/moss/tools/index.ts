@@ -8,6 +8,7 @@ import { GIT_TOOLS } from "./git-tools";
 import { DELEGATE_TOOLS } from "./delegate-tool";
 import { IMAGE_TOOLS } from "./image-tools";
 import { planTool } from "./plan-tool";
+import { workingStateTool } from "../governed/working-state";
 import { SELF_TOOLS } from "./self-tools";
 import { runCommandTool } from "./shell-tool";
 import { transcribeAudioTool } from "./transcribe-tool";
@@ -17,6 +18,7 @@ import { fetchUrlTool, webSearchTool } from "./web-tools";
 
 export const TOOLS: Tool[] = [
   planTool,
+  workingStateTool,
   readFileTool,
   listDirTool,
   searchFilesTool,

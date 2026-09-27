@@ -52,7 +52,7 @@ export function ClarificationForm({ request, disabled, onSubmit }: Clarification
             {question.options && custom[question.id] ? <input required maxLength={2000} aria-label={`Other answer for question ${index + 1}`} autoComplete="off" className="block w-full min-w-0 rounded-md border border-neutral-300 bg-white px-2 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900" value={answers[question.id] ?? ""} onChange={(event) => setAnswers((previous) => ({ ...previous, [question.id]: event.target.value }))} /> : null}
           </div>
         ))}
-        <button type="submit" className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"><Send size={15} aria-hidden="true" />{submitted ? "Answers sent" : "Send answers"}</button>
+        <button type="submit" className="inline-flex items-center gap-2 rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50"><Send size={15} aria-hidden="true" />{submitted ? "Answers sent" : "Send answers"}</button>
       </fieldset>
       {error ? <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p> : null}
     </form>

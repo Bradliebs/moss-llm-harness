@@ -5,16 +5,24 @@
 // All provider/model/permission values are persisted via the settings store, so
 // switching here takes effect on the next turn and survives a reload.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { InjectionMode, McpServerStatus, MemoryEntry } from "@common/types";import { PERSONALITY_PRESETS } from "@common/personalities";
+import type {
+  InjectionMode,
+  McpServerStatus,
+  MemoryEntry,
+} from "@common/types";
+import { PERSONALITY_PRESETS } from "@common/personalities";
 
 import { createAvatarDataUrl } from "../lib/avatar";
 import {
   PROVIDER_PRESETS,
+  READINESS_PROFILES,
   applyPreset,
   mcpAddFormTypeStore,
   modelsStore,
+  readinessItems,
+  readinessProfilePatch,
   saveProviderCredential,
   setModelRate,
   toEmbedConfig,
@@ -24,8 +32,33 @@ import {
 } from "../lib/settings";
 import { MossFace } from "./MossFace";
 import { JevSettings } from "./JevSettings";
+import { LiveStatus } from "./LiveStatus";
+import { ProductDiagnosticsSettings } from "./ProductDiagnosticsSettings";
+import { AutomationSettings } from "./AutomationSettings";
+import { AccessibilitySettings } from "./AccessibilitySettings";
+import { ModelProfileSettings } from "./ModelProfileSettings";
+import { RoutingSettings } from "./RoutingSettings";
 
-export function SettingsPanel({ onClose }: { onClose: () => void }): React.ReactElement {
+type SettingsCategory = "readiness" | "diagnostics" | "general" | "models" | "tools" | "automation" | "knowledge" | "services" | "safety";
+
+const SETTINGS_CATEGORIES: readonly { id: SettingsCategory | "all"; label: string; keywords: string }[] = [
+  { id: "all", label: "All", keywords: "all settings" },
+  { id: "readiness", label: "Readiness", keywords: "setup profile diagnostics connection" },
+  { id: "diagnostics", label: "Diagnostics", keywords: "local telemetry retention export clear privacy" },
+  { id: "general", label: "General", keywords: "appearance theme avatar personality instructions confidence context accessibility text size contrast notifications shortcuts keyboard" },
+  { id: "models", label: "Models", keywords: "provider model api key pricing budget capability probe profile routing escalation constrained output trace replay" },
+  { id: "tools", label: "Tools", keywords: "tools workspace verification" },
+  { id: "automation", label: "Automation", keywords: "browser desktop windows scopes" },
+  { id: "knowledge", label: "Knowledge", keywords: "memory index embeddings mcp trust annotations" },
+  { id: "services", label: "Services", keywords: "speech email jev" },
+  { id: "safety", label: "Safety", keywords: "external content injection approval untrusted provenance ask auto-approve" },
+];
+
+function isSettingsCategory(value: string | undefined): value is SettingsCategory | "all" {
+  return SETTINGS_CATEGORIES.some((category) => category.id === value);
+}
+
+export function SettingsPanel({ onClose, initialCategory }: { onClose: () => void; initialCategory?: SettingsCategory }): React.ReactElement {
   const settings = useSettings();
   const models = modelsStore.use();
   const [status, setStatus] = useState("");
@@ -41,8 +74,27 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
 
   const [indexing, setIndexing] = useState(false);
   const [indexMsg, setIndexMsg] = useState("");
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory | "all">(() =>
+    initialCategory ?? (isSettingsCategory(settings.lastSettingsCategory) ? settings.lastSettingsCategory : "all"));
+  const [settingsSearch, setSettingsSearch] = useState("");
+  const [providerConnected, setProviderConnected] = useState<boolean | null>(null);
 
   const [pendingMemory, setPendingMemory] = useState<MemoryEntry[]>([]);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const previous = document.activeElement;
+    closeRef.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, [onClose]);
 
   const currentModelRate = settings.modelRates?.[settings.model.trim().toLowerCase()];
 
@@ -59,14 +111,15 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
   const refreshPendingMemory = useCallback(async () => {
     try {
       setPendingMemory(await window.moss.memory.reviewList());
-    } catch {
-      setPendingMemory([]);
+    } catch (error) {
+      setStatus(`Memory error: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, []);
 
   useEffect(() => {
     void refreshPendingMemory();
   }, [refreshPendingMemory]);
+
 
   const refreshMcp = useCallback(async () => {
     try {
@@ -76,9 +129,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
       ]);
       setMcp(statuses);
       setConfigs(servers);
-    } catch {
-      setMcp([]);
-      setConfigs([]);
+    } catch (error) {
+      setStatus(`MCP error: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, []);
 
@@ -95,7 +147,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
       .then((s) => {
         if (s.indexed) setIndexMsg(`Indexed ${s.files} files, ${s.chunks} chunks${s.model ? ` (${s.model})` : ""}.`);
       })
-      .catch(() => {});
+      .catch((error) => {
+        setIndexMsg(`Index status error: ${error instanceof Error ? error.message : String(error)}`);
+      });
   }, [settings.workspaceRoot]);
 
   async function runIndex(): Promise<void> {
@@ -126,8 +180,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
       const list = await window.moss.provider.listModels(toProviderConfig(settings));
       modelsStore.set(list);
       if (list.length > 0 && !settings.model) updateSettings({ model: list[0] });
+      setProviderConnected(true);
       setStatus(`${list.length} models`);
     } catch (err) {
+      setProviderConnected(false);
       setStatus(`Models error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -162,6 +218,21 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
     try {
       setMcp(await window.moss.mcp.setEnabled(id, enabled));
       setStatus(enabled ? `Enabled ${id}` : `Disabled ${id}`);
+    } catch {
+      setStatus(`Could not update ${id}`);
+      void refreshMcp();
+    } finally {
+      setPendingId(null);
+    }
+  }
+
+  async function trustMcp(id: string, trusted: boolean): Promise<void> {
+    setPendingId(id);
+    try {
+      const config = (await window.moss.mcp.servers()).find((server) => server.id === id);
+      if (!config) throw new Error("not configured");
+      setMcp(await window.moss.mcp.update({ ...config, trustAnnotations: trusted }));
+      setStatus(trusted ? `Trusting read-only annotations from ${id}` : `Ignoring read-only annotations from ${id}`);
     } catch {
       setStatus(`Could not update ${id}`);
       void refreshMcp();
@@ -278,18 +349,177 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
     }
   }
 
+  function sectionClass(category: SettingsCategory, keywords: string): string {
+    const query = settingsSearch.trim().toLowerCase();
+    const routeMatches = activeCategory === "all" || activeCategory === category;
+    const searchMatches = !query || `${category} ${keywords}`.toLowerCase().includes(query);
+    return routeMatches && searchMatches ? "space-y-2" : "hidden";
+  }
+
+  const readiness = readinessItems(settings, providerConnected);
+  const visibleCategories = SETTINGS_CATEGORIES.filter((category) => {
+    const query = settingsSearch.trim().toLowerCase();
+    return !query || `${category.label} ${category.keywords}`.toLowerCase().includes(query);
+  });
+
+  async function copyReadinessDiagnostics(): Promise<void> {
+    const diagnostic = {
+      capturedAt: new Date().toISOString(),
+      profile: settings.readinessProfile ?? "custom",
+      provider: PROVIDER_PRESETS[settings.presetIndex]?.id ?? "custom",
+      modelSelected: Boolean(settings.model),
+      workspaceSelected: Boolean(settings.workspaceRoot),
+      checks: readiness.map(({ id, status: readinessStatus, detail }) => ({
+        id,
+        status: readinessStatus,
+        detail: id === "workspace" ? (settings.workspaceRoot ? "Workspace selected." : "No workspace selected.") : detail,
+      })),
+    };
+    try {
+      await window.moss.clipboard.write(JSON.stringify(diagnostic, null, 2));
+      setStatus("Readiness diagnostics copied");
+    } catch (error) {
+      setStatus(`Diagnostics error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-10 flex justify-end bg-black/50">
-      <div className="flex h-full w-[28rem] max-w-full flex-col border-l border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950">
+      <div
+        ref={dialogRef}
+        className="flex h-full w-[28rem] max-w-full flex-col border-l border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-heading"
+        onKeyDown={(event) => {
+          if (event.key !== "Tab") return;
+          const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+          ) ?? [])].filter((element) => element.offsetParent !== null);
+          if (focusable.length === 0) return;
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
+      >
         <header className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 px-4 py-3">
-          <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Settings</h2>
-          <button className="text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100" onClick={onClose}>
+          <h2 id="settings-heading" className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Settings</h2>
+          <button
+            ref={closeRef}
+            type="button"
+            className="text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100"
+            onClick={onClose}
+            aria-label="Close settings"
+            title="Close settings"
+          >
             ✕
           </button>
         </header>
 
+        <div className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
+          <label className="block">
+            <span className="sr-only">Search settings</span>
+            <input
+              type="search"
+              aria-label="Search settings"
+              className="w-full rounded bg-neutral-200 px-3 py-2 text-sm dark:bg-neutral-800"
+              placeholder="Search settings"
+              value={settingsSearch}
+              onChange={(event) => setSettingsSearch(event.target.value)}
+            />
+          </label>
+          <nav className="mt-2 flex gap-1 overflow-x-auto pb-1" aria-label="Settings categories">
+            {visibleCategories.map((category) => (
+              <button
+                key={category.id}
+                type="button"
+                aria-current={activeCategory === category.id ? "page" : undefined}
+                className={`shrink-0 rounded px-2 py-1 text-xs ${
+                  activeCategory === category.id
+                    ? "bg-emerald-700 text-white"
+                    : "bg-neutral-200 text-neutral-600 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
+                }`}
+                onClick={() => {
+                  setActiveCategory(category.id);
+                  updateSettings({ lastSettingsCategory: category.id });
+                }}
+              >
+                {category.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+
         <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-4 py-4 text-sm">
-          <section className="space-y-2">
+          <section className={sectionClass("readiness", "profiles connection diagnostics capability summary")}>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Readiness</h3>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              Choose a safe starting profile, then resolve any items that need attention.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {READINESS_PROFILES.map((profile) => (
+                <button
+                  key={profile.id}
+                  type="button"
+                  aria-pressed={(settings.readinessProfile ?? "custom") === profile.id}
+                  className={`rounded border p-2 text-left ${
+                    (settings.readinessProfile ?? "custom") === profile.id
+                      ? "border-emerald-500 bg-emerald-500/10"
+                      : "border-neutral-200 bg-white hover:border-emerald-500/40 dark:border-neutral-800 dark:bg-neutral-900"
+                  }`}
+                  onClick={() => updateSettings(readinessProfilePatch(profile.id, settings))}
+                >
+                  <span className="block text-xs font-medium">{profile.label}</span>
+                  <span className="block text-[11px] text-neutral-500 dark:text-neutral-400">{profile.description}</span>
+                </button>
+              ))}
+            </div>
+            <div className="space-y-1" aria-label="Readiness summary">
+              {readiness.map((item) => (
+                <div key={item.id} className="flex gap-2 rounded border border-neutral-200 bg-white px-2 py-1.5 dark:border-neutral-800 dark:bg-neutral-900">
+                  <span
+                    className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                      item.status === "ready" ? "bg-emerald-500" : item.status === "attention" ? "bg-amber-500" : "bg-neutral-400"
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-medium">{item.label}</span>
+                    <span className="block text-[11px] text-neutral-500 dark:text-neutral-400">{item.detail}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="rounded bg-neutral-300 px-2 py-1 text-xs hover:bg-neutral-400 dark:bg-neutral-700 dark:hover:bg-neutral-600"
+                onClick={() => void loadModels()}
+              >
+                Test provider connection
+              </button>
+              <button
+                type="button"
+                className="rounded bg-neutral-200 px-2 py-1 text-xs hover:bg-neutral-300 dark:bg-neutral-800 dark:hover:bg-neutral-700"
+                onClick={() => void copyReadinessDiagnostics()}
+              >
+                Copy diagnostics
+              </button>
+            </div>
+          </section>
+          <section className={sectionClass("diagnostics", "local telemetry retention export clear privacy")}>
+            <ProductDiagnosticsSettings onStatus={setStatus} />
+          </section>
+
+          <AccessibilitySettings className={sectionClass("general", "accessibility text size font contrast notifications keyboard shortcuts guide")} />
+
+          <section className={sectionClass("general", "appearance theme avatar")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Appearance</h3>
             <div className="flex items-center gap-3 rounded border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900">
               <MossFace className="h-14 w-14" label="Current Moss avatar" />
@@ -342,7 +572,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </label>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("models", "provider model api key preset base url")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Provider</h3>
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Preset</span>
@@ -415,7 +645,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </label>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("tools", "tools approval rounds")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Tools</h3>
             <label className="flex items-center gap-2">
               <input
@@ -450,6 +680,25 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
                 })}
               />
             </label>
+            <label className="flex items-center justify-between gap-2">
+              <span>Stop after rounds without progress (0 = never)</span>
+              <input
+                type="number"
+                min={0}
+                max={20}
+                aria-label="Stop after rounds without progress"
+                className="w-20 rounded bg-neutral-200 px-2 py-1 dark:bg-neutral-800"
+                value={settings.stallLimit ?? 5}
+                disabled={!settings.enableTools}
+                onChange={(e) => updateSettings({ stallLimit: Math.min(20, Math.max(0, Math.floor(Number(e.target.value) || 0))) })}
+              />
+            </label>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              A round makes progress when it produces a new result or file change. Repeated calls, failures, and edits that undo
+              earlier edits do not count. Moss warns the model after 3 stalled rounds and stops to ask you at this limit.
+              Once web, MCP, browser, or desktop content enters a turn, every later change needs your approval, even with
+              auto-approve on.
+            </p>
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
               Read-only tools always run automatically. When auto-approve is off, tools that write
               files or run commands pause for your approval before each call. Turn it on to skip those
@@ -458,70 +707,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </p>
           </section>
 
-          <section className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Browser automation</h3>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                className="accent-emerald-500"
-                checked={settings.browserEnabled === true}
-                disabled={!settings.enableTools}
-                onChange={(e) => updateSettings({ browserEnabled: e.target.checked })}
-              />
-              Enable isolated browser sessions
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Allowed domains</span>
-              <textarea
-                className="h-20 w-full resize-y rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 font-mono text-xs"
-                placeholder={"example.com\ndocs.example.com"}
-                value={settings.browserAllowedDomains ?? ""}
-                onChange={(e) => updateSettings({ browserAllowedDomains: e.target.value })}
-              />
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                className="accent-emerald-500"
-                checked={settings.browserHeadless !== false}
-                onChange={(e) => updateSettings({ browserHeadless: e.target.checked })}
-              />
-              Run browser headlessly
-            </label>
-          </section>
+          <AutomationSettings className={sectionClass("automation", "browser desktop domains processes windows headless")} />
 
-          <section className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Windows desktop automation</h3>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                className="accent-emerald-500"
-                checked={settings.desktopEnabled === true}
-                disabled={!settings.enableTools}
-                onChange={(e) => updateSettings({ desktopEnabled: e.target.checked })}
-              />
-              Enable semantic UI Automation
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Allowed process names</span>
-              <textarea
-                className="h-16 w-full resize-y rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 font-mono text-xs"
-                placeholder={"notepad.exe\nCode.exe"}
-                value={settings.desktopAllowedProcesses ?? ""}
-                onChange={(e) => updateSettings({ desktopAllowedProcesses: e.target.value })}
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Allowed exact window titles</span>
-              <textarea
-                className="h-16 w-full resize-y rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 font-mono text-xs"
-                value={settings.desktopAllowedWindows ?? ""}
-                onChange={(e) => updateSettings({ desktopAllowedWindows: e.target.value })}
-              />
-            </label>
-          </section>
-
-          <section className="space-y-2">
+          <section className={sectionClass("general", "custom instructions prompt")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Custom instructions</h3>
             <textarea
               className="h-24 w-full resize-y rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
@@ -541,7 +729,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </p>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("general", "personality tone adaptive")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Personality</h3>
             <select
               className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
@@ -574,7 +762,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </p>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("services", "speech transcription whisper")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Speech-to-text</h3>
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Transcription base URL (optional)</span>
@@ -601,7 +789,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </p>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("services", "email resend sender")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Email</h3>
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Resend API key</span>
@@ -628,9 +816,11 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </p>
           </section>
 
-          <JevSettings />
+          <div className={sectionClass("services", "typesafe jev evaluation")}>
+            <JevSettings />
+          </div>
 
-          <section className="space-y-2">
+          <section className={sectionClass("knowledge", "memory review gated")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Memory review</h3>
             <label className="flex items-center gap-2">
               <input
@@ -656,7 +846,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
                       <span className="text-neutral-500">[{m.category}]</span> {m.fact}
                     </span>
                     <button
-                      className="rounded bg-emerald-600 px-2 py-0.5 text-white"
+                      className="rounded bg-emerald-700 px-2 py-0.5 text-white"
                       onClick={async () => {
                         await window.moss.memory.reviewApprove(m.id);
                         void refreshPendingMemory();
@@ -682,7 +872,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             )}
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("safety", "external content injection untrusted")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">External content</h3>
             <label className="flex items-center gap-2">
               <span className="whitespace-nowrap">Injection scanning</span>
@@ -701,9 +891,26 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
               and keeps the content; block withholds high-confidence hits from the model. Content is
               always wrapped as untrusted regardless of this setting.
             </p>
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-emerald-600"
+                checked={settings.untrustedContentGate !== false}
+                onChange={(e) => updateSettings({ untrustedContentGate: e.target.checked })}
+              />
+              <span>
+                Ask before changes that follow web, MCP, or browser content
+                <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+                  On by default. Once untrusted content enters a turn, every later change asks for approval, even with
+                  auto-approve on, because a page or tool result could contain instructions written by someone else. Turn
+                  this off to let auto-approve cover those changes too. Destructive commands and irreversible actions
+                  still always ask.
+                </span>
+              </span>
+            </label>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("general", "confidence indicator")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Confidence</h3>
             <label className="flex items-center gap-2">
               <input
@@ -720,7 +927,11 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </p>
           </section>
 
-          <section className="space-y-2">
+          <ModelProfileSettings className={sectionClass("models", "capability probe profile benchmark tool calling context coherence")} />
+
+          <RoutingSettings className={sectionClass("models", "routing escalation fast model provider cloud constrained output repair adaptive scaffolding trace replay record")} />
+
+          <section className={sectionClass("models", "budget daily cost cap")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Budget</h3>
             <label className="flex items-center gap-2">
               <span className="whitespace-nowrap">Daily cap (USD)</span>
@@ -740,7 +951,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </p>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("tools", "verification commands tests")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Verification</h3>
             <label className="flex items-center gap-2">
               <input
@@ -765,7 +976,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </p>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("knowledge", "codebase index embeddings")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Codebase index</h3>
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Embeddings base URL (optional)</span>
@@ -787,7 +998,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </label>
             <button
               type="button"
-              className="rounded bg-emerald-600 px-3 py-1 text-white disabled:opacity-50"
+              className="rounded bg-emerald-700 px-3 py-1 text-white disabled:opacity-50"
               disabled={indexing || !settings.workspaceRoot}
               onClick={() => void runIndex()}
             >
@@ -802,7 +1013,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </p>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("general", "context window compaction")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Context window</h3>
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Token limit (optional)</span>
@@ -823,7 +1034,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </p>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("models", "model pricing rates tokens")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Model pricing</h3>
             {settings.model ? (
               <>
@@ -874,7 +1085,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             )}
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("knowledge", "mcp servers tools protocol trust annotations read-only")}>
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">MCP servers</h3>
               <button className="text-xs text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100" onClick={() => void refreshMcp()}>
@@ -897,6 +1108,23 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
                       <span className="font-mono text-xs">{s.id}</span>
                     </label>
                     <div className="flex items-center gap-2">
+                      {s.connected ? (
+                        <label
+                          className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300"
+                          title={s.readOnlyTools && s.readOnlyTools.length > 0
+                            ? `Declared read-only: ${s.readOnlyTools.join(", ")}. Trusted read-only tools run without a prompt.`
+                            : "This server declares no read-only tools."}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={s.trustAnnotations === true}
+                            disabled={pendingId === s.id}
+                            aria-label={`Trust read-only annotations from ${s.id}`}
+                            onChange={(e) => void trustMcp(s.id, e.target.checked)}
+                          />
+                          trust read-only ({s.readOnlyTools?.length ?? 0})
+                        </label>
+                      ) : null}
                       <span
                         className={`text-xs ${s.connected ? "text-green-400" : "text-neutral-500 dark:text-neutral-400"}`}
                         title={s.connected && s.tools && s.tools.length > 0 ? s.tools.join(", ") : undefined}
@@ -1020,7 +1248,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
             </button>
           </section>
 
-          <section className="space-y-2">
+          <section className={sectionClass("tools", "workspace folder root")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Workspace</h3>
             <div className="flex items-center gap-2">
               <span className="flex-1 truncate text-xs text-neutral-600 dark:text-neutral-400">
@@ -1036,9 +1264,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }): React.React
           </section>
         </div>
 
-        {status ? (
-          <footer className="border-t border-neutral-200 dark:border-neutral-800 px-4 py-2 text-xs text-neutral-600 dark:text-neutral-400">{status}</footer>
-        ) : null}
+        <LiveStatus
+          message={status}
+          className="border-t border-neutral-200 px-4 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:text-neutral-400"
+        />
       </div>
     </div>
   );

@@ -77,7 +77,8 @@ export function slugifySkillName(raw: string): string {
 
 /** Enumerate enabled skills as a system-prompt index. Returns "" when none. */
 export function formatSkillsForSystemPrompt(skills: readonly Skill[]): string {
-  const enabled = skills.filter((s) => s.enabled && s.modelInvocable !== false);
+  // Demoted skills failed under verification and stay out of the index until the user restores them.
+  const enabled = skills.filter((s) => s.enabled && s.modelInvocable !== false && s.trust?.status !== "demoted");
   if (enabled.length === 0) return "";
   const lines = [
     "## Skills",
@@ -85,6 +86,11 @@ export function formatSkillsForSystemPrompt(skills: readonly Skill[]): string {
     "The following skills are available. When a request matches one, call the `m_get_skill` tool with its name to load the full instructions before acting.",
     "",
   ];
-  for (const s of enabled) lines.push(`- **${s.name}**: ${s.description}`);
+  for (const s of enabled) {
+    const label = s.trust?.status === "candidate"
+      ? " _(candidate: not yet verified; check its results carefully)_"
+      : s.trust?.stale ? " _(stale: unused for a long time; verify before relying on it)_" : "";
+    lines.push(`- **${s.name}**: ${s.description}${label}`);
+  }
   return lines.join("\n");
 }

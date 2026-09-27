@@ -23,6 +23,14 @@ try {
     page.evaluate((workspaceRoot) => window.moss.mission.authorize({
       objective: "Native authorization fixture; no task will be launched",
       workspaceRoot,
+      acceptanceCriteria: [{
+        id: "fixture",
+        description: "The native authorization fixture remains bounded",
+        mandatory: true,
+        verification: { kind: "file-exists", path: "fixture.txt" },
+      }],
+      constraints: ["Do not launch a task"],
+      assumptions: [],
       policy: {
         authority: "policy-scoped", requestedCapabilities: ["write_file"],
         maxAutoApprovedRisk: "mutating",

@@ -17,12 +17,20 @@ import type {
   MissionAuthorizationRequest,
   MissionCapabilitiesRequest,
   MissionCapabilityDescriptor,
+  ModelCapabilityProfile,
+  ModelProbeProgress,
+  ModelProbeRequest,
   ProviderConfig,
+  ProviderKind,
+  ProductDiagnosticEntry,
+  ProductDiagnosticsConfig,
   Skill,
   SkillCreateRequest,
   SkillImportResult,
   SkillUpdateRequest,
   SkillRenameRequest,
+  SkillTrust,
+  SkillTrustStatus,
   TaskArtifactContent,
   TaskHistoryEntry,
   TaskSnapshot,
@@ -30,6 +38,11 @@ import type {
   ToolApprovalDecision,
   TranscribeRequest,
   TranscribeResult,
+  ReplayReport,
+  TraceReplayRequest,
+  TurnTraceSummary,
+  VerificationSuggestion,
+  WorkspaceFilePreview,
 } from "@common/types";
 
 declare global {
@@ -37,8 +50,8 @@ declare global {
    *  mcp.servers(). A structural subset of the backend McpServerConfig: only the
    *  fields the form reads or writes (env/cwd/headers stay file-edited). */
   type MossMcpServerInput =
-    | { type: "stdio"; id: string; command: string; args?: string[]; enabled?: boolean }
-    | { type: "http"; id: string; url: string; enabled?: boolean };
+    | { type: "stdio"; id: string; command: string; args?: string[]; enabled?: boolean; trustAnnotations?: boolean }
+    | { type: "http"; id: string; url: string; enabled?: boolean; trustAnnotations?: boolean };
 
 
   interface Window {
@@ -63,6 +76,12 @@ declare global {
         resume: (id: string) => Promise<TaskSnapshot>;
         cancel: (id: string) => Promise<TaskSnapshot>;
       };
+      diagnostics: {
+        list: () => Promise<{ config: ProductDiagnosticsConfig; entries: ProductDiagnosticEntry[] }>;
+        configure: (config: ProductDiagnosticsConfig) => Promise<ProductDiagnosticsConfig>;
+        clear: () => Promise<void>;
+        record: (kind: "renderer-startup") => Promise<void>;
+      };
       mission: {
         authorize: (request: MissionAuthorizationRequest) => Promise<MissionAuthorization | null>;
         capabilities: (request: MissionCapabilitiesRequest) => Promise<MissionCapabilityDescriptor[]>;
@@ -74,6 +93,26 @@ declare global {
       };
       workspace: {
         pick: () => Promise<string | null>;
+        preview?: (root: string, path: string) => Promise<WorkspaceFilePreview>;
+        suggestVerification?: (root: string) => Promise<VerificationSuggestion[]>;
+      };
+      window?: {
+        focus: () => Promise<void>;
+      };
+      model?: {
+        probe: (request: ModelProbeRequest) => Promise<ModelCapabilityProfile>;
+        cancelProbe: () => Promise<void>;
+        profile: (kind: ProviderKind, baseUrl: string, model: string) => Promise<ModelCapabilityProfile | null>;
+        profiles: () => Promise<ModelCapabilityProfile[]>;
+        onProbeProgress: (handler: (progress: ModelProbeProgress) => void) => () => void;
+      };
+      traces?: {
+        list: () => Promise<{ count: number; traces: TurnTraceSummary[]; dir: string }>;
+        clear: () => Promise<void>;
+        openFolder: () => Promise<string | null>;
+        replay: (request: TraceReplayRequest) => Promise<ReplayReport>;
+        cancelReplay: () => Promise<void>;
+        onReplayProgress: (handler: (progress: { completed: number; total: number }) => void) => () => void;
       };
       memory: {
         list: () => Promise<MemoryEntry[]>;
@@ -92,6 +131,9 @@ declare global {
         update: (request: SkillUpdateRequest) => Promise<Skill | null>;
         rename: (request: SkillRenameRequest) => Promise<Skill | null>;
         importFolder: () => Promise<SkillImportResult | null>;
+        setTrust?: (id: string, status: SkillTrustStatus) => Promise<SkillTrust | null>;
+        history?: (id: string) => Promise<Array<{ version: number; savedAt: string; description: string; instructions: string }>>;
+        rollback?: (id: string, version: number) => Promise<Skill | null>;
       };
       mcp: {
         status: () => Promise<McpServerStatus[]>;

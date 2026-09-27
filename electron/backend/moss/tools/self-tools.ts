@@ -9,6 +9,7 @@ import { memoryReviewQueue } from "../governed/review-queue";
 import { memoryStore } from "../memory/memory-store";
 import { slugifySkillName } from "../skills/skill-parse";
 import { skillsStore } from "../skills/skills-store";
+import { skillLedger } from "../skills/skill-ledger";
 import type { Tool } from "./types";
 
 const CATEGORIES: readonly MemoryCategory[] = ["preference", "fact", "decision", "context"];
@@ -113,6 +114,10 @@ export const getSkillTool: Tool = {
     const requested = String(args.name ?? "");
     const skill = skillsStore.get(requested);
     if (!skill || !skill.enabled) return { ok: false, content: `No enabled skill named '${requested}'.` };
+    const trust = skillLedger.sync(skillsStore.list()).find((item) => item.id === skill.id)?.trust;
+    if (trust?.status === "demoted") {
+      return { ok: false, content: `Skill '${skill.name}' was demoted (${trust.statusReason}). The user can restore it in the Library; do not rely on it until then.` };
+    }
     const resources = skillsStore.listResources(skill.id);
     const resourceNote = resources.length > 0
       ? `\n\nSupporting resources (load with m_get_skill_resource):\n${resources.map((path) => `- ${path}`).join("\n")}`
@@ -203,8 +208,11 @@ export const updateSkillTool: Tool = {
     // preserved across the update.
     const description = hasDesc ? String(args.description) : existing.description;
     const instructions = hasInstr ? String(args.instructions) : existing.instructions;
+    // An agent rewrite is a new, unproven version: it returns to candidate status.
+    skillLedger.noteEdit(existing.id, "agent");
     skillsStore.create(existing.name, description, instructions, existing.createdBy);
-    return { ok: true, content: `Updated skill '${existing.name}'.` };
+    skillLedger.sync(skillsStore.list());
+    return { ok: true, content: `Updated skill '${existing.name}'. The new version is a candidate until it passes verification again.` };
   },
 };
 

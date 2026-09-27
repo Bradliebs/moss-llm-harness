@@ -8,10 +8,11 @@ import type {
 import { runTurn, type CompletionContext } from "../agent-runner";
 import type { CheckpointRecorder } from "../checkpoint/checkpoint-store";
 import type { ChatProvider } from "../providers/types";
+import type { WorkingStateStore } from "../governed/working-state";
 import type { Tool } from "../tools";
 import type { MissionWorker, MissionWorkerExecution, MissionWorkOrder } from "./mission-controller";
 import type { ModelRate } from "../../../../common/pricing";
-import { MissionBudgetProvider, missionDeadline } from "./mission-budget";
+import { MissionBudgetProvider, missionDeadline, type ModelResolver } from "./mission-budget";
 
 const MAX_ARTIFACT_SUMMARY_CHARS = 500;
 
@@ -28,6 +29,12 @@ export interface RunTurnMissionWorkerOptions {
   verify?: VerifyConfig;
   maxRounds?: number;
   contextLimit?: number;
+  /** conversation working state rendered into each step and enforced for protected paths */
+  workingState?: WorkingStateStore;
+  stallLimit?: number;
+  provenanceGate?: boolean;
+  /** maps a requested model to the routed model so each step is priced at the model that ran */
+  resolveModel?: ModelResolver;
 }
 
 export class RunTurnMissionWorker implements MissionWorker {
@@ -65,7 +72,7 @@ export class RunTurnMissionWorker implements MissionWorker {
       ...(order.step.mission?.budget.maxCostUsd !== undefined || order.remainingTaskBudget.maxCostUsd !== undefined
         ? { maxCostUsd: boundedLimit(order.step.mission?.budget.maxCostUsd, order.remainingTaskBudget.maxCostUsd) }
         : {}),
-    }, this.options.modelRates);
+    }, this.options.modelRates, this.options.resolveModel);
     let actions = 0;
     let inputTokens = 0;
     let outputTokens = 0;
@@ -115,6 +122,9 @@ export class RunTurnMissionWorker implements MissionWorker {
       ...(this.options.checkpoint ? { checkpoint: this.options.checkpoint } : {}),
       ...(this.options.maxRounds ? { maxRounds: this.options.maxRounds } : {}),
       ...(this.options.contextLimit ? { contextLimit: this.options.contextLimit } : {}),
+      ...(this.options.workingState ? { workingState: this.options.workingState } : {}),
+      ...(this.options.stallLimit !== undefined ? { stallLimit: this.options.stallLimit } : {}),
+      ...(this.options.provenanceGate === false ? { provenanceGate: false } : {}),
       ...(Number.isFinite(outputTokenLimit) ? { maxOutputTokens: Math.max(1, outputTokenLimit) } : {}),
     });
 

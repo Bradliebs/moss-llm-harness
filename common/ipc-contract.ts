@@ -26,6 +26,10 @@ export const IPC = {
   taskPause: "moss:task:pause",
   taskResume: "moss:task:resume",
   taskCancel: "moss:task:cancel",
+  diagnosticsList: "moss:diagnostics:list",
+  diagnosticsConfigure: "moss:diagnostics:configure",
+  diagnosticsClear: "moss:diagnostics:clear",
+  diagnosticsRecord: "moss:diagnostics:record",
   /** renderer -> main (invoke): native-confirm elevated mission authority */
   missionAuthorize: "moss:mission:authorize",
   /** renderer -> main (invoke): list currently eligible mission capabilities */
@@ -37,6 +41,34 @@ export const IPC = {
   providerCredentialSet: "moss:provider:credentialSet",
   /** renderer -> main (invoke): open a folder picker, returns path or null */
   workspacePick: "moss:workspace:pick",
+  /** renderer -> main (invoke): read a workspace file's current text for an approval diff */
+  workspacePreview: "moss:workspace:preview",
+  /** renderer -> main (invoke): infer advisory verification commands from project manifests */
+  workspaceSuggestVerification: "moss:workspace:suggestVerification",
+  /** renderer -> main (invoke): bring the application window to the foreground */
+  windowFocus: "moss:window:focus",
+  /** renderer -> main (invoke): run the capability probe suite against a model; returns ModelCapabilityProfile */
+  modelProbeRun: "moss:model:probeRun",
+  /** renderer -> main (invoke): cancel the running capability probe */
+  modelProbeCancel: "moss:model:probeCancel",
+  /** main -> renderer: ModelProbeProgress while a probe runs */
+  modelProbeProgress: "moss:model:probeProgress",
+  /** renderer -> main (invoke): stored profile for a provider kind, endpoint, and model, or null */
+  modelProfileGet: "moss:model:profileGet",
+  /** renderer -> main (invoke): every stored capability profile, newest first */
+  modelProfileList: "moss:model:profileList",
+  /** renderer -> main (invoke): recorded turn trace count, recent summaries, and folder */
+  tracesList: "moss:traces:list",
+  /** renderer -> main (invoke): delete every recorded turn trace */
+  tracesClear: "moss:traces:clear",
+  /** renderer -> main (invoke): open the trace folder in the OS file manager */
+  tracesOpenFolder: "moss:traces:openFolder",
+  /** renderer -> main (invoke): replay a recorded trace against a candidate model; returns ReplayReport */
+  traceReplayRun: "moss:traces:replayRun",
+  /** renderer -> main (invoke): cancel the running replay */
+  traceReplayCancel: "moss:traces:replayCancel",
+  /** main -> renderer: { completed, total } while a replay runs */
+  traceReplayProgress: "moss:traces:replayProgress",
 
   /** renderer -> main (invoke): memory CRUD */
   memoryList: "moss:memory:list",
@@ -56,6 +88,12 @@ export const IPC = {
   skillUpdate: "moss:skills:update",
   skillRename: "moss:skills:rename",
   skillImport: "moss:skills:import",
+  /** renderer -> main (invoke): set a skill's earned-trust status (trusted, candidate, demoted) */
+  skillSetTrust: "moss:skills:setTrust",
+  /** renderer -> main (invoke): earlier versions of a skill, newest first */
+  skillHistory: "moss:skills:history",
+  /** renderer -> main (invoke): restore a skill to an earlier version */
+  skillRollback: "moss:skills:rollback",
 
   /** renderer -> main (invoke): connected/failed status of MCP servers */
   mcpStatus: "moss:mcp:status",

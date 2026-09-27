@@ -88,8 +88,9 @@ export class OpenAiCompatibleProvider implements ChatProvider {
   ) {}
 
   async *streamChat(req: ChatRequest, signal: AbortSignal): AsyncIterable<ProviderStreamEvent> {
+    // A response schema replaces native tools; servers may reject both together.
     const tools =
-      req.tools && req.tools.length > 0
+      !req.responseSchema && req.tools && req.tools.length > 0
         ? req.tools.map((t) => ({
             type: "function",
             function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -108,6 +109,8 @@ export class OpenAiCompatibleProvider implements ChatProvider {
         stream: true,
         stream_options: { include_usage: true },
         ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+        ...(req.responseSchema ? { response_format: { type: "json_schema", json_schema: { name: "moss_step", schema: req.responseSchema } } } : {}),
         ...(this.options.reasoningEffort !== undefined ? { reasoning_effort: this.options.reasoningEffort } : {}),
         ...(tools ? { tools } : {}),
       }),

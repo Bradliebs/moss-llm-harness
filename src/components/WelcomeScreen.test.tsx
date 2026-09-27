@@ -36,4 +36,22 @@ describe("WelcomeScreen", () => {
     fireEvent.click(screen.getByText("Open Settings"));
     expect(onOpenSettings).toHaveBeenCalled();
   });
+
+  it("summarizes capability readiness and opens its detailed settings route", () => {
+    const onOpenSettings = vi.fn();
+    render(
+      <WelcomeScreen
+        onPick={() => {}}
+        onOpenSettings={onOpenSettings}
+        readiness={[
+          { id: "provider", label: "Provider and model", detail: "Connected", status: "ready" },
+          { id: "pricing", label: "Model pricing", detail: "Rate unknown", status: "attention" },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("region", { name: "Capability readiness" }).textContent).toContain("1 to review");
+    fireEvent.click(screen.getByRole("button", { name: "Review readiness" }));
+    expect(onOpenSettings).toHaveBeenCalled();
+  });
 });

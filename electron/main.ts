@@ -14,10 +14,12 @@ import { createLogger } from "../common/logger";
 import { mcpManager } from "./backend/moss/mcp/mcp-manager";
 import { memoryStore } from "./backend/moss/memory/memory-store";
 import { taskEngine } from "./backend/moss/task/task-engine";
+import { productDiagnostics } from "./backend/moss/product-diagnostics";
 import { registerChatIpc } from "./ipc/chat-ipc";
 
 const log = createLogger("Main");
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+const processStartedAt = Date.now();
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -126,6 +128,9 @@ function createWindow(): void {
     fileLog(detail);
     showLoadError(detail);
   });
+  mainWindow.webContents.once("did-finish-load", () => {
+    void productDiagnostics.record("renderer-startup", { durationMs: Date.now() - processStartedAt });
+  });
 
   if (devServerUrl) {
     void mainWindow.loadURL(devServerUrl);
@@ -145,6 +150,14 @@ app
   .whenReady()
   .then(() => {
     fileLog(`app ready (packaged=${app.isPackaged}, appPath=${app.getAppPath()})`);
+    // Windows attributes toast notifications to this id; it must match appId.
+    if (process.platform === "win32") {
+      try {
+        app.setAppUserModelId("com.moss.app");
+      } catch (err) {
+        fileLog(`setAppUserModelId failed: ${fmtError(err)}`);
+      }
+    }
     // Each startup step is isolated: a failure in one must not prevent the
     // window from appearing, otherwise the app fails silently with no UI.
     try {

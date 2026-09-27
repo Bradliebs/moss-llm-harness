@@ -5,12 +5,17 @@
 // guard (path-guard.ts) is a separate, always-on sandbox enforced at execution.
 
 import type { TaskExecutionGrant, ToolRisk } from "../../../common/types";
+import type { UntrustedDerivation } from "./safety/provenance";
 
 export type Permission = "allow" | "ask" | "deny";
 
 const AUTO_ALLOW = new Set<string>([
   // plan only mutates in-memory checklist state, never the filesystem.
   "plan",
+  // working_state edits conversation state; protected paths are enforced by the host.
+  "working_state",
+  // find_tool only changes which tools are offered this turn.
+  "find_tool",
   "read_file",
   "list_dir",
   "search_files",
@@ -170,6 +175,11 @@ export interface PolicyDecision {
    *  for run_command (readonly/mutating/destructive) and for file-mutating or
    *  unknown tools, which always carry the "mutating" tier. */
   risk?: CommandRisk;
+  /** true when auto-approval was withheld because untrusted content entered
+   *  the turn; the approval prompt explains why */
+  provenanceGate?: boolean;
+  /** which rule decided, in plain language, for the approval prompt */
+  rule?: string;
 }
 
 export interface PolicyInput {
@@ -180,7 +190,31 @@ export interface PolicyInput {
   autoApprove: boolean;
   executionGrant?: TaskExecutionGrant;
   stepCapabilities?: readonly string[];
+  /** untrusted content (web, MCP, browser, desktop) has entered this turn */
+  untrusted?: boolean;
+  /** how the arguments relate to that content; absent is treated as derived */
+  untrustedDerivation?: UntrustedDerivation;
+  /** the tool is declared read-only by a source the user trusts */
+  readOnly?: boolean;
+  /** the tool is declared destructive by its source */
+  destructive?: boolean;
 }
+
+/** Tools that only read from the network. After untrusted content they keep
+ *  auto-approval unless their arguments derive from that content. */
+const NETWORK_READ_TOOLS = new Set(["web_search", "fetch_url", "browser_navigate"]);
+
+const GATE_RULE = "Changes after untrusted content always need approval.";
+
+function derivedReason(input: PolicyInput): string | undefined {
+  const derivation = input.untrustedDerivation;
+  if (!derivation) return "Its arguments may derive from untrusted content.";
+  return derivation.kind === "derived" ? derivation.reason : undefined;
+}
+
+/** Allow-listed tools that still write durable state and so must not be
+ *  triggered by untrusted content without a human in the loop. */
+const DURABLE_STATE_TOOLS = new Set(["m_remember", "m_forget"]);
 
 const IRREVERSIBLE_ACTION_PATTERN = /\b(delete|destroy|remove|submit|publish|pay|send|confirm|purchase)\b/i;
 const ALWAYS_PROMPT_TOOLS = new Set(["send_email"]);
@@ -194,9 +228,22 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
   )) {
     return { action: "deny", autoApproved: false };
   }
+  if (input.destructive) {
+    return { action: "prompt", autoApproved: false, risk: "destructive", rule: "The tool's server declares it destructive." };
+  }
+  if (input.readOnly) {
+    const reason = input.untrusted ? derivedReason(input) : undefined;
+    return reason
+      ? { action: "prompt", autoApproved: false, risk: "readonly", provenanceGate: true, rule: reason }
+      : { action: "run", autoApproved: false, risk: "readonly" };
+  }
   const base = classifyTool(input.name);
   if (base === "deny") return { action: "deny", autoApproved: false };
-  if (base === "allow") return { action: "run", autoApproved: false };
+  if (base === "allow") {
+    return input.untrusted && DURABLE_STATE_TOOLS.has(input.name)
+      ? { action: "prompt", autoApproved: false, risk: "mutating", provenanceGate: true, rule: "Saving memory after untrusted content always needs approval." }
+      : { action: "run", autoApproved: false };
+  }
 
   if (input.name === "jev_evaluate") return { action: "prompt", autoApproved: false, risk: "mutating" };
 
@@ -220,14 +267,25 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
     // Destructive commands always prompt, even when auto-approve is on.
     if (risk === "destructive") return { action: "prompt", autoApproved: false, risk };
     // Mutating commands: a mission grant replaces the legacy chat-wide switch.
-    return mayAutoApprove(input, risk)
-      ? { action: "run", autoApproved: true, risk }
-      : { action: "prompt", autoApproved: false, risk };
+    return autoOrPrompt(input, risk);
   }
 
-  return mayAutoApprove(input, "mutating")
-    ? { action: "run", autoApproved: true, risk: "mutating" }
-    : { action: "prompt", autoApproved: false, risk: "mutating" };
+  return autoOrPrompt(input, "mutating");
+}
+
+/** Untrusted content may inform a decision but never authorize a side effect:
+ *  whatever auto-approval would otherwise apply is withheld once it is present. */
+function autoOrPrompt(input: PolicyInput, risk: Exclude<ToolRisk, "destructive">): PolicyDecision {
+  if (!mayAutoApprove(input, risk)) return { action: "prompt", autoApproved: false, risk };
+  if (input.untrusted) {
+    if (NETWORK_READ_TOOLS.has(input.name)) {
+      const reason = derivedReason(input);
+      if (!reason) return { action: "run", autoApproved: true, risk };
+      return { action: "prompt", autoApproved: false, risk, provenanceGate: true, rule: reason };
+    }
+    return { action: "prompt", autoApproved: false, risk, provenanceGate: true, rule: GATE_RULE };
+  }
+  return { action: "run", autoApproved: true, risk };
 }
 
 function mayAutoApprove(input: PolicyInput, risk: Exclude<ToolRisk, "destructive">): boolean {

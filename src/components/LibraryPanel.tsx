@@ -3,6 +3,7 @@
 // Overlay for managing durable memory and skills. Opened from the chat header.
 
 import { useCallback, useEffect, useState } from "react";
+import { SkillTrustControls } from "./SkillTrustControls";
 
 import type { MemoryCategory, MemoryEntry, Skill } from "@common/types";
 
@@ -316,6 +317,7 @@ function SkillsSection(): React.ReactElement {
               ) : (
                 <p className="pl-6 text-xs text-neutral-600 dark:text-neutral-400">{s.description}</p>
               )}
+              <SkillTrustControls skill={s} onChanged={() => void refresh()} />
             </div>
           ))
         )}

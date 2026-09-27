@@ -4,8 +4,9 @@
 // ApprovalBroker per in-flight turn.
 
 import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
 
-import { clipboard, dialog, ipcMain, shell } from "electron";
+import { BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
 
 import { IPC } from "../../common/ipc-contract";
 import type {
@@ -18,14 +19,23 @@ import type {
   MissionCapabilitiesRequest,
   MissionCapabilityDescriptor,
   MissionLaunchPolicy,
+  ModelProbeRequest,
+  ModelRoute,
+  ProviderConfig,
   MossEvent,
+  ProductDiagnosticEntry,
+  ProductDiagnosticKind,
+  ProductDiagnosticsConfig,
+  ProviderKind,
   SkillCreateRequest,
   SkillUpdateRequest,
   SkillRenameRequest,
+  SkillTrustStatus,
   TaskSnapshot,
   TaskBudget,
   TaskSpec,
   ToolApprovalDecision,
+  TraceReplayRequest,
   TranscribeRequest,
   TranscribeResult,
 } from "../../common/types";
@@ -54,12 +64,27 @@ import {
   type McpServerConfig,
 } from "../backend/moss/mcp/mcp-config";
 import { mcpManager } from "../backend/moss/mcp/mcp-manager";
+import { readWorkspacePreview, suggestVerificationCommands } from "../backend/moss/workspace/workspace-insights";
+import { CONTEXT_LEVELS, DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_TIMEOUT_SECONDS, runCapabilityProbes } from "../backend/moss/models/capability-probes";
+import { buildCapabilityProfile } from "../backend/moss/models/capability-profile";
+import { modelProfileStore } from "../backend/moss/models/model-profile-store";
+import { DEFAULT_ESCALATE_AFTER, EscalationMonitor } from "../backend/moss/models/escalation";
+import { isLocalRoute, RoutedProvider, routeDestination, routeToken, type ProviderRoute } from "../backend/moss/models/routed-provider";
+import { StepProtocolProvider } from "../backend/moss/models/step-protocol";
+import { findToolTool, semanticIndex } from "../backend/moss/models/tool-index";
+import { endpointLabel } from "../backend/moss/models/capability-profile";
+import { applyScaffoldingMessages, planScaffolding } from "../backend/moss/models/scaffolding";
+import { RecordingProvider, TraceRecorder, traceStore } from "../backend/moss/models/trace-recorder";
+import { replayTrace } from "../backend/moss/models/trace-replay";
+import { skillLedger, type SkillOutcome } from "../backend/moss/skills/skill-ledger";
+import { normalizeWorkingState, WorkingStateStore } from "../backend/moss/governed/working-state";
 import { RunJournal } from "../backend/moss/learning/run-journal";
 import { createRetrospective } from "../backend/moss/learning/retrospective";
-import { LessonStore } from "../backend/moss/learning/lesson-store";
+import { LessonStore, renderLessons } from "../backend/moss/learning/lesson-store";
 import { memoryStore } from "../backend/moss/memory/memory-store";
 import { memoryReviewQueue } from "../backend/moss/governed/review-queue";
 import { providerCredentials } from "../backend/moss/provider-credentials";
+import { productDiagnostics } from "../backend/moss/product-diagnostics";
 import { createProvider } from "../backend/moss/providers";
 import { skillsStore } from "../backend/moss/skills/skills-store";
 import { transcribeAudio } from "../backend/moss/stt";
@@ -70,7 +95,7 @@ import { MissionController, remainingBudget } from "../backend/moss/task/mission
 import { MissionPlanner } from "../backend/moss/task/mission-planner";
 import { taskArtifactStore } from "../backend/moss/task/task-artifact-store";
 import { taskEngine } from "../backend/moss/task/task-engine";
-import { WorkspaceMissionVerifier } from "../backend/moss/task/mission-verifier";
+import { buildMissionVerificationChecks, WorkspaceMissionVerifier } from "../backend/moss/task/mission-verifier";
 import { RunTurnMissionWorker } from "../backend/moss/task/mission-worker";
 import { buildTaskProgressPacket, renderTaskProgressPacket, selectDependencyReadyStep } from "../backend/moss/task/progress-packet";
 
@@ -105,6 +130,8 @@ interface Inflight {
   broker: ApprovalBroker;
   taskId?: string;
   send: (event: MossEvent) => void;
+  approvalStartedAt: Map<string, number>;
+  abortRequestedAt?: number;
 }
 
 function approvalResponse(decision: Pick<ToolApprovalDecision, "approved" | "comment">) {
@@ -117,6 +144,7 @@ const runJournal = new RunJournal();
 const lessonStore = new LessonStore();
 const verificationRegistry = new VerificationRegistry();
 const missionAuthority = new MissionAuthorityBroker();
+const processStartedAt = Date.now();
 let bundledCapabilityTools: ReturnType<typeof createBundledCapabilityTools> | undefined;
 let capabilityHistoryCache = new Map<string, { successCount: number; failureCount: number }>();
 
@@ -129,6 +157,7 @@ export function registerChatIpc(): void {
   ipcMain.on(IPC.chatAbort, (_event, turnId: string) => {
     const entry = inflight.get(turnId);
     if (entry) {
+      entry.abortRequestedAt = Date.now();
       entry.controller.abort();
       entry.broker.denyAll("Turn aborted");
     }
@@ -140,6 +169,8 @@ export function registerChatIpc(): void {
     const detail = [
       `Objective: ${request.objective.trim().slice(0, 200)}`,
       `Workspace: ${request.workspaceRoot?.trim() || "No filesystem scope"}`,
+      `Criteria: ${request.acceptanceCriteria.map((criterion) => criterion.description.trim()).join("; ")}`,
+      `Verification: ${request.acceptanceCriteria.map((criterion) => criterion.verification?.kind ?? "none").join(", ")}`,
       `Capabilities: ${request.policy.requestedCapabilities.join(", ") || "None"}`,
       `Automatic risk ceiling: ${request.policy.maxAutoApprovedRisk}`,
       `Budget: ${budget?.maxActions ?? "default"} actions, ${budget?.maxTokens ?? "default"} tokens, $${budget?.maxCostUsd ?? "default"}, ${budget?.maxDurationMs ?? "default"} ms`,
@@ -164,6 +195,13 @@ export function registerChatIpc(): void {
   ipcMain.on(IPC.toolApprove, (_event, decision: ToolApprovalDecision) => {
     const entry = inflight.get(decision.turnId);
     if (!entry) return;
+    const approvalStartedAt = entry.approvalStartedAt.get(decision.callId);
+    entry.approvalStartedAt.delete(decision.callId);
+    void productDiagnostics.record("approval-resolved", {
+      ...(approvalStartedAt ? { durationMs: Date.now() - approvalStartedAt } : {}),
+      mission: Boolean(entry.taskId),
+      outcome: decision.approved ? "approved" : "denied",
+    });
     if (!entry.taskId) {
       entry.broker.resolve(decision.callId, approvalResponse(decision));
       return;
@@ -194,7 +232,16 @@ export function registerChatIpc(): void {
     return { ...reference, content: record.content };
   });
   ipcMain.handle(IPC.taskStart, (_event, id: string) => taskEngine.start(id));
-  ipcMain.handle(IPC.taskPause, (_event, id: string, summary: string) => taskEngine.pause(id, summary));
+  ipcMain.handle(IPC.taskPause, async (_event, id: string, summary: string) => {
+    const active = [...inflight.values()].filter((entry) => entry.taskId === id);
+    for (const entry of active) {
+      entry.controller.abort();
+      entry.broker.denyAll("Task paused");
+    }
+    const task = await taskEngine.pause(id, summary);
+    for (const entry of active) entry.send({ type: "task-state", task });
+    return task;
+  });
   ipcMain.handle(IPC.taskResume, (_event, id: string) => taskEngine.start(id));
   ipcMain.handle(IPC.taskCancel, async (_event, id: string) => {
     const active = [...inflight.values()].filter((entry) => entry.taskId === id);
@@ -205,6 +252,15 @@ export function registerChatIpc(): void {
     const task = await taskEngine.cancel(id);
     for (const entry of active) entry.send({ type: "task-state", task });
     return task;
+  });
+  ipcMain.handle(IPC.diagnosticsList, () => productDiagnostics.list());
+  ipcMain.handle(IPC.diagnosticsConfigure, (_event, config: ProductDiagnosticsConfig) =>
+    productDiagnostics.configure(config),
+  );
+  ipcMain.handle(IPC.diagnosticsClear, () => productDiagnostics.clear());
+  ipcMain.handle(IPC.diagnosticsRecord, (_event, kind: ProductDiagnosticKind) => {
+    if (kind !== "renderer-startup") throw new Error("Unsupported renderer diagnostic");
+    return productDiagnostics.record(kind);
   });
 
   ipcMain.handle(IPC.providerListModels, async (_event, config: ChatStartRequest["config"]) => {
@@ -231,6 +287,98 @@ export function registerChatIpc(): void {
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
   });
+  ipcMain.handle(IPC.workspacePreview, (_event, root: unknown, path: unknown) => {
+    if (typeof root !== "string" || typeof path !== "string") throw new Error("Invalid preview request");
+    return readWorkspacePreview(root, path);
+  });
+  ipcMain.handle(IPC.workspaceSuggestVerification, (_event, root: unknown) =>
+    typeof root === "string" ? suggestVerificationCommands(root) : []);
+  ipcMain.handle(IPC.windowFocus, (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  });
+
+  let activeProbe: AbortController | null = null;
+  ipcMain.handle(IPC.modelProbeRun, async (event, request: ModelProbeRequest) => {
+    const config = request?.config;
+    if (!config || typeof config.model !== "string" || !config.model.trim() || typeof config.baseUrl !== "string") {
+      throw new Error("Choose a provider and model before running the capability probe");
+    }
+    if (activeProbe) throw new Error("A capability probe is already running");
+    const controller = new AbortController();
+    activeProbe = controller;
+    try {
+      const maxContextTokens = Math.min(CONTEXT_LEVELS.at(-1)!, Math.max(CONTEXT_LEVELS[0], Number(request.options?.maxContextTokens) || DEFAULT_MAX_CONTEXT_TOKENS));
+      const startedAt = Date.now();
+      const timeoutSeconds = Math.min(600, Math.max(15, Number(request.options?.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS));
+      const { results, warmupMs } = await runCapabilityProbes(
+        { provider: createProvider(config), model: config.model, signal: controller.signal, timeoutMs: timeoutSeconds * 1_000 },
+        {
+          maxContextTokens,
+          dimensions: request.options?.dimensions,
+          onProgress: (progress) => {
+            if (!event.sender.isDestroyed()) event.sender.send(IPC.modelProbeProgress, progress);
+          },
+        },
+      );
+      const profile = buildCapabilityProfile({
+        providerKind: config.kind,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        results,
+        startedAt,
+        finishedAt: Date.now(),
+        maxContextTested: Math.max(...CONTEXT_LEVELS.filter((level) => level <= maxContextTokens)),
+        warmupMs,
+      });
+      await modelProfileStore.save(profile);
+      return profile;
+    } finally {
+      if (activeProbe === controller) activeProbe = null;
+    }
+  });
+  ipcMain.handle(IPC.modelProbeCancel, () => {
+    activeProbe?.abort();
+  });
+  ipcMain.handle(IPC.modelProfileGet, (_event, kind: ProviderKind, baseUrl: unknown, model: unknown) =>
+    typeof baseUrl === "string" && typeof model === "string" && model ? modelProfileStore.get(kind, baseUrl, model) : null);
+  ipcMain.handle(IPC.modelProfileList, () => modelProfileStore.list());
+
+  ipcMain.handle(IPC.tracesList, async () => ({ count: await traceStore.count(), traces: await traceStore.list(20), dir: traceStore.dir() }));
+  ipcMain.handle(IPC.tracesClear, () => traceStore.clear());
+  ipcMain.handle(IPC.tracesOpenFolder, async () => {
+    const dir = traceStore.dir();
+    await mkdir(dir, { recursive: true });
+    const error = await shell.openPath(dir);
+    return error ? null : dir;
+  });
+  let activeReplay: AbortController | null = null;
+  ipcMain.handle(IPC.traceReplayRun, async (event, request: TraceReplayRequest) => {
+    if (typeof request?.traceId !== "string" || !request.config?.model?.trim()) throw new Error("Choose a trace and a candidate model");
+    if (activeReplay) throw new Error("A replay is already running");
+    const trace = await traceStore.get(request.traceId);
+    if (!trace) throw new Error("Trace not found");
+    const controller = new AbortController();
+    activeReplay = controller;
+    try {
+      const timeoutSeconds = Math.min(600, Math.max(15, Number(request.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS));
+      return await replayTrace(trace, createProvider(request.config), request.config.model, {
+        signal: controller.signal,
+        timeoutMs: timeoutSeconds * 1_000,
+        onProgress: (completed, total) => {
+          if (!event.sender.isDestroyed()) event.sender.send(IPC.traceReplayProgress, { completed, total });
+        },
+      });
+    } finally {
+      if (activeReplay === controller) activeReplay = null;
+    }
+  });
+  ipcMain.handle(IPC.traceReplayCancel, () => {
+    activeReplay?.abort();
+  });
 
   ipcMain.handle(IPC.memoryList, () => memoryStore.list());
   ipcMain.handle(IPC.memoryAdd, (_event, fact: string, category: MemoryCategory) =>
@@ -245,7 +393,19 @@ export function registerChatIpc(): void {
   ipcMain.handle(IPC.memoryReviewApprove, (_event, id: string) => memoryReviewQueue.approve(id));
   ipcMain.handle(IPC.memoryReviewReject, (_event, id: string) => memoryReviewQueue.reject(id));
 
-  ipcMain.handle(IPC.skillsList, () => skillsStore.list());
+  ipcMain.handle(IPC.skillsList, () => skillLedger.sync(skillsStore.list()));
+  ipcMain.handle(IPC.skillSetTrust, (_event, id: unknown, status: unknown) => {
+    if (typeof id !== "string" || !["trusted", "candidate", "demoted"].includes(String(status))) throw new Error("Invalid skill trust request");
+    return skillLedger.setStatus(id, status as SkillTrustStatus);
+  });
+  ipcMain.handle(IPC.skillHistory, (_event, id: unknown) => typeof id === "string" ? skillLedger.history(id) : []);
+  ipcMain.handle(IPC.skillRollback, (_event, id: unknown, version: unknown) => {
+    if (typeof id !== "string" || typeof version !== "number") throw new Error("Invalid skill rollback request");
+    const snapshot = skillLedger.history(id).find((item) => item.version === version);
+    if (!snapshot) throw new Error(`Version ${version} is not available for rollback`);
+    skillLedger.noteEdit(id, "user");
+    return skillsStore.update(id, snapshot.description, snapshot.instructions);
+  });
   ipcMain.handle(IPC.skillCreate, (_event, req: SkillCreateRequest) =>
     skillsStore.create(req.name, req.description, req.instructions),
   );
@@ -253,9 +413,10 @@ export function registerChatIpc(): void {
   ipcMain.handle(IPC.skillToggle, (_event, id: string, enabled: boolean) => {
     skillsStore.setEnabled(id, enabled);
   });
-  ipcMain.handle(IPC.skillUpdate, (_event, req: SkillUpdateRequest) =>
-    skillsStore.update(req.id, req.description, req.instructions),
-  );
+  ipcMain.handle(IPC.skillUpdate, (_event, req: SkillUpdateRequest) => {
+    skillLedger.noteEdit(req.id, "user");
+    return skillsStore.update(req.id, req.description, req.instructions);
+  });
   ipcMain.handle(IPC.skillRename, (_event, req: SkillRenameRequest) =>
     skillsStore.rename(req.id, req.newName),
   );
@@ -325,17 +486,75 @@ export function registerChatIpc(): void {
 }
 
 async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): Promise<void> {
+  const startedAt = Date.now();
+  const mission = Boolean(req.taskSpec || req.taskId);
+  let firstResponseRecorded = false;
+  let lastTaskState: TaskSnapshot["state"] | undefined;
+  void productDiagnostics.record("turn-started", { mission });
   const controller = new AbortController();
   const broker = new ApprovalBroker();
   const disposers = new Set<() => Promise<void>>();
   const durableTaskId = req.taskSpec ? req.taskId ?? req.turnId : undefined;
   let preserveTaskOnAbort = false;
   let rendererUnavailable = false;
+  let recoveringBlocker = false;
+  let recoveringReload = false;
   let pendingDurableApproval: { callId: string; persisted: Promise<TaskSnapshot> } | undefined;
+  let traceRecorder: TraceRecorder | undefined;
+  let routedProvider: RoutedProvider | undefined;
 
   let terminalEvent: Extract<MossEvent, { type: "turn-complete" | "turn-aborted" | "turn-error" }> | undefined;
   const approvalEvents = new Map<string, Extract<MossEvent, { type: "tool-approval-request" }>>();
+  const approvalStartedAt = new Map<string, number>();
+  let observeForEscalation: ((mossEvent: MossEvent) => void) | undefined;
+  const verificationCounts = { passed: 0, failed: 0 };
+  let lastVerificationOk: boolean | undefined;
+  const skillCalls = new Map<string, string>();
+  const usedSkillNames = new Set<string>();
   const send = (mossEvent: MossEvent) => {
+    if (mossEvent.type === "verification") {
+      verificationCounts[mossEvent.ok ? "passed" : "failed"] += 1;
+      lastVerificationOk = mossEvent.ok;
+    }
+    if (mossEvent.type === "tool-call" && mossEvent.name === "m_get_skill") {
+      try {
+        const name = (JSON.parse(mossEvent.arguments || "{}") as { name?: unknown }).name;
+        if (typeof name === "string") skillCalls.set(mossEvent.callId, name);
+      } catch {
+        // Malformed arguments cannot identify a skill.
+      }
+    }
+    if (mossEvent.type === "tool-result" && mossEvent.ok && skillCalls.has(mossEvent.callId)) usedSkillNames.add(skillCalls.get(mossEvent.callId)!);
+    observeForEscalation?.(mossEvent);
+    if (
+      !firstResponseRecorded
+      && ["text-delta", "tool-call", "notice", "task-state"].includes(mossEvent.type)
+    ) {
+      firstResponseRecorded = true;
+      void productDiagnostics.record("first-response", { durationMs: Date.now() - startedAt, mission });
+      void productDiagnostics.record("launch-first-response", { durationMs: Date.now() - processStartedAt, mission });
+    }
+    if (mossEvent.type === "tool-approval-request") {
+      approvalStartedAt.set(mossEvent.callId, Date.now());
+      void productDiagnostics.record("approval-requested", { durationMs: Date.now() - startedAt, mission, approvalRisk: mossEvent.risk });
+    }
+    if (mossEvent.type === "task-state" && mossEvent.task.state !== lastTaskState) {
+      lastTaskState = mossEvent.task.state;
+      if (mossEvent.task.state === "blocked") {
+        void productDiagnostics.record("task-blocked", { durationMs: Date.now() - startedAt, mission, outcome: "blocked" });
+      }
+      if (mossEvent.task.state === "completed") {
+        const mandatory = mossEvent.task.spec.acceptanceCriteria.filter((criterion) => criterion.mandatory);
+        const passed = mandatory.every((criterion) =>
+          mossEvent.task.evidence.some((evidence) => evidence.criterionId === criterion.id && evidence.passed),
+        );
+        void productDiagnostics.record("verification-result", {
+          durationMs: Date.now() - startedAt,
+          mission,
+          outcome: passed ? "passed" : "failed-verification",
+        });
+      }
+    }
     if (mossEvent.type === "turn-complete" || mossEvent.type === "turn-aborted" || mossEvent.type === "turn-error") {
       terminalEvent = mossEvent;
       return;
@@ -345,7 +564,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       event.sender.send(IPC.chatEvent, { turnId: req.turnId, event: mossEvent });
     }
   };
-  const inflightEntry = { controller, broker, send, ...(durableTaskId ? { taskId: durableTaskId } : {}) };
+  const inflightEntry: Inflight = { controller, broker, send, approvalStartedAt, ...(durableTaskId ? { taskId: durableTaskId } : {}) };
   inflight.set(req.turnId, inflightEntry);
   const handleRendererDestroyed = () => {
     const entry = inflight.get(req.turnId);
@@ -360,6 +579,11 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         : Promise.resolve();
       void persisted
         .then(() => taskEngine.interruptApproval(entry.taskId!, callId, "Renderer closed before the approval was completed"))
+        .then(() => productDiagnostics.record("task-blocked", {
+          durationMs: Date.now() - startedAt,
+          mission: true,
+          outcome: "blocked",
+        }))
         .catch(() => undefined)
         .finally(() => entry.broker.denyAll("Renderer closed before the approval was completed"));
     } else {
@@ -374,13 +598,80 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
   event.sender.on("did-start-navigation", handleRendererNavigation);
 
   try {
-    const baseProvider = createProvider(req.config);
-    // Attach the daily-budget guard only when the user set a positive cap, so
-    // the default path is the bare provider with no behavior change.
-    const provider =
-      req.dailyBudgetUsd && req.dailyBudgetUsd > 0
-        ? new BudgetEnforcingProvider(baseProvider, req.dailyBudgetUsd, req.modelRates)
-        : baseProvider;
+    traceRecorder = req.recordTrace
+      ? new TraceRecorder({ id: req.turnId, providerKind: req.config.kind, baseUrl: req.config.baseUrl, model: req.config.model })
+      : undefined;
+    // Each route gets its own provider stack: base provider, optional constrained
+    // step protocol, daily budget, and trace recording, so every layer sees the
+    // model and endpoint that actually serve the request.
+    const buildRoute = async (key: string, config: ProviderConfig): Promise<ProviderRoute> => {
+      // "auto" follows the measured profile, so it is part of adaptive scaffolding.
+      const requested = req.constrainedOutput?.[config.model] ?? "auto";
+      const mode = requested === "auto" && req.adaptiveScaffolding === false ? "never" : requested;
+      const profile = mode === "auto" && config.kind === "openai-compatible"
+        ? await modelProfileStore.get(config.kind, config.baseUrl, config.model).catch(() => null)
+        : null;
+      const constrained = config.kind === "openai-compatible"
+        && (mode === "always" || (mode === "auto" && (profile?.tier === "limited" || profile?.tier === "unreliable")));
+      const base = createProvider(config);
+      const stepped = constrained ? new StepProtocolProvider(base) : base;
+      const budgeted = req.dailyBudgetUsd && req.dailyBudgetUsd > 0
+        ? new BudgetEnforcingProvider(stepped, req.dailyBudgetUsd, req.modelRates)
+        : stepped;
+      const recorded = traceRecorder
+        ? new RecordingProvider(budgeted, traceRecorder, Date.now, { providerKind: config.kind, endpoint: config.baseUrl, constrained })
+        : budgeted;
+      return {
+        key,
+        provider: recorded,
+        model: config.model,
+        providerKind: config.kind,
+        endpoint: config.baseUrl,
+        local: isLocalRoute(config.baseUrl, config.model),
+        constrained,
+      };
+    };
+    const routeConfig = (route: ModelRoute | undefined, sameConnectionModel: string | undefined): ProviderConfig | undefined => {
+      if (route?.model?.trim() && route.baseUrl?.trim()) {
+        const sameConnection = route.kind === req.config.kind && endpointLabel(route.baseUrl).toLowerCase() === endpointLabel(req.config.baseUrl).toLowerCase();
+        const apiKey = sameConnection ? req.config.apiKey : route.presetId ? providerCredentials.get(route.presetId) : undefined;
+        return { kind: route.kind, baseUrl: route.baseUrl, model: route.model.trim(), ...(apiKey ? { apiKey } : {}) };
+      }
+      const model = sameConnectionModel?.trim();
+      return model ? { ...req.config, model } : undefined;
+    };
+    // Ranking by meaning sends request text to the embeddings endpoint on every
+    // turn, so it runs only when the user opts in.
+    const rankingEmbed = req.semanticRanking === true && req.embed?.baseUrl && req.embed.model ? req.embed : undefined;
+    const primaryRoute = await buildRoute("chat", req.config);
+    const extraRoutes = new Map<string, ProviderRoute>();
+    const fastConfig = routeConfig(req.routing?.fastRoute, req.routing?.fastModel);
+    const escalationConfig = routeConfig(req.routing?.escalationRoute, req.routing?.escalationModel);
+    const sameAsPrimary = (config: ProviderConfig): boolean => config.model === req.config.model
+      && config.kind === req.config.kind && endpointLabel(config.baseUrl) === endpointLabel(req.config.baseUrl);
+    if (fastConfig && !sameAsPrimary(fastConfig)) extraRoutes.set("fast", await buildRoute("fast", fastConfig));
+    if (escalationConfig && !sameAsPrimary(escalationConfig)) extraRoutes.set("escalation", await buildRoute("escalation", escalationConfig));
+    routedProvider = new RoutedProvider(primaryRoute, extraRoutes);
+    const provider = routedProvider;
+    const constrainedNotice = [primaryRoute, ...extraRoutes.values()].filter((route) => route.constrained).map((route) => route.model);
+    if (constrainedNotice.length > 0) {
+      send({ type: "notice", level: "info", message: `Using constrained tool output for ${constrainedNotice.join(", ")}: each step is one validated tool call or a final answer.` });
+    }
+    if (routedProvider.route("escalation")) {
+      const monitor = new EscalationMonitor(req.routing?.escalateAfter ?? DEFAULT_ESCALATE_AFTER);
+      const router = routedProvider;
+      observeForEscalation = (observed) => {
+        if (!monitor.observe(observed)) return;
+        const target = router.escalate("escalation");
+        if (!target) return;
+        const crossesToCloud = primaryRoute.local && !target.local;
+        send({
+          type: "notice",
+          level: "warn",
+          message: `Escalating to ${target.model} after ${monitor.count} rejected attempt${monitor.count === 1 ? "" : "s"} by ${req.config.model}.${crossesToCloud ? ` This sends the conversation and workspace context to ${routeDestination(target.endpoint, target.model)}.` : ""}`,
+        });
+      };
+    }
     const enableTools = req.enableTools !== false;
     const routed = enableTools
       ? routeAvailableTools(req)
@@ -401,6 +692,13 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     const messages = hasSystem
       ? req.messages
       : [buildSystemMessage({ includeSkills: enableTools, includeClarification: !req.taskSpec && !req.taskId, query: lastUser?.content ?? "", customInstructions: req.customInstructions, personalityId: req.personalityId, adaptiveTone: req.adaptiveTone }), ...req.messages];
+    if (!hasSystem && lastUser?.content) {
+      // Episodic memory: verified lessons from earlier runs that match this request.
+      const lessons = renderLessons(await lessonStore.relevant(lastUser.content, 3, rankingEmbed ? (query, texts) => semanticIndex.similarities(query, texts, rankingEmbed, controller.signal) : undefined).catch(() => []));
+      if (lessons) messages[0] = { ...messages[0], content: `${messages[0].content}\n\n${lessons}` };
+    }
+    const workingState = new WorkingStateStore(normalizeWorkingState(req.workingState));
+    const stallLimit = typeof req.stallLimit === "number" && Number.isFinite(req.stallLimit) ? Math.max(0, Math.floor(req.stallLimit)) : undefined;
     // Snapshot file pre-images only when a workspace is selected, so a turn's
     // edits can be reverted. Prune old manifests opportunistically at turn start.
     const workspaceRoot = req.workspaceRoot ?? "";
@@ -413,17 +711,20 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     let attemptId: string | undefined;
     let acceptedCompletion: CompletionContext | undefined;
     const storedTask = durableTaskId ? await taskStore.get(durableTaskId) : undefined;
+    recoveringBlocker = storedTask?.state === "blocked" || storedTask?.state === "paused";
+    recoveringReload = storedTask?.blocker?.kind === "approval"
+      && storedTask.blocker.summary.includes("Renderer closed");
     if (!storedTask && req.taskSpec?.executionGrant && !req.mission) {
       throw new Error("Mission execution grants must be issued by Electron from a mission launch policy");
-    }
-    if (!storedTask && req.taskSpec && req.mission?.authority === "policy-scoped") {
-      const token = req.mission.authorizationToken;
-      if (!token) throw new Error("Policy-scoped mission requires native authorization");
-      missionAuthority.consume(toMissionAuthorizationRequest(req.taskSpec.objective, req.mission, req), token);
     }
     const requestedSpec = storedTask?.spec ?? (req.taskSpec && req.mission
       ? resolveMissionSpec(req.taskSpec, req.mission, routed.tools.map((tool) => tool.name), req)
       : req.taskSpec);
+    if (!storedTask && req.taskSpec && req.mission?.authority === "policy-scoped") {
+      const token = req.mission.authorizationToken;
+      if (!token) throw new Error("Policy-scoped mission requires native authorization");
+      missionAuthority.consume(toMissionAuthorizationRequest(req.taskSpec, req.mission, req), token);
+    }
     let task = requestedSpec
       ? requestedSpec.executionGrant
         ? await ensureMissionTask(durableTaskId!, requestedSpec, send)
@@ -435,7 +736,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       const capabilities = routed.tools.map((tool) => ({
         ...describeMissionCapability(tool.name),
       }));
-      const missionProvider = new MissionBudgetProvider(provider, remainingBudget(task, new Date()), req.modelRates);
+      const missionProvider = new MissionBudgetProvider(provider, remainingBudget(task, new Date()), req.modelRates, routedProvider.resolveModel);
       const planner = new MissionPlanner({
         provider: missionProvider,
         modelRates: req.modelRates,
@@ -451,6 +752,10 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         model: req.config.model,
         tools: routed.tools,
         workspaceRoot,
+        workingState,
+        ...(stallLimit !== undefined ? { stallLimit } : {}),
+        ...(req.untrustedContentGate === false ? { provenanceGate: false } : {}),
+        resolveModel: routedProvider.resolveModel,
         checkpoint,
         verify: req.verify,
         maxRounds,
@@ -494,7 +799,10 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         planner,
         capabilities,
         worker,
-        verifier: new WorkspaceMissionVerifier({ workspaceRoot }),
+        verifier: new WorkspaceMissionVerifier({
+          workspaceRoot,
+          checks: buildMissionVerificationChecks(task.spec, req.verify),
+        }),
         onTaskState: (next) => {
           task = next;
           send({ type: "task-state", task: next });
@@ -536,12 +844,35 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         content: renderTaskProgressPacket(packet),
       });
     }
+    // Missions keep their granted capabilities and budget accounting, so model
+    // adaptation and escalation apply to ordinary turns and turn tasks only.
+    const profile = req.adaptiveScaffolding !== false && toolDefinitions.length > 0
+      ? await modelProfileStore.get(req.config.kind, req.config.baseUrl, req.config.model).catch(() => null)
+      : null;
+    let scaffolding = planScaffolding(profile, toolDefinitions, lastUser?.content ?? "");
+    const narrowed = scaffolding.tools.length < toolDefinitions.length;
+    if (narrowed) {
+      // Rank by meaning when embeddings are configured, and always offer
+      // find_tool so a narrowed model can recover a tool it was not given.
+      const ranked = await semanticIndex.rankTools(toolDefinitions, lastUser?.content ?? "", scaffolding.tools.length, rankingEmbed, controller.signal);
+      scaffolding = { ...scaffolding, tools: [...ranked, { name: findToolTool.name, description: findToolTool.description, parameters: findToolTool.parameters }] };
+    }
+    if (scaffolding.notice) send({ type: "notice", level: "info", message: scaffolding.notice });
+    const scaffoldedRegistry = narrowed ? new Map([...toolRegistry, [findToolTool.name, findToolTool]]) : toolRegistry;
+
     await runTurn({
       provider,
       model: req.config.model,
-      messages,
-      tools: toolDefinitions,
-      toolRegistry,
+      messages: applyScaffoldingMessages(messages, scaffolding),
+      tools: scaffolding.tools,
+      toolRegistry: scaffoldedRegistry,
+      ...(narrowed ? { toolCatalog: toolDefinitions } : {}),
+      ...(rankingEmbed ? { rankingEmbed } : {}),
+      ...(scaffolding.maxToolCallsPerRound ? { maxToolCallsPerRound: scaffolding.maxToolCallsPerRound } : {}),
+      workingState,
+      ...(stallLimit !== undefined ? { stallLimit } : {}),
+      ...(req.untrustedContentGate === false ? { provenanceGate: false } : {}),
+      ...(routedProvider.route("fast") ? { auxiliaryModel: routeToken("fast") } : {}),
       workspaceRoot,
       signal: controller.signal,
       onEvent: send,
@@ -631,10 +962,73 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     if (terminalEvent && !rendererUnavailable && !event.sender.isDestroyed()) {
       event.sender.send(IPC.chatEvent, { turnId: req.turnId, event: terminalEvent });
     }
+    if (terminalEvent) {
+      const outcome = terminalEvent.type === "turn-complete"
+        ? "completed"
+        : terminalEvent.type === "turn-aborted"
+          ? "aborted"
+          : "failed";
+      const skillIds = [...usedSkillNames].map((name) => skillsStore.get(name)?.id).filter((id): id is string => !!id);
+      if (skillIds.length > 0) {
+        // Only host evidence promotes or demotes a skill: task state and verification, never the model's claim.
+        const skillOutcome: SkillOutcome = lastTaskState === "completed"
+          ? "success"
+          : lastTaskState === "blocked" || lastTaskState === "failed" || lastVerificationOk === false
+            ? "failure"
+            : terminalEvent.type === "turn-complete" && lastVerificationOk === true
+              ? "success"
+              : terminalEvent.type === "turn-error" && terminalEvent.source !== "provider-model"
+                ? "failure"
+                : "used";
+        try {
+          skillLedger.recordOutcome(skillIds, skillOutcome);
+        } catch {
+          // Trust tracking must never break turn settlement.
+        }
+      }
+      if (traceRecorder) {
+        void traceStore.save(traceRecorder.finish({
+          outcome,
+          ...(routedProvider?.escalation ? { escalatedTo: routedProvider.escalation.model } : {}),
+          ...(verificationCounts.passed + verificationCounts.failed > 0 ? { verification: verificationCounts } : {}),
+        })).catch(() => undefined);
+      }
+      void productDiagnostics.record("turn-settled", { durationMs: Date.now() - startedAt, mission, outcome });
+      if (inflightEntry.abortRequestedAt) {
+        void productDiagnostics.record("stop-settled", {
+          durationMs: Date.now() - inflightEntry.abortRequestedAt,
+          mission,
+          outcome,
+        });
+      }
+      if (terminalEvent.type === "turn-complete" && recoveringBlocker) {
+        void productDiagnostics.record("blocker-recovery", { durationMs: Date.now() - startedAt, mission, outcome: "passed" });
+      }
+      if (terminalEvent.type === "turn-complete" && recoveringReload) {
+        void productDiagnostics.record("reload-recovery", { durationMs: Date.now() - startedAt, mission, outcome: "passed" });
+      }
+      if (terminalEvent.type === "turn-error" && terminalEvent.source === "provider-model") {
+        void productDiagnostics.record("provider-failure", {
+          durationMs: Date.now() - startedAt,
+          mission,
+          outcome: "failed",
+          category: diagnosticFailureCategory(terminalEvent.message),
+        });
+      }
+    }
     event.sender.removeListener("destroyed", handleRendererDestroyed);
     event.sender.removeListener("render-process-gone", handleRendererDestroyed);
     event.sender.removeListener("did-start-navigation", handleRendererNavigation);
     if (inflight.get(req.turnId) === inflightEntry) inflight.delete(req.turnId);
+  }
+
+  function diagnosticFailureCategory(message: string): ProductDiagnosticEntry["category"] {
+    const normalized = message.toLowerCase();
+    if (/401|403|auth|api key|credential/.test(normalized)) return "authentication";
+    if (/429|rate.?limit|quota/.test(normalized)) return "rate-limit";
+    if (/network|fetch|socket|timeout|econn|dns/.test(normalized)) return "network";
+    if (/config|model|base.?url|endpoint/.test(normalized)) return "configuration";
+    return normalized ? "provider" : "unknown";
   }
 }
 
@@ -726,7 +1120,7 @@ export function resolveMissionSpec(
   spec: TaskSpec,
   policy: MissionLaunchPolicy,
   availableCapabilities: readonly string[],
-  request: Pick<ChatStartRequest, "workspaceRoot" | "automation">,
+  request: Pick<ChatStartRequest, "workspaceRoot" | "automation" | "verify">,
 ): TaskSpec {
   const available = new Set(availableCapabilities);
   const requested = policy.requestedCapabilities.map((capability) => capability.trim());
@@ -734,6 +1128,7 @@ export function resolveMissionSpec(
   if (new Set(requested).size !== requested.length) throw new Error("Mission capabilities must be unique");
   const unavailable = requested.filter((capability) => !available.has(capability));
   if (unavailable.length > 0) throw new Error(`Mission capabilities are unavailable: ${unavailable.join(", ")}`);
+  buildMissionVerificationChecks(spec, request.verify);
 
   const budget = boundMissionBudget(policy.budget);
   return {
@@ -778,13 +1173,16 @@ function boundBudgetValue(value: number | undefined, fallback: number, ceiling: 
 }
 
 function toMissionAuthorizationRequest(
-  objective: string,
+  spec: TaskSpec,
   policy: MissionLaunchPolicy,
   request: Pick<ChatStartRequest, "workspaceRoot" | "automation">,
 ): MissionAuthorizationRequest {
   return {
-    objective,
+    objective: spec.objective,
     ...(request.workspaceRoot ? { workspaceRoot: request.workspaceRoot } : {}),
+    acceptanceCriteria: structuredClone(spec.acceptanceCriteria),
+    constraints: [...spec.constraints],
+    assumptions: [...spec.assumptions],
     policy: {
       authority: policy.authority,
       requestedCapabilities: [...policy.requestedCapabilities],
