@@ -133,6 +133,15 @@ describe("SettingsPanel", () => {
     expect(settings.updateSettings).toHaveBeenCalledWith({ readinessProfile: "coding" });
   });
 
+  it("turns on the quarantine reader under Safety", () => {
+    render(<SettingsPanel onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Safety" }));
+    const toggle = screen.getByRole("checkbox", { name: /Read web, MCP, and browser content through a quarantine reader/ }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    expect(settings.updateSettings).toHaveBeenCalledWith({ quarantineUntrusted: true });
+  });
+
   it("filters category navigation and copies redacted readiness diagnostics", async () => {
     settingsValue.workspaceRoot = "C:\\secret\\project";
     render(<SettingsPanel onClose={() => {}} />);

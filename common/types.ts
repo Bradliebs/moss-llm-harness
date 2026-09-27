@@ -501,6 +501,7 @@ export type MossEvent =
   | { type: "turn-aborted"; messages: AgentMessage[] }
   | { type: "working-state"; state: WorkingState }
   | { type: "supervisor"; action: "warn" | "stop"; stalledRounds: number; reason: string }
+  | { type: "harness-decision"; decision: HarnessDecision }
   | {
     type: "turn-error";
     message: string;
@@ -583,6 +584,12 @@ export interface ChatStartRequest {
   untrustedContentGate?: boolean;
   /** per-model constrained step protocol; absent or "auto" uses it for limited and unreliable profiles */
   constrainedOutput?: Record<string, ConstrainedOutputMode>;
+  /** per-model voting over constrained steps; absent or "auto" votes for fast limited local models */
+  stepVoting?: Record<string, ConstrainedOutputMode>;
+  /** read untrusted tool output with an isolated no-tool model; the turn's model sees only its extract */
+  quarantineUntrusted?: boolean;
+  /** learn procedures from verified tool sequences and offer run_procedure; absent means on */
+  learnProcedures?: boolean;
   /** rank narrowed tools, find_tool results, and recalled lessons by meaning with `embed`; off unless opted in */
   semanticRanking?: boolean;
 }
@@ -647,6 +654,10 @@ export interface TurnTrace {
   outcome?: "completed" | "aborted" | "failed";
   escalatedTo?: string;
   verification?: { passed: number; failed: number };
+  /** harness decisions in the order they were made */
+  decisions?: HarnessDecision[];
+  /** reproducible start state for practice runs: a clean git checkout and the verification commands */
+  outcomeContext?: { workspaceRoot: string; gitHead: string; verifyCommands: string[] };
 }
 
 export interface TurnTraceSummary {
@@ -824,6 +835,162 @@ export interface ModelCapabilityProfile {
   /** time for the untimed warm-up request, which includes loading a local model */
   warmupMs?: number;
   recommendation: ModelScaffoldingRecommendation;
+}
+
+/** Task families that live scores are kept for. */
+export type ModelTaskKind = "chat" | "coding" | "research" | "automation" | "mission";
+
+/** Host evidence about one model on one kind of task. Only harness outcomes
+ *  (verification, task state, rejections, stalls) are recorded, never the
+ *  model's own claims. */
+export interface ModelPerformanceEntry {
+  schemaVersion: 1;
+  providerKind: ProviderKind;
+  endpoint: string;
+  model: string;
+  kind: ModelTaskKind;
+  /** settled turns, graded or not */
+  runs: number;
+  /** most recent graded outcomes, oldest first: s = verified success, f = failure */
+  recent: Array<"s" | "f">;
+  /** practice-run outcomes in disposable workspaces, oldest first */
+  practice: Array<"s" | "f">;
+  rejections: number;
+  stalls: number;
+  escalatedAway: number;
+  repairs: number;
+  /** exponential moving average of turn duration */
+  latencyMs?: number;
+  updatedAt: string;
+}
+
+export interface ModelLiveScore {
+  kind: ModelTaskKind | "all";
+  runs: number;
+  /** graded outcomes, with practice runs counted at half weight */
+  graded: number;
+  successRate?: number;
+  /** 95% Wilson interval of the success rate */
+  lowerBound?: number;
+  upperBound?: number;
+  /** probe tier adjusted by at most one step once enough outcomes exist */
+  effectiveTier?: ModelCapabilityTier;
+}
+
+/** How well an Ollama model's served context window suits the model and GPU. */
+export interface OllamaContextReport {
+  model: string;
+  status: "ok" | "too-small" | "too-large" | "unknown" | "not-applicable";
+  reason: string;
+  servedContext?: number;
+  trainedContext?: number;
+  /** usable context measured by the capability probe */
+  usableContext?: number;
+  fitsInVram?: number;
+  recommendedContext?: number;
+  /** name of the variant Moss would create */
+  variant?: string;
+  gpu?: { name?: string; totalMiB: number; freeMiB: number };
+  weightsMiB?: number;
+  kvKiBPerToken?: number;
+  spilledToCpu?: boolean;
+}
+
+export interface SetupDetectionRequest {
+  ollamaBaseUrl: string;
+  /** configured cloud presets to check for a saved key */
+  cloud: Array<{ presetId: string; kind: ProviderKind; baseUrl: string }>;
+}
+
+export interface SetupDetection {
+  ollama?: {
+    baseUrl: string;
+    version?: string;
+    models: Array<{ name: string; sizeBytes: number; parameterSize?: string; family?: string }>;
+  };
+  gpu?: { name?: string; totalMiB: number; freeMiB: number };
+  /** cloud providers with a saved key, and a suggested strong model when one was found */
+  cloud: Array<{ presetId: string; kind: ProviderKind; baseUrl: string; model?: string }>;
+}
+
+/** Practice runs replay your recorded work against other local models while the PC is idle. */
+export interface PracticeConfig {
+  enabled: boolean;
+  /** OpenAI-compatible endpoint the candidates run on (normally local Ollama) */
+  baseUrl: string;
+  candidates: string[];
+  /** recent traces to replay per candidate */
+  maxTraces?: number;
+  /** minutes of user inactivity before a scheduled run */
+  idleMinutes?: number;
+}
+
+export interface PracticeCandidateResult {
+  model: string;
+  decision: { calls: number; sameAction: number; validArgumentRate: number; medianLatencyMs?: number; errors: number };
+  /** forward runs in disposable workspace copies, graded by the original verification commands */
+  outcome: { runs: number; passed: number };
+  error?: string;
+}
+
+export interface PracticeReport {
+  startedAt: string;
+  finishedAt: string;
+  tracesUsed: number;
+  /** traces with a reproducible start state that verification could discriminate */
+  outcomeTraces: number;
+  baseline: { models: string[]; medianLatencyMs?: number; outcome: { runs: number; passed: number } };
+  candidates: PracticeCandidateResult[];
+  recommendation?: { model: string; role: "chat" | "fast"; reason: string };
+  cancelled?: boolean;
+}
+
+export interface PracticeProgress {
+  message: string;
+  completed: number;
+  total: number;
+}
+
+export type ProcedureStatus = "candidate" | "trusted" | "demoted";
+
+/** A procedure argument is either fixed or a slot the model fills. */
+export type ProcedureArg = { const: unknown } | { slot: string };
+
+export interface ProcedureStep {
+  tool: string;
+  args: Record<string, ProcedureArg>;
+}
+
+/** A tool sequence that passed verification repeatedly, run by the harness
+ *  with the model filling only the slots. */
+export interface Procedure {
+  id: string;
+  name: string;
+  description: string;
+  steps: ProcedureStep[];
+  slots: Array<{ name: string; example: string }>;
+  status: ProcedureStatus;
+  /** verified turns the procedure was learned from */
+  learnedFrom: number;
+  successCount: number;
+  failureCount: number;
+  consecutiveFailures: number;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string;
+}
+
+export type HarnessDecisionKind =
+  | "scaffold" | "constrain" | "vote" | "repair" | "find-tool" | "route" | "escalate"
+  | "gate" | "stall" | "budget" | "quarantine" | "procedure" | "live-score" | "context";
+
+/** One thing the harness decided during a turn, for the Why timeline. */
+export interface HarnessDecision {
+  kind: HarnessDecisionKind;
+  summary: string;
+  detail?: string;
+  /** Settings category that controls this behavior */
+  settings?: string;
 }
 
 export interface ModelProbeOptions {

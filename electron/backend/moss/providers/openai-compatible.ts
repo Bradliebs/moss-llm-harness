@@ -97,7 +97,8 @@ export class OpenAiCompatibleProvider implements ChatProvider {
           }))
         : undefined;
 
-    const res = await fetch(joinUrl(this.baseUrl, "/chat/completions"), {
+    const reasoning = req.reasoning ?? this.options.reasoningEffort;
+    const send = (withReasoning: boolean): Promise<Response> => fetch(joinUrl(this.baseUrl, "/chat/completions"), {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -111,11 +112,19 @@ export class OpenAiCompatibleProvider implements ChatProvider {
         ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
         ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
         ...(req.responseSchema ? { response_format: { type: "json_schema", json_schema: { name: "moss_step", schema: req.responseSchema } } } : {}),
-        ...(this.options.reasoningEffort !== undefined ? { reasoning_effort: this.options.reasoningEffort } : {}),
+        ...(withReasoning && reasoning !== undefined ? { reasoning_effort: reasoning } : {}),
         ...(tools ? { tools } : {}),
       }),
       signal,
     });
+    let res = await send(true);
+    // Some servers and models reject reasoning_effort (or the value "none");
+    // the request is still valid without it.
+    if (res.status === 400 && reasoning !== undefined) {
+      const detail = await safeText(res);
+      if (/reasoning/i.test(detail)) res = await send(false);
+      else throw new ProviderError(`OpenAI-compatible request failed: HTTP 400 ${detail}`, 400);
+    }
     if (!res.ok || !res.body) {
       throw new ProviderError(`OpenAI-compatible request failed: HTTP ${res.status} ${await safeText(res)}`, res.status);
     }

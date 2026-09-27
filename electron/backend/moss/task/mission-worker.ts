@@ -10,6 +10,7 @@ import type { CheckpointRecorder } from "../checkpoint/checkpoint-store";
 import type { ChatProvider } from "../providers/types";
 import type { WorkingStateStore } from "../governed/working-state";
 import type { Tool } from "../tools";
+import type { Quarantine } from "../safety/quarantine";
 import type { MissionWorker, MissionWorkerExecution, MissionWorkOrder } from "./mission-controller";
 import type { ModelRate } from "../../../../common/pricing";
 import { MissionBudgetProvider, missionDeadline, type ModelResolver } from "./mission-budget";
@@ -35,6 +36,7 @@ export interface RunTurnMissionWorkerOptions {
   provenanceGate?: boolean;
   /** maps a requested model to the routed model so each step is priced at the model that ran */
   resolveModel?: ModelResolver;
+  quarantine?: Quarantine;
 }
 
 export class RunTurnMissionWorker implements MissionWorker {
@@ -125,6 +127,7 @@ export class RunTurnMissionWorker implements MissionWorker {
       ...(this.options.workingState ? { workingState: this.options.workingState } : {}),
       ...(this.options.stallLimit !== undefined ? { stallLimit: this.options.stallLimit } : {}),
       ...(this.options.provenanceGate === false ? { provenanceGate: false } : {}),
+      ...(this.options.quarantine ? { quarantine: this.options.quarantine } : {}),
       ...(Number.isFinite(outputTokenLimit) ? { maxOutputTokens: Math.max(1, outputTokenLimit) } : {}),
     });
 

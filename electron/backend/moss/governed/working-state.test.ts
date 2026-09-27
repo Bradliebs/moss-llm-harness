@@ -83,6 +83,14 @@ describe("protected paths", () => {
     expect(matchesProtected("src/dbx/file", ["src/db"])).toBeUndefined();
   });
 
+  it("collapses . and .. before matching, as the path guard does", () => {
+    expect(matchesProtected("src/../node_modules/pkg/index.js", ["node_modules/**"], "C:\\ws")).toBe("node_modules/**");
+    expect(matchesProtected("./x/../config/secrets.json", ["config/secrets.json"], "C:\\ws")).toBe("config/secrets.json");
+    expect(matchesProtected("src/../config/secrets.json", ["config/secrets.json"])).toBe("config/secrets.json");
+    expect(matchesProtected("C:\\ws\\a\\..\\keep.txt", ["keep.txt"], "C:\\ws")).toBe("keep.txt");
+    expect(matchesProtected("src/./db/../app.ts", ["src/db"], "C:\\ws")).toBeUndefined();
+  });
+
   it("refuses writes, edits, moves, and mutating commands that touch a protected path", () => {
     const patterns = ["config/secrets.json"];
     expect(protectedPathViolation("write_file", { path: "config/secrets.json" }, patterns, "")).toMatch(/^Protected path:/);

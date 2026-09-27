@@ -48,7 +48,15 @@ export class EscalatingProvider implements ChatProvider {
 
 /** Failures the harness caused (a tool it withheld) or a permission refusal,
  *  which say nothing about the model's ability. */
-const NOT_MODEL_FAILURE = /^(?:User denied|Denied by policy|Tool call denied|Protected path:|Unknown tool:)/;
+const NOT_MODEL_FAILURE = /^(?:User denied|Denied by policy|Tool call denied|Protected path:|Unknown tool:|Skipped: an earlier step)/;
+
+/** A harness rejection of the model's work: failed verification, a refused
+ *  completion, or a failed tool call that was not a permission decision. */
+export function isModelRejection(event: MossEvent): boolean {
+  return (event.type === "verification" && !event.ok)
+    || (event.type === "round-end" && event.finish === "rejected")
+    || (event.type === "tool-result" && !event.ok && !NOT_MODEL_FAILURE.test(event.content));
+}
 
 /** Counts harness rejections of the model's work. */
 export class EscalationMonitor {
@@ -71,10 +79,7 @@ export class EscalationMonitor {
       this.schemaGrace.add(event.name);
       return false;
     }
-    const rejected = (event.type === "verification" && !event.ok)
-      || (event.type === "round-end" && event.finish === "rejected")
-      || (event.type === "tool-result" && !event.ok && !NOT_MODEL_FAILURE.test(event.content));
-    if (!rejected || this.fired) return false;
+    if (!isModelRejection(event) || this.fired) return false;
     this.rejections += 1;
     if (this.rejections < Math.max(1, this.threshold)) return false;
     this.fired = true;

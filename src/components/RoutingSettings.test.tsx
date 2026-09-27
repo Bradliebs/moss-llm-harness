@@ -113,6 +113,14 @@ describe("RoutingSettings", () => {
     expect(updateSettings).toHaveBeenCalledWith({ semanticRanking: true });
   });
 
+  it("sets voting on each step for the current model", () => {
+    render(<RoutingSettings className="" />);
+    const select = screen.getByLabelText("Vote on each step for small") as HTMLSelectElement;
+    expect(select.value).toBe("auto");
+    fireEvent.change(select, { target: { value: "never" } });
+    expect(updateSettings).toHaveBeenCalledWith({ stepVoting: { small: "never" } });
+  });
+
   it("sets constrained tool output for the current model", async () => {
     render(<RoutingSettings className="" />);
     const select = screen.getByLabelText("Constrained tool output for small");

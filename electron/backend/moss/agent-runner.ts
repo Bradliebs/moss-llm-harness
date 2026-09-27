@@ -18,7 +18,7 @@ import { classifyConfidenceMode, describeConfidence } from "./governed/confidenc
 import { RepeatToolReminder } from "./governed/repeat-tool-reminder";
 import { DEFAULT_STALL_LIMIT, DEFAULT_STALL_WARN, ProgressSupervisor, supervisorStopMessage, supervisorWarning, type RoundObservation } from "./governed/progress-supervisor";
 import { protectedPathViolation, renderWorkingState, withWorkingState, workingStateBudget, type WorkingStateStore } from "./governed/working-state";
-import { ProvenanceTracker } from "./safety/provenance";
+import { isUntrustedSource, ProvenanceTracker } from "./safety/provenance";
 import { parseTextToolCalls, repairToolCall } from "./models/tool-repair";
 import { semanticIndex } from "./models/tool-index";
 import { resolvePermission } from "./permission";
@@ -30,6 +30,10 @@ import { withRuntimeContext } from "./runtime-context";
 import { INJECTION_BLOCK_THRESHOLD, scanForInjection } from "./safety/injection-scan";
 import type { InjectionMode } from "./safety/injection-scan";
 import { isExternalContentTool, wrapExternalContent } from "./safety/untrusted-wrap";
+import type { Quarantine } from "./safety/quarantine";
+
+const RUN_PROCEDURE_TOOL = "run_procedure";
+export const PROCEDURE_SKIPPED = "Skipped";
 import type { Tool, ToolResult } from "./tools";
 import { PlanStore } from "./task/plan-store";
 import { RecoveryPolicy } from "./task/recovery-policy";
@@ -147,6 +151,10 @@ export interface RunTurnOptions {
   toolCatalog?: ToolDefinition[];
   /** embeddings for ranking find_tool results by meaning; word overlap without it */
   rankingEmbed?: EmbedConfig;
+  /** isolated reader for untrusted tool output; the model sees only its extract */
+  quarantine?: Quarantine;
+  /** expands a run_procedure call into the procedure's concrete tool calls */
+  expandProcedure?: (rawArguments: string) => { calls: ToolCall[]; procedureId: string; name: string } | { error: string };
 }
 
 interface TurnGuards {
@@ -187,7 +195,9 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
       if (hidden.length === 0) return "Every available tool is already offered.";
       const found = await semanticIndex.rankTools(hidden, need, 3, opts.rankingEmbed, findSignal);
       for (const tool of found) offerTool(tool.name);
-      onEvent({ type: "notice", level: "info", message: `find_tool enabled ${found.map((tool) => tool.name).join(", ")}.` });
+      const summary = `find_tool enabled ${found.map((tool) => tool.name).join(", ")}.`;
+      onEvent({ type: "notice", level: "info", message: summary });
+      onEvent({ type: "harness-decision", decision: { kind: "find-tool", summary, detail: `Asked for: ${need.slice(0, 200)}`, settings: "models" } });
       return `Enabled for your next step:\n${found.map((tool) => `- ${tool.name}: ${tool.description.split("\n")[0].slice(0, 200)}`).join("\n")}`;
     }
     : undefined;
@@ -378,16 +388,23 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         if (parsed.length > 0) {
           calls = parsed;
           repairedFromText = true;
-          onEvent({ type: "notice", level: "info", message: `Recovered ${parsed.length} tool call${parsed.length === 1 ? "" : "s"} the model wrote as text.` });
+          const summary = `Recovered ${parsed.length} tool call${parsed.length === 1 ? "" : "s"} the model wrote as text.`;
+          onEvent({ type: "notice", level: "info", message: summary });
+          onEvent({ type: "harness-decision", decision: { kind: "repair", summary } });
         }
       }
       const invalidCalls = new Map<string, string>();
       calls = calls.map((original) => {
         const repaired = repairToolCall(original, offeredTools);
         if (repaired.repairs.length > 0) {
-          onEvent({ type: "notice", level: "info", message: `Repaired ${repaired.call.name} call: ${repaired.repairs.join("; ")}.` });
+          const summary = `Repaired ${repaired.call.name} call: ${repaired.repairs.join("; ")}.`;
+          onEvent({ type: "notice", level: "info", message: summary });
+          onEvent({ type: "harness-decision", decision: { kind: "repair", summary } });
         }
-        if (repaired.error) invalidCalls.set(repaired.call.id, repaired.error);
+        if (repaired.error) {
+          invalidCalls.set(repaired.call.id, repaired.error);
+          onEvent({ type: "harness-decision", decision: { kind: "repair", summary: `Returned a schema error for ${repaired.call.name} instead of running it.`, detail: repaired.error } });
+        }
         // Calling a hidden catalog tool directly brings it into the offered set.
         offerTool(repaired.call.name);
         return repaired.call;
@@ -398,6 +415,23 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         deferredCalls = calls.length - opts.maxToolCallsPerRound;
         calls = calls.slice(0, opts.maxToolCallsPerRound);
       }
+      // A learned procedure becomes its ordinary tool calls, each checked by
+      // the normal policy; the history then shows exactly what ran.
+      const procedureSteps = new Map<string, string>();
+      if (opts.expandProcedure && calls.some((call) => call.name === RUN_PROCEDURE_TOOL)) {
+        calls = calls.flatMap((call) => {
+          if (call.name !== RUN_PROCEDURE_TOOL) return [call];
+          const expanded = opts.expandProcedure!(call.arguments);
+          if ("error" in expanded) {
+            invalidCalls.set(call.id, expanded.error);
+            return [call];
+          }
+          for (const step of expanded.calls) procedureSteps.set(step.id, expanded.name);
+          onEvent({ type: "harness-decision", decision: { kind: "procedure", summary: `Ran learned procedure ${expanded.name}: ${expanded.calls.length} steps, each with the usual checks.`, detail: expanded.procedureId } });
+          return expanded.calls;
+        });
+      }
+      const failedProcedures = new Set<string>();
 
       const assistantMsg: AgentMessage = {
         role: "assistant",
@@ -473,9 +507,12 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         if (signal.aborted) break;
         const startedAt = Date.now();
         failureSource = "tool";
+        const procedure = procedureSteps.get(call.id);
         const admission = invalidCalls.has(call.id)
           ? { allow: false, reason: invalidCalls.get(call.id) }
-          : opts.toolCallGuard?.(call);
+          : procedure && failedProcedures.has(procedure)
+            ? { allow: false, reason: `${PROCEDURE_SKIPPED}: an earlier step of procedure ${procedure} failed. Continue by hand from here.` }
+            : opts.toolCallGuard?.(call);
         const { result, autoApproved, risk } = admission?.allow === false
           ? {
               result: { ok: false, content: admission.reason?.trim() || "Tool call denied by host policy" },
@@ -483,6 +520,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
               risk: undefined,
             }
           : await executeCallWithRecovery(call, opts, failedActionSignatures, plan, delegate, guards);
+        if (procedure && !result.ok) failedProcedures.add(procedure);
         // Record provenance after the call: the content a tool returns can shape
         // later calls, but never the call that fetched it.
         guards.provenance.observe(call.name, result.content);
@@ -514,9 +552,29 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         // provider; only newMessages and the renderer keep it. Output from tools
         // that fetch content outside the workspace is additionally wrapped as
         // untrusted external content and scanned for injection phrasing.
+        // With the quarantine reader on, untrusted output reaches this model only
+        // as a validated extract; provenance above still tracked the raw text.
+        const quarantined = opts.quarantine && result.ok && result.content.trim() && (isUntrustedSource(call.name) || call.name === "read_tool_output")
+          ? await opts.quarantine(call.name, result.content, signal)
+          : undefined;
+        if (quarantined) {
+          const extract = quarantined.extract;
+          onEvent({
+            type: "harness-decision",
+            decision: {
+              kind: "quarantine",
+              summary: quarantined.failed
+                ? `Withheld ${call.name} output: the quarantine reader could not process it.`
+                : `Quarantined ${call.name} output: the model saw an extract of ${extract!.facts.length} fact${extract!.facts.length === 1 ? "" : "s"} and ${extract!.links.length} link${extract!.links.length === 1 ? "" : "s"}${extract!.instructionsFound ? "; injected instructions were ignored" : ""}.`,
+              ...(extract?.dropped ? { detail: `${extract.dropped} quote or link not found in the content was dropped.` } : {}),
+              settings: "safety",
+            },
+          });
+          if (extract?.instructionsFound) onEvent({ type: "notice", level: "warn", message: `${call.name} output contained instructions aimed at the assistant; the quarantine reader ignored them.` });
+        }
         const convToolMsg = {
           role: "tool" as const,
-          content: await prepareModelToolContent(call.name, result.content, injectionMode, onEvent, {
+          content: await prepareModelToolContent(call.name, quarantined?.content ?? result.content, injectionMode, onEvent, {
             store: opts.toolOutputStore,
             callId: call.id,
             turnId: opts.turnId,
@@ -550,6 +608,17 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         const verdict = supervisor.observeRound(roundObservations);
         if (verdict.action !== "continue") {
           onEvent({ type: "supervisor", action: verdict.action, stalledRounds: verdict.stalledRounds, reason: verdict.reason ?? "" });
+          onEvent({
+            type: "harness-decision",
+            decision: {
+              kind: "stall",
+              summary: verdict.action === "stop"
+                ? `Stopped after ${verdict.stalledRounds} rounds without progress.`
+                : `Asked the model to change approach after ${verdict.stalledRounds} rounds without progress.`,
+              ...(verdict.reason ? { detail: verdict.reason } : {}),
+              settings: "safety",
+            },
+          });
         }
         if (verdict.action === "warn") {
           const lastToolMessage = conversation[conversation.length - 1];
@@ -829,6 +898,12 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
   }
 
   let approvalGranted = false;
+  if (decision.action === "prompt" && decision.provenanceGate) {
+    opts.onEvent({
+      type: "harness-decision",
+      decision: { kind: "gate", summary: `Asked before ${call.name} because untrusted content entered the turn.`, ...(decision.rule ? { detail: decision.rule } : {}), settings: "safety" },
+    });
+  }
   if (decision.action === "prompt") {
     opts.onEvent({
       type: "tool-approval-request",

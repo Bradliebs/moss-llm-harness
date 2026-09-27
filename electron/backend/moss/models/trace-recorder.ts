@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 import { app } from "electron";
 
-import type { AgentMessage, ProviderKind, ToolDefinition, TraceCall, TurnTrace, TurnTraceSummary } from "../../../../common/types";
+import type { AgentMessage, HarnessDecision, ProviderKind, ToolDefinition, TraceCall, TurnTrace, TurnTraceSummary } from "../../../../common/types";
 import { writeFileAtomic } from "../persistence/atomic-file";
 import type { ChatProvider, ChatRequest, ProviderStreamEvent } from "../providers/types";
 import { endpointLabel } from "./capability-profile";
@@ -47,6 +47,14 @@ export class TraceRecorder {
 
   get id(): string {
     return this.trace.id;
+  }
+
+  setOutcomeContext(context: NonNullable<TurnTrace["outcomeContext"]>): void {
+    this.trace.outcomeContext = context;
+  }
+
+  noteDecision(decision: HarnessDecision): void {
+    (this.trace.decisions ??= []).push(decision);
   }
 
   record(call: Omit<TraceCall, "index">, tools: readonly ToolDefinition[] = []): void {

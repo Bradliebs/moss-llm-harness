@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 
-import { BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, shell } from "electron";
 
 import { IPC } from "../../common/ipc-contract";
 import type {
@@ -18,7 +18,18 @@ import type {
   MissionAuthorizationRequest,
   MissionCapabilitiesRequest,
   MissionCapabilityDescriptor,
+  HarnessDecision,
   MissionLaunchPolicy,
+  ModelCapabilityProfile,
+  ModelTaskKind,
+  OllamaContextReport,
+  PracticeProgress,
+  ProcedureStatus,
+  PracticeReport,
+  SetupDetection,
+  ToolCall,
+  TurnTrace,
+  SetupDetectionRequest,
   ModelProbeRequest,
   ModelRoute,
   ProviderConfig,
@@ -68,7 +79,14 @@ import { readWorkspacePreview, suggestVerificationCommands } from "../backend/mo
 import { CONTEXT_LEVELS, DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_TIMEOUT_SECONDS, runCapabilityProbes } from "../backend/moss/models/capability-probes";
 import { buildCapabilityProfile } from "../backend/moss/models/capability-profile";
 import { modelProfileStore } from "../backend/moss/models/model-profile-store";
-import { DEFAULT_ESCALATE_AFTER, EscalationMonitor } from "../backend/moss/models/escalation";
+import { DEFAULT_ESCALATE_AFTER, EscalationMonitor, isModelRejection } from "../backend/moss/models/escalation";
+import { effectiveProfile, gradeTurn, modelPerformanceStore, taskKindFor } from "../backend/moss/models/model-performance";
+import { createContextVariant, inspectOllamaContext } from "../backend/moss/models/ollama-context";
+import { detectSetup, pullOllamaModel } from "../backend/moss/setup/pc-setup";
+import { createQuarantine } from "../backend/moss/safety/quarantine";
+import { expandProcedure, PROCEDURE_HINT, procedureStore, procedureToolDefinition, runProcedureTool } from "../backend/moss/learning/procedure-store";
+import { captureOutcomeContext, runGit, runPractice } from "../backend/moss/models/practice";
+import { PracticeScheduler, practiceStore } from "../backend/moss/models/practice-store";
 import { isLocalRoute, RoutedProvider, routeDestination, routeToken, type ProviderRoute } from "../backend/moss/models/routed-provider";
 import { StepProtocolProvider } from "../backend/moss/models/step-protocol";
 import { findToolTool, semanticIndex } from "../backend/moss/models/tool-index";
@@ -114,6 +132,9 @@ const MAX_MISSION_BUDGET: Required<TaskBudget> = {
   maxCostUsd: 100,
 };
 
+const VOTE_SAMPLES = 3;
+const VOTE_MAX_MEDIAN_MS = 4_000;
+
 export function resolveMaxToolRounds(requested: number | undefined, verifyEnabled: boolean): number {
   const configured = Number.isFinite(requested) ? Math.floor(requested as number) : DEFAULT_TOOL_ROUNDS;
   const withVerificationRoom = verifyEnabled ? Math.max(12, configured) : configured;
@@ -151,6 +172,8 @@ let capabilityHistoryCache = new Map<string, { successCount: number; failureCoun
 export function registerChatIpc(): void {
   void refreshCapabilityHistory();
   ipcMain.on(IPC.chatStart, (event, req: ChatStartRequest) => {
+    // Your work takes the GPU back from a practice run.
+    practiceController?.abort();
     void startTurn(event, req);
   });
 
@@ -346,6 +369,110 @@ export function registerChatIpc(): void {
   ipcMain.handle(IPC.modelProfileGet, (_event, kind: ProviderKind, baseUrl: unknown, model: unknown) =>
     typeof baseUrl === "string" && typeof model === "string" && model ? modelProfileStore.get(kind, baseUrl, model) : null);
   ipcMain.handle(IPC.modelProfileList, () => modelProfileStore.list());
+  ipcMain.handle(IPC.modelPerformanceList, () => modelPerformanceStore.list());
+  // Practice runs: replays and disposable forward runs against local candidates.
+  let practiceController: AbortController | undefined;
+  const runPracticeNow = async (onProgress?: (progress: PracticeProgress) => void): Promise<PracticeReport> => {
+    if (practiceController) throw new Error("A practice run is already in progress.");
+    const config = await practiceStore.config();
+    if (config.candidates.length === 0) throw new Error("Choose at least one candidate model.");
+    // Practice runs many requests, so only models on this PC take part.
+    const candidates = config.candidates.filter((model) => isLocalRoute(config.baseUrl, model));
+    if (candidates.length === 0) throw new Error("Practice runs use local models only; choose a model served on this PC.");
+    const controller = new AbortController();
+    practiceController = controller;
+    try {
+      const summaries = await traceStore.list((config.maxTraces ?? 8) * 2);
+      const traces = (await Promise.all(summaries.map((summary) => traceStore.get(summary.id)))).filter((trace): trace is TurnTrace => trace !== null);
+      if (traces.length === 0) throw new Error("No recorded traces yet. Turn on trace recording under Routing and adaptation and do some work first.");
+      const report = await runPractice({ traces, candidates, maxTraces: config.maxTraces }, {
+        providerFor: (model) => createProvider({ kind: "openai-compatible", baseUrl: config.baseUrl, model }),
+        registry: TOOL_REGISTRY,
+        verify: runVerify,
+        git: runGit,
+        recordPractice: (model, kind, outcome) => modelPerformanceStore.record({ providerKind: "openai-compatible", baseUrl: config.baseUrl, model, kind, outcome, practice: true }),
+        signal: controller.signal,
+        ...(onProgress ? { onProgress } : {}),
+      });
+      await practiceStore.saveReport(report);
+      return report;
+    } finally {
+      practiceController = undefined;
+    }
+  };
+  const practiceScheduler = new PracticeScheduler({
+    idleSeconds: () => powerMonitor.getSystemIdleTime(),
+    onBattery: () => powerMonitor.isOnBatteryPower(),
+    busy: () => inflight.size > 0,
+    config: () => practiceStore.config(),
+    lastRunAt: async () => {
+      const latest = await practiceStore.latest();
+      return latest ? Date.parse(latest.startedAt) : undefined;
+    },
+    run: async () => { await runPracticeNow().catch(() => undefined); },
+  });
+  void practiceStore.config().then((config) => { if (config.enabled) practiceScheduler.start(); }).catch(() => undefined);
+  ipcMain.handle(IPC.proceduresList, () => procedureStore.list());
+  ipcMain.handle(IPC.procedureSetStatus, async (_event, id: unknown, status: unknown) => {
+    if (typeof id !== "string" || !["candidate", "trusted", "demoted"].includes(String(status))) throw new Error("Invalid procedure status.");
+    await procedureStore.setStatus(id, status as ProcedureStatus);
+    return procedureStore.list();
+  });
+  ipcMain.handle(IPC.procedureDelete, async (_event, id: unknown) => {
+    if (typeof id !== "string") throw new Error("Invalid procedure id.");
+    await procedureStore.remove(id);
+    return procedureStore.list();
+  });
+  ipcMain.handle(IPC.practiceGet, async () => ({ config: await practiceStore.config(), latest: await practiceStore.latest(), running: practiceController !== undefined }));
+  ipcMain.handle(IPC.practiceConfigure, async (_event, config: unknown) => {
+    const saved = await practiceStore.saveConfig(config);
+    if (saved.enabled) practiceScheduler.start();
+    else practiceScheduler.stop();
+    return saved;
+  });
+  ipcMain.handle(IPC.practiceRun, (event) => runPracticeNow((progress) => {
+    if (!event.sender.isDestroyed()) event.sender.send(IPC.practiceProgress, progress);
+  }));
+  ipcMain.handle(IPC.practiceCancel, () => { practiceController?.abort(); });
+  ipcMain.handle(IPC.setupDetect, (_event, request: SetupDetectionRequest): Promise<SetupDetection> => {
+    if (!request || typeof request.ollamaBaseUrl !== "string" || !Array.isArray(request.cloud)) throw new Error("Invalid setup detection request.");
+    return detectSetup(request, {
+      credential: (presetId) => providerCredentials.get(presetId),
+      listModels: (config) => createProvider({ ...config, model: "" }).listModels(),
+    });
+  });
+  ipcMain.handle(IPC.setupPull, (_event, baseUrl: unknown, model: unknown) => {
+    if (typeof baseUrl !== "string" || typeof model !== "string") throw new Error("Invalid pull request.");
+    return pullOllamaModel(baseUrl, model);
+  });
+  ipcMain.handle(IPC.ollamaContextInspect, async (_event, baseUrl: unknown, model: unknown): Promise<OllamaContextReport> => {
+    if (typeof baseUrl !== "string" || typeof model !== "string" || !model) throw new Error("Choose an Ollama model first.");
+    const profile = await modelProfileStore.get("openai-compatible", baseUrl, model).catch(() => null);
+    return inspectOllamaContext({ baseUrl, model, ...(profile?.recommendation.usableContextTokens ? { usableContext: profile.recommendation.usableContextTokens } : {}) });
+  });
+  ipcMain.handle(IPC.ollamaContextCreate, async (_event, baseUrl: unknown, model: unknown, numCtx: unknown): Promise<string> => {
+    if (typeof baseUrl !== "string" || typeof model !== "string" || !model || typeof numCtx !== "number") throw new Error("Invalid context variant request.");
+    const variant = await createContextVariant({ baseUrl, model, numCtx });
+    // Same weights, so the capability profile carries over; the larger window
+    // is worth re-measuring.
+    const profile = await modelProfileStore.get("openai-compatible", baseUrl, model).catch(() => null);
+    if (profile) {
+      const { contextLimit: _unused, ...settings } = profile.recommendation.settings;
+      void _unused;
+      await modelProfileStore.save({
+        ...profile,
+        model: variant,
+        recommendation: {
+          ...profile.recommendation,
+          settings,
+          notes: [...profile.recommendation.notes.filter((note) => !/context/i.test(note)), `Copied from ${model} with num_ctx ${numCtx}. Re-run the probe to measure the larger context.`],
+        },
+      }).catch(() => undefined);
+    }
+    return variant;
+  });
+  ipcMain.handle(IPC.modelPerformanceClear, (_event, kind: ProviderKind, baseUrl: unknown, model: unknown) =>
+    typeof baseUrl === "string" && typeof model === "string" && model ? modelPerformanceStore.clear(kind, baseUrl, model) : undefined);
 
   ipcMain.handle(IPC.tracesList, async () => ({ count: await traceStore.count(), traces: await traceStore.list(20), dir: traceStore.dir() }));
   ipcMain.handle(IPC.tracesClear, () => traceStore.clear());
@@ -511,7 +638,29 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
   let lastVerificationOk: boolean | undefined;
   const skillCalls = new Map<string, string>();
   const usedSkillNames = new Set<string>();
+  // Host evidence for live scores.
+  const usedToolNames = new Set<string>();
+  const evidence = { rejections: 0, stalls: 0, repairs: 0, supervisorStopped: false };
+  // Successful calls in order, for learning procedures from verified turns.
+  const pendingCalls = new Map<string, { name: string; arguments: string }>();
+  const successfulCalls: Array<{ name: string; arguments: string }> = [];
+  const usedProcedureIds = new Set<string>();
+  const learnProcedures = req.learnProcedures !== false;
   const send = (mossEvent: MossEvent) => {
+    if (mossEvent.type === "tool-call") {
+      usedToolNames.add(mossEvent.name);
+      pendingCalls.set(mossEvent.callId, { name: mossEvent.name, arguments: mossEvent.arguments });
+    }
+    if (mossEvent.type === "tool-result" && mossEvent.ok && pendingCalls.has(mossEvent.callId)) successfulCalls.push(pendingCalls.get(mossEvent.callId)!);
+    if (isModelRejection(mossEvent)) evidence.rejections += 1;
+    if (mossEvent.type === "supervisor") {
+      evidence.stalls += 1;
+      if (mossEvent.action === "stop") evidence.supervisorStopped = true;
+    }
+    if (mossEvent.type === "harness-decision") {
+      if (mossEvent.decision.kind === "repair") evidence.repairs += 1;
+      traceRecorder?.noteDecision(mossEvent.decision);
+    }
     if (mossEvent.type === "verification") {
       verificationCounts[mossEvent.ok ? "passed" : "failed"] += 1;
       lastVerificationOk = mossEvent.ok;
@@ -598,9 +747,35 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
   event.sender.on("did-start-navigation", handleRendererNavigation);
 
   try {
+    /** Say what the harness decided: a notice in the chat and an entry in the Why timeline. */
+    const decide = (decision: HarnessDecision, level?: "info" | "warn"): void => {
+      if (level) send({ type: "notice", level, message: decision.summary });
+      send({ type: "harness-decision", decision });
+    };
+    const liveEntries = req.adaptiveScaffolding !== false ? await modelPerformanceStore.list().catch(() => []) : [];
+    const predictedKind: ModelTaskKind | "all" = req.mission ? "mission" : "all";
+    /** Stored profile adjusted by live evidence; tiers move one step at most. */
+    const profileFor = async (config: ProviderConfig): Promise<ModelCapabilityProfile | null> => {
+      const stored = await modelProfileStore.get(config.kind, config.baseUrl, config.model).catch(() => null);
+      if (!stored) return null;
+      const { profile: adjusted, score } = effectiveProfile(stored, liveEntries, predictedKind);
+      if (adjusted.tier !== stored.tier && score.successRate !== undefined) {
+        decide({
+          kind: "live-score",
+          summary: `Treating ${config.model} as ${adjusted.tier} (probe: ${stored.tier}) after ${Math.round(score.successRate * 100)}% verified success over ${Math.round(score.graded)} graded runs of your work.`,
+          settings: "models",
+        });
+      }
+      return adjusted;
+    };
     traceRecorder = req.recordTrace
       ? new TraceRecorder({ id: req.turnId, providerKind: req.config.kind, baseUrl: req.config.baseUrl, model: req.config.model })
       : undefined;
+    // A clean git start state lets practice runs re-run this turn with other models.
+    if (traceRecorder && req.verify?.enabled && req.workspaceRoot) {
+      const outcomeContext = await captureOutcomeContext(req.workspaceRoot, req.verify.commands ?? []);
+      if (outcomeContext) traceRecorder.setOutcomeContext(outcomeContext);
+    }
     // Each route gets its own provider stack: base provider, optional constrained
     // step protocol, daily budget, and trace recording, so every layer sees the
     // model and endpoint that actually serve the request.
@@ -608,13 +783,31 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       // "auto" follows the measured profile, so it is part of adaptive scaffolding.
       const requested = req.constrainedOutput?.[config.model] ?? "auto";
       const mode = requested === "auto" && req.adaptiveScaffolding === false ? "never" : requested;
-      const profile = mode === "auto" && config.kind === "openai-compatible"
-        ? await modelProfileStore.get(config.kind, config.baseUrl, config.model).catch(() => null)
-        : null;
+      const profile = mode === "auto" && config.kind === "openai-compatible" ? await profileFor(config) : null;
       const constrained = config.kind === "openai-compatible"
         && (mode === "always" || (mode === "auto" && (profile?.tier === "limited" || profile?.tier === "unreliable")));
       const base = createProvider(config);
-      const stepped = constrained ? new StepProtocolProvider(base) : base;
+      const local = isLocalRoute(config.baseUrl, config.model);
+      const voteMode = req.stepVoting?.[config.model] ?? "auto";
+      // Voting triples local calls, so Automatic needs a weak model that is also fast.
+      const votes = constrained && local && (voteMode === "always" || (voteMode === "auto" && req.adaptiveScaffolding !== false
+        && (profile?.tier === "limited" || profile?.tier === "unreliable")
+        && profile.latency !== undefined && profile.latency.medianMs <= VOTE_MAX_MEDIAN_MS))
+        ? VOTE_SAMPLES
+        : 1;
+      if (votes > 1) {
+        decide({ kind: "vote", summary: `Voting on each step for ${config.model}: ${votes} constrained samples, the most common step runs.`, settings: "models" }, "info");
+      }
+      const stepped = constrained
+        ? new StepProtocolProvider(base, {
+            votes,
+            onVote: (result) => {
+              if (result.agreeing < result.samples) {
+                decide({ kind: "vote", summary: `${result.agreeing} of ${result.samples} samples agreed on ${result.choice}.`, settings: "models" });
+              }
+            },
+          })
+        : base;
       const budgeted = req.dailyBudgetUsd && req.dailyBudgetUsd > 0
         ? new BudgetEnforcingProvider(stepped, req.dailyBudgetUsd, req.modelRates)
         : stepped;
@@ -627,7 +820,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         model: config.model,
         providerKind: config.kind,
         endpoint: config.baseUrl,
-        local: isLocalRoute(config.baseUrl, config.model),
+        local,
         constrained,
       };
     };
@@ -643,6 +836,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     // Ranking by meaning sends request text to the embeddings endpoint on every
     // turn, so it runs only when the user opts in.
     const rankingEmbed = req.semanticRanking === true && req.embed?.baseUrl && req.embed.model ? req.embed : undefined;
+    const lastUserText = [...req.messages].reverse().find((message) => message.role === "user")?.content;
     const primaryRoute = await buildRoute("chat", req.config);
     const extraRoutes = new Map<string, ProviderRoute>();
     const fastConfig = routeConfig(req.routing?.fastRoute, req.routing?.fastModel);
@@ -652,10 +846,14 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     if (fastConfig && !sameAsPrimary(fastConfig)) extraRoutes.set("fast", await buildRoute("fast", fastConfig));
     if (escalationConfig && !sameAsPrimary(escalationConfig)) extraRoutes.set("escalation", await buildRoute("escalation", escalationConfig));
     routedProvider = new RoutedProvider(primaryRoute, extraRoutes);
+    // The reader runs on the fast route when there is one, and never gets tools.
+    const quarantine = req.quarantineUntrusted === true
+      ? createQuarantine({ provider: routedProvider, model: extraRoutes.has("fast") ? routeToken("fast") : req.config.model, ...(lastUserText ? { userRequest: lastUserText } : {}) })
+      : undefined;
     const provider = routedProvider;
     const constrainedNotice = [primaryRoute, ...extraRoutes.values()].filter((route) => route.constrained).map((route) => route.model);
     if (constrainedNotice.length > 0) {
-      send({ type: "notice", level: "info", message: `Using constrained tool output for ${constrainedNotice.join(", ")}: each step is one validated tool call or a final answer.` });
+      decide({ kind: "constrain", summary: `Using constrained tool output for ${constrainedNotice.join(", ")}: each step is one validated tool call or a final answer.`, settings: "models" }, "info");
     }
     if (routedProvider.route("escalation")) {
       const monitor = new EscalationMonitor(req.routing?.escalateAfter ?? DEFAULT_ESCALATE_AFTER);
@@ -665,11 +863,11 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         const target = router.escalate("escalation");
         if (!target) return;
         const crossesToCloud = primaryRoute.local && !target.local;
-        send({
-          type: "notice",
-          level: "warn",
-          message: `Escalating to ${target.model} after ${monitor.count} rejected attempt${monitor.count === 1 ? "" : "s"} by ${req.config.model}.${crossesToCloud ? ` This sends the conversation and workspace context to ${routeDestination(target.endpoint, target.model)}.` : ""}`,
-        });
+        decide({
+          kind: "escalate",
+          summary: `Escalating to ${target.model} after ${monitor.count} rejected attempt${monitor.count === 1 ? "" : "s"} by ${req.config.model}.${crossesToCloud ? ` This sends the conversation and workspace context to ${routeDestination(target.endpoint, target.model)}.` : ""}`,
+          settings: "models",
+        }, "warn");
       };
     }
     const enableTools = req.enableTools !== false;
@@ -756,6 +954,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         ...(stallLimit !== undefined ? { stallLimit } : {}),
         ...(req.untrustedContentGate === false ? { provenanceGate: false } : {}),
         resolveModel: routedProvider.resolveModel,
+        ...(quarantine ? { quarantine } : {}),
         checkpoint,
         verify: req.verify,
         maxRounds,
@@ -846,9 +1045,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     }
     // Missions keep their granted capabilities and budget accounting, so model
     // adaptation and escalation apply to ordinary turns and turn tasks only.
-    const profile = req.adaptiveScaffolding !== false && toolDefinitions.length > 0
-      ? await modelProfileStore.get(req.config.kind, req.config.baseUrl, req.config.model).catch(() => null)
-      : null;
+    const profile = req.adaptiveScaffolding !== false && toolDefinitions.length > 0 ? await profileFor(req.config) : null;
     let scaffolding = planScaffolding(profile, toolDefinitions, lastUser?.content ?? "");
     const narrowed = scaffolding.tools.length < toolDefinitions.length;
     if (narrowed) {
@@ -857,8 +1054,34 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       const ranked = await semanticIndex.rankTools(toolDefinitions, lastUser?.content ?? "", scaffolding.tools.length, rankingEmbed, controller.signal);
       scaffolding = { ...scaffolding, tools: [...ranked, { name: findToolTool.name, description: findToolTool.description, parameters: findToolTool.parameters }] };
     }
-    if (scaffolding.notice) send({ type: "notice", level: "info", message: scaffolding.notice });
+    if (scaffolding.notice) decide({ kind: "scaffold", summary: scaffolding.notice, settings: "models" }, "info");
     const scaffoldedRegistry = narrowed ? new Map([...toolRegistry, [findToolTool.name, findToolTool]]) : toolRegistry;
+    // Learned procedures are offered whenever tools are on, even when narrowed.
+    const procedures = learnProcedures && toolDefinitions.length > 0 ? await procedureStore.offered().catch(() => []) : [];
+    if (procedures.length > 0) {
+      // Measured on local models: without this hint they rarely pick run_procedure,
+      // and with it they reuse the steps they would otherwise forget.
+      scaffolding = {
+        ...scaffolding,
+        tools: [...scaffolding.tools, procedureToolDefinition(procedures)],
+        systemGuidance: [scaffolding.systemGuidance, PROCEDURE_HINT].filter(Boolean).join("\n\n"),
+      };
+      scaffoldedRegistry.set(runProcedureTool.name, runProcedureTool);
+    }
+    const expandLearned = (rawArguments: string): { calls: ToolCall[]; procedureId: string; name: string } | { error: string } => {
+      let args: { procedure?: unknown; slots?: unknown };
+      try {
+        args = JSON.parse(rawArguments || "{}") as typeof args;
+      } catch {
+        return { error: "run_procedure arguments must be a JSON object with procedure and slots." };
+      }
+      const procedure = procedures.find((item) => item.id === args.procedure);
+      if (!procedure) return { error: `Unknown procedure ${String(args.procedure)}. Available: ${procedures.map((item) => item.id).join(", ")}.` };
+      const expanded = expandProcedure(procedure, args.slots && typeof args.slots === "object" ? args.slots as Record<string, unknown> : {});
+      if ("error" in expanded) return expanded;
+      usedProcedureIds.add(procedure.id);
+      return { calls: expanded.calls, procedureId: procedure.id, name: procedure.name };
+    };
 
     await runTurn({
       provider,
@@ -868,6 +1091,8 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       toolRegistry: scaffoldedRegistry,
       ...(narrowed ? { toolCatalog: toolDefinitions } : {}),
       ...(rankingEmbed ? { rankingEmbed } : {}),
+      ...(quarantine ? { quarantine } : {}),
+      ...(procedures.length > 0 ? { expandProcedure: expandLearned } : {}),
       ...(scaffolding.maxToolCallsPerRound ? { maxToolCallsPerRound: scaffolding.maxToolCallsPerRound } : {}),
       workingState,
       ...(stallLimit !== undefined ? { stallLimit } : {}),
@@ -984,6 +1209,36 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
           skillLedger.recordOutcome(skillIds, skillOutcome);
         } catch {
           // Trust tracking must never break turn settlement.
+        }
+      }
+      if (terminalEvent.type !== "turn-aborted" && req.config.model) {
+        const kind = taskKindFor(usedToolNames, Boolean(req.mission));
+        const grade = gradeTurn({
+          terminal: terminalEvent.type,
+          ...(terminalEvent.type === "turn-error" ? { terminalMessage: terminalEvent.message } : {}),
+          ...(lastTaskState ? { taskState: lastTaskState } : {}),
+          ...(lastVerificationOk !== undefined ? { lastVerificationOk } : {}),
+          supervisorStopped: evidence.supervisorStopped,
+        });
+        // Procedures earn trust from host evidence, and verified turns teach new ones.
+        if (usedProcedureIds.size > 0) {
+          void procedureStore.recordOutcome([...usedProcedureIds], grade === "s" ? "success" : grade === "f" ? "failure" : "used").catch(() => undefined);
+        } else if (grade === "s" && learnProcedures && !req.mission) {
+          const request = [...req.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+          void procedureStore.observe(request, successfulCalls).catch(() => undefined);
+        }
+        // Plain chat with nothing graded says nothing about the model.
+        if (grade || kind !== "chat" || evidence.rejections > 0) {
+          const escalatedTo = routedProvider?.escalation;
+          const durationMs = Date.now() - startedAt;
+          const primary = { providerKind: req.config.kind, baseUrl: req.config.baseUrl, model: req.config.model, kind };
+          const recordings = escalatedTo
+            ? [
+                modelPerformanceStore.record({ ...primary, outcome: "f", escalatedAway: true, rejections: evidence.rejections, repairs: evidence.repairs, stalls: evidence.stalls }),
+                modelPerformanceStore.record({ providerKind: escalatedTo.providerKind as ProviderKind, baseUrl: escalatedTo.endpoint, model: escalatedTo.model, kind, ...(grade ? { outcome: grade } : {}), durationMs }),
+              ]
+            : [modelPerformanceStore.record({ ...primary, ...(grade ? { outcome: grade } : {}), rejections: evidence.rejections, repairs: evidence.repairs, stalls: evidence.stalls, durationMs })];
+          void Promise.allSettled(recordings);
         }
       }
       if (traceRecorder) {

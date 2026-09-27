@@ -37,6 +37,8 @@ import { ProductDiagnosticsSettings } from "./ProductDiagnosticsSettings";
 import { AutomationSettings } from "./AutomationSettings";
 import { AccessibilitySettings } from "./AccessibilitySettings";
 import { ModelProfileSettings } from "./ModelProfileSettings";
+import { PracticeSettings } from "./PracticeSettings";
+import { SetupAssistant } from "./SetupAssistant";
 import { RoutingSettings } from "./RoutingSettings";
 
 type SettingsCategory = "readiness" | "diagnostics" | "general" | "models" | "tools" | "automation" | "knowledge" | "services" | "safety";
@@ -46,7 +48,7 @@ const SETTINGS_CATEGORIES: readonly { id: SettingsCategory | "all"; label: strin
   { id: "readiness", label: "Readiness", keywords: "setup profile diagnostics connection" },
   { id: "diagnostics", label: "Diagnostics", keywords: "local telemetry retention export clear privacy" },
   { id: "general", label: "General", keywords: "appearance theme avatar personality instructions confidence context accessibility text size contrast notifications shortcuts keyboard" },
-  { id: "models", label: "Models", keywords: "provider model api key pricing budget capability probe profile routing escalation constrained output trace replay" },
+  { id: "models", label: "Models", keywords: "provider model api key pricing budget capability probe profile routing escalation constrained output voting context window set up this pc trace replay" },
   { id: "tools", label: "Tools", keywords: "tools workspace verification" },
   { id: "automation", label: "Automation", keywords: "browser desktop windows scopes" },
   { id: "knowledge", label: "Knowledge", keywords: "memory index embeddings mcp trust annotations" },
@@ -572,6 +574,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             </label>
           </section>
 
+          <SetupAssistant className={sectionClass("models", "set up this pc setup assistant ollama gpu vram detect recommend")} />
           <section className={sectionClass("models", "provider model api key preset base url")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Provider</h3>
             <label className="block">
@@ -820,6 +823,25 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <JevSettings />
           </div>
 
+          <section className={sectionClass("knowledge", "learned procedures learn verified tool sequences")}>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Learned procedures</h3>
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-emerald-500"
+                checked={settings.learnProcedures !== false}
+                onChange={(e) => updateSettings({ learnProcedures: e.target.checked })}
+              />
+              <span>
+                Learn procedures from verified work
+                <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+                  A tool sequence that passes verification in three turns becomes a procedure the model can run by filling in
+                  a few slots. Stored on this PC; review, trust, or delete them in the Library. Missions never use them.
+                </span>
+              </span>
+            </label>
+          </section>
+
           <section className={sectionClass("knowledge", "memory review gated")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Memory review</h3>
             <label className="flex items-center gap-2">
@@ -872,7 +894,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             )}
           </section>
 
-          <section className={sectionClass("safety", "external content injection untrusted")}>
+          <section className={sectionClass("safety", "external content injection untrusted quarantine reader")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">External content</h3>
             <label className="flex items-center gap-2">
               <span className="whitespace-nowrap">Injection scanning</span>
@@ -908,6 +930,23 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 </span>
               </span>
             </label>
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-emerald-600"
+                checked={settings.quarantineUntrusted === true}
+                onChange={(e) => updateSettings({ quarantineUntrusted: e.target.checked })}
+              />
+              <span>
+                Read web, MCP, and browser content through a quarantine reader
+                <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+                  A separate model call with no tools reads each untrusted result and passes on only a summary, facts,
+                  exact quotes, and links found in the content. The model that can act never sees the raw text, so
+                  instructions planted in a page cannot steer it. Uses the fast model when one is set; adds one model call
+                  per untrusted result. Approvals are unchanged.
+                </span>
+              </span>
+            </label>
           </section>
 
           <section className={sectionClass("general", "confidence indicator")}>
@@ -930,6 +969,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
           <ModelProfileSettings className={sectionClass("models", "capability probe profile benchmark tool calling context coherence")} />
 
           <RoutingSettings className={sectionClass("models", "routing escalation fast model provider cloud constrained output repair adaptive scaffolding trace replay record")} />
+          <PracticeSettings className={sectionClass("models", "practice runs idle benchmark compare models recommendation")} />
 
           <section className={sectionClass("models", "budget daily cost cap")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Budget</h3>

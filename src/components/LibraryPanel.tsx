@@ -3,6 +3,7 @@
 // Overlay for managing durable memory and skills. Opened from the chat header.
 
 import { useCallback, useEffect, useState } from "react";
+import { ProceduresSection } from "./ProceduresSection";
 import { SkillTrustControls } from "./SkillTrustControls";
 
 import type { MemoryCategory, MemoryEntry, Skill } from "@common/types";
@@ -339,6 +340,9 @@ export function LibraryPanel({ onClose }: { onClose: () => void }): React.ReactE
         <div className="flex min-h-0 flex-1 gap-6">
           <SkillsSection />
           <MemorySection />
+        </div>
+        <div className="mt-4 max-h-[35%] min-h-0 overflow-y-auto border-t border-neutral-200 pt-3 dark:border-neutral-800">
+          <ProceduresSection />
         </div>
       </div>
     </div>

@@ -228,7 +228,7 @@ describe("registerChatIpc", () => {
     // via event.sender.send), so they are never registered with ipcMain; every
     // other contract channel is inbound and must have exactly one handler.
     const inbound = Object.values(IPC)
-      .filter((channel) => channel !== IPC.chatEvent && channel !== IPC.modelProbeProgress && channel !== IPC.traceReplayProgress)
+      .filter((channel) => channel !== IPC.chatEvent && channel !== IPC.modelProbeProgress && channel !== IPC.traceReplayProgress && channel !== IPC.practiceProgress)
       .sort();
     const registered = [...recorded.on.keys(), ...recorded.handle.keys()].sort();
 

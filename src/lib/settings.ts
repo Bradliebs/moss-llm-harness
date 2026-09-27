@@ -144,6 +144,12 @@ export interface MossSettings {
   escalateAfter?: number;
   /** Per-model constrained tool output; absent means automatic for limited and unreliable profiles. */
   constrainedOutput?: Record<string, ConstrainedOutputMode>;
+  /** Learn procedures from verified tool sequences. Absent means on. */
+  learnProcedures?: boolean;
+  /** Read untrusted tool output through an isolated no-tool model. Off by default. */
+  quarantineUntrusted?: boolean;
+  /** Per-model voting over constrained steps; absent means automatic for fast limited local models. */
+  stepVoting?: Record<string, ConstrainedOutputMode>;
   /** Rank narrowed tools and recalled lessons by meaning with the embeddings model. Off by default. */
   semanticRanking?: boolean;
   /** Record every model call to a local, replayable trace. Off by default. */

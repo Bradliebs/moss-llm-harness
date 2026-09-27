@@ -57,6 +57,34 @@ export const IPC = {
   modelProfileGet: "moss:model:profileGet",
   /** renderer -> main (invoke): every stored capability profile, newest first */
   modelProfileList: "moss:model:profileList",
+  /** renderer -> main (invoke): every live-score entry (host evidence per model and task kind) */
+  modelPerformanceList: "moss:model:performanceList",
+  /** renderer -> main (invoke): forget the live-score evidence for a provider kind, endpoint, and model */
+  modelPerformanceClear: "moss:model:performanceClear",
+  /** renderer -> main (invoke): check an Ollama model's served context against its training and GPU memory; returns OllamaContextReport */
+  ollamaContextInspect: "moss:ollama:contextInspect",
+  /** renderer -> main (invoke): create a named variant of an Ollama model with a chosen num_ctx; returns the variant name */
+  ollamaContextCreate: "moss:ollama:contextCreate",
+  /** renderer -> main (invoke): detect local Ollama models, the GPU, and cloud providers with saved keys; returns SetupDetection */
+  setupDetect: "moss:setup:detect",
+  /** renderer -> main (invoke): pull a model from the Ollama library */
+  setupPull: "moss:setup:pull",
+  /** renderer -> main (invoke): practice config and latest report */
+  practiceGet: "moss:practice:get",
+  /** renderer -> main (invoke): save the practice config; returns the normalized config */
+  practiceConfigure: "moss:practice:configure",
+  /** renderer -> main (invoke): run practice now; returns PracticeReport */
+  practiceRun: "moss:practice:run",
+  /** renderer -> main (invoke): cancel a running practice */
+  practiceCancel: "moss:practice:cancel",
+  /** main -> renderer: PracticeProgress while practice runs */
+  practiceProgress: "moss:practice:progress",
+  /** renderer -> main (invoke): learned procedures */
+  proceduresList: "moss:procedures:list",
+  /** renderer -> main (invoke): trust, demote, or restore a procedure; returns the updated list */
+  procedureSetStatus: "moss:procedures:setStatus",
+  /** renderer -> main (invoke): delete a procedure; returns the updated list */
+  procedureDelete: "moss:procedures:delete",
   /** renderer -> main (invoke): recorded turn trace count, recent summaries, and folder */
   tracesList: "moss:traces:list",
   /** renderer -> main (invoke): delete every recorded turn trace */

@@ -693,6 +693,26 @@ describe("ChatPanel", () => {
     expect(screen.queryByText("Undo turn")).toBeNull();
   });
 
+  it("records harness decisions from the turn and shows them under the reply", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "harness-decision", decision: { kind: "repair", summary: "Recovered 1 tool call the model wrote as text." } });
+    cleanup();
+    mockSession.value = {
+      id: "s1",
+      title: "New chat",
+      messages: [
+        { role: "user", content: "go" },
+        { role: "assistant", content: "done", turnId },
+      ],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    render(<Harness />);
+    expect(screen.getByText("Why? 1 harness decision")).toBeDefined();
+    expect(screen.getByText("Recovered 1 tool call the model wrote as text.")).toBeDefined();
+  });
+
   it("shows no revert affordance when a turn changed no files", async () => {
     const list = vi.fn(() => Promise.resolve([]));
     (window.moss as { checkpoint?: unknown }).checkpoint = { list, revert: vi.fn() };
@@ -1519,7 +1539,7 @@ describe("ChatPanel", () => {
 
   it("sends cross-provider routes in place of same-connection models, and constrained output choices", () => {
     const escalationRoute = { presetId: "anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com", model: "claude-x" };
-    Object.assign(mockSettings, { fastModel: "fast", escalationModel: "big", escalationRoute, constrainedOutput: { small: "always" }, semanticRanking: true });
+    Object.assign(mockSettings, { fastModel: "fast", escalationModel: "big", escalationRoute, constrainedOutput: { small: "always" }, semanticRanking: true, quarantineUntrusted: true, stepVoting: { small: "never" } });
     try {
       render(<Harness />);
       startTurn();
@@ -1527,8 +1547,10 @@ describe("ChatPanel", () => {
       expect(req.routing).toEqual({ fastModel: "fast", escalationRoute });
       expect(req.constrainedOutput).toEqual({ small: "always" });
       expect(req.semanticRanking).toBe(true);
+      expect(req.quarantineUntrusted).toBe(true);
+      expect(req.stepVoting).toEqual({ small: "never" });
     } finally {
-      for (const key of ["fastModel", "escalationModel", "escalationRoute", "constrainedOutput", "semanticRanking"]) Reflect.deleteProperty(mockSettings, key);
+      for (const key of ["fastModel", "escalationModel", "escalationRoute", "constrainedOutput", "semanticRanking", "quarantineUntrusted", "stepVoting"]) Reflect.deleteProperty(mockSettings, key);
     }
   });
 
@@ -1552,6 +1574,7 @@ describe("ChatPanel", () => {
     expect(req.routing).toBeUndefined();
     expect(req.constrainedOutput).toBeUndefined();
     expect(req.semanticRanking).toBeUndefined();
+    expect(req.quarantineUntrusted).toBeUndefined();
     expect(req.recordTrace).toBeUndefined();
   });
 

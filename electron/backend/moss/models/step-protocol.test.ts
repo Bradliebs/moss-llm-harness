@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AgentMessage, ToolDefinition } from "../../../../common/types";
 import type { ChatProvider, ChatRequest, ProviderStreamEvent } from "../providers/types";
-import { buildStepSchema, interpretStep, StepProtocolProvider, toStepMessages } from "./step-protocol";
+import { buildStepSchema, interpretStep, StepProtocolProvider, stepKey, toStepMessages } from "./step-protocol";
 
 const READ: ToolDefinition = {
   name: "read_file",
@@ -95,5 +95,53 @@ describe("StepProtocolProvider", () => {
     const request: ChatRequest = { model: "m", messages: [{ role: "user", content: "hi" }] };
     expect(await collect(new StepProtocolProvider(inner).streamChat(request, new AbortController().signal))).toEqual([{ type: "text-delta", text: "hi" }]);
     expect(inner.requests[0]).toBe(request);
+  });
+});
+
+
+describe("voting on constrained steps", () => {
+  function sequenced(replies: string[]): ChatProvider & { requests: ChatRequest[] } {
+    const requests: ChatRequest[] = [];
+    let index = 0;
+    return {
+      kind: "openai-compatible",
+      requests,
+      async *streamChat(req) {
+        requests.push(req);
+        yield { type: "text-delta", text: replies[index++ % replies.length] };
+        yield { type: "usage", usage: { inputTokens: 10, outputTokens: 2 } };
+      },
+      async listModels() { return []; },
+    };
+  }
+  const ask = (provider: ChatProvider) => collect(provider.streamChat({ model: "m", messages: [{ role: "user", content: "read" }], tools: [READ] }, new AbortController().signal));
+
+  it("runs the most common step and reports the agreement", async () => {
+    const inner = sequenced([
+      '{"action":"tool","tool":"read_file","arguments":{"path":"b.md"}}',
+      '{"action":"tool","tool":"read_file","arguments":{"path":" a.md"}}',
+      '{"arguments":{"path":"a.md"},"tool":"read_file","action":"tool"}',
+    ]);
+    const onVote = vi.fn();
+    const events = await ask(new StepProtocolProvider(inner, { votes: 3, onVote }));
+    expect(inner.requests).toHaveLength(3);
+    expect(inner.requests.every((req) => req.temperature === 0.6)).toBe(true);
+    expect(events.filter((event) => event.type === "usage")).toHaveLength(3);
+    expect(events.find((event) => event.type === "tool-call")).toMatchObject({ toolCall: { arguments: "{\"path\":\" a.md\"}" } });
+    expect(onVote).toHaveBeenCalledWith({ samples: 3, agreeing: 2, choice: "read_file" });
+  });
+
+  it("breaks ties toward the earliest sample and lets a majority finish", async () => {
+    const tie = sequenced(['{"action":"final","answer":"First."}', '{"action":"tool","tool":"read_file","arguments":{"path":"x"}}']);
+    expect((await ask(new StepProtocolProvider(tie, { votes: 2 }))).filter((event) => event.type === "text-delta")).toEqual([{ type: "text-delta", text: "First." }]);
+    expect(stepKey([{ type: "text-delta", text: "a" }])).toBe("final");
+    expect(stepKey([])).toBeUndefined();
+  });
+
+  it("keeps a single sample at the request temperature", async () => {
+    const inner = sequenced(['{"action":"final","answer":"ok"}']);
+    await ask(new StepProtocolProvider(inner, { votes: 1 }));
+    expect(inner.requests).toHaveLength(1);
+    expect(inner.requests[0].temperature).toBeUndefined();
   });
 });

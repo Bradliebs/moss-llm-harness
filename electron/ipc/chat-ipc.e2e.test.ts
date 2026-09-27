@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IPC } from "../../common/ipc-contract";
-import type { ChatEventPayload, ChatStartRequest } from "../../common/types";
+import type { ChatEventPayload, ChatStartRequest, ModelPerformanceEntry, Procedure } from "../../common/types";
 import type { ChatProvider, ProviderStreamEvent } from "../backend/moss/providers/types";
 
 // Recording ipcMain so the test can invoke the registered channel handlers.
@@ -60,6 +60,8 @@ import { providerCredentials } from "../backend/moss/provider-credentials";
 import { modelProfileStore } from "../backend/moss/models/model-profile-store";
 import { traceStore } from "../backend/moss/models/trace-recorder";
 import { semanticIndex } from "../backend/moss/models/tool-index";
+import { modelPerformanceStore } from "../backend/moss/models/model-performance";
+import { procedureStore } from "../backend/moss/learning/procedure-store";
 import { skillLedger } from "../backend/moss/skills/skill-ledger";
 import { skillsStore } from "../backend/moss/skills/skills-store";
 
@@ -140,12 +142,23 @@ function request(overrides: Partial<ChatStartRequest> = {}): ChatStartRequest {
   } as ChatStartRequest;
 }
 
+const performanceEntries: ModelPerformanceEntry[] = [];
+const offeredProcedures: Procedure[] = [];
+
 describe("chat IPC turn (e2e)", () => {
   beforeEach(() => {
     recorded.on.clear();
     recorded.handle.clear();
     mockProviderRef.current = null;
     mockProviderRef.factory = undefined;
+    // Live scores persist across turns; keep each test independent.
+    performanceEntries.length = 0;
+    vi.spyOn(modelPerformanceStore, "list").mockImplementation(async () => [...performanceEntries]);
+    vi.spyOn(modelPerformanceStore, "record").mockResolvedValue(undefined);
+    vi.spyOn(procedureStore, "offered").mockImplementation(async () => [...offeredProcedures]);
+    vi.spyOn(procedureStore, "observe").mockResolvedValue(undefined);
+    vi.spyOn(procedureStore, "recordOutcome").mockResolvedValue(undefined);
+    offeredProcedures.length = 0;
     registerChatIpc();
   });
 
@@ -668,6 +681,16 @@ describe("chat IPC turn (e2e)", () => {
     expect(sent.some((payload) => payload.event.type === "notice" && /Using constrained tool output for tiny/.test(payload.event.message))).toBe(true);
     expect(sent.filter((payload) => payload.event.type === "text-delta").map((payload) => (payload.event as { text: string }).text).join("")).toBe("All done.");
 
+    // A limited model whose replies are fast also votes on each step.
+    expect(sent.some((payload) => payload.event.type === "harness-decision" && payload.event.decision.kind === "vote")).toBe(false);
+    get.mockResolvedValueOnce({ ...(await get.getMockImplementation()!("openai-compatible", "", ""))!, latency: { medianMs: 900, p90Ms: 1_200 } });
+    requests.length = 0;
+    const voting: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(voting), request({ turnId: "tv", config, enableTools: true, workspaceRoot: "" }));
+    await vi.waitFor(() => expect(voting.some((payload) => payload.event.type === "turn-complete")).toBe(true));
+    expect(requests.filter((item) => item.responseSchema)).toHaveLength(3);
+    expect(voting.some((payload) => payload.event.type === "notice" && /Voting on each step for tiny: 3 constrained samples/.test(payload.event.message))).toBe(true);
+
     // An explicit "never" keeps native tool calling.
     requests.length = 0;
     const second: ChatEventPayload[] = [];
@@ -708,6 +731,75 @@ describe("chat IPC turn (e2e)", () => {
     await vi.waitFor(() => expect(seen!.system).not.toContain("Scaffolding for this model"));
     expect(get).not.toHaveBeenCalled();
     get.mockRestore();
+  });
+
+  it("records host evidence for live scores and adapts to a tier that live results moved", async () => {
+    const record = vi.mocked(modelPerformanceStore.record);
+    mockProviderRef.current = scriptedProvider([
+      [{ type: "tool-call", toolCall: { id: "c1", name: "read_file", arguments: "{\"path\":\"nope.txt\"}" } }],
+      [{ type: "text-delta", text: "done" }],
+    ]);
+    const sent: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({ enableTools: true, workspaceRoot: "", config: { kind: "openai-compatible", baseUrl: "http://localhost:11434/v1", model: "test-model" } }));
+    await vi.waitFor(() => expect(record).toHaveBeenCalled());
+    expect(record.mock.calls[0][0]).toMatchObject({ providerKind: "openai-compatible", model: "test-model", kind: "chat", rejections: 1 });
+
+    const get = vi.spyOn(modelProfileStore, "get").mockResolvedValue({
+      schemaVersion: 1, suiteVersion: "1", providerKind: "anthropic", endpoint: "http://localhost:11434/v1", model: "test-model",
+      probedAt: "2026-09-26T00:00:00.000Z", durationMs: 1, maxContextTested: 1024, results: [], overall: 0.4, tier: "limited",
+      usage: {}, failedRequests: 0,
+      recommendation: { scaffolding: "heavy", toolUse: "supervised", structuredOutput: "repair", settings: {}, notes: [] },
+    });
+    performanceEntries.push({
+      schemaVersion: 1, providerKind: "anthropic", endpoint: "http://localhost:11434/v1", model: "test-model", kind: "coding",
+      runs: 20, recent: Array(20).fill("s"), practice: [], rejections: 0, stalls: 0, escalatedAway: 0, repairs: 0, updatedAt: "x",
+    });
+    mockProviderRef.current = scriptedProvider([[{ type: "text-delta", text: "done" }]]);
+    const second: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(second), request({ turnId: "t2", enableTools: true, workspaceRoot: "", config: { kind: "anthropic", baseUrl: "http://localhost:11434/v1", model: "test-model" } }));
+    await vi.waitFor(() => expect(second.some((payload) => payload.event.type === "turn-complete")).toBe(true));
+    const decision = second.find((payload) => payload.event.type === "harness-decision" && payload.event.decision.kind === "live-score");
+    expect((decision?.event as { decision: { summary: string } }).decision.summary).toMatch(/Treating test-model as capable \(probe: limited\) after 100% verified success over 20 graded runs/);
+    expect(second.some((payload) => payload.event.type === "notice" && /measured profile \(capable\)/.test(payload.event.message))).toBe(true);
+    get.mockRestore();
+  });
+
+  it("offers learned procedures, expands them into ordinary calls, and records their outcome", async () => {
+    offeredProcedures.push({
+      id: "p-1", name: "read_file → read_file", description: "Learned from verified turns.", status: "candidate", learnedFrom: 3,
+      successCount: 0, failureCount: 0, consecutiveFailures: 0, createdAt: "x", updatedAt: "x",
+      steps: [{ tool: "read_file", args: { path: { slot: "path" } } }, { tool: "read_file", args: { path: { const: "README.md" } } }],
+      slots: [{ name: "path", example: "a.md" }],
+    });
+    let offeredTools: string[] = [];
+    let system = "";
+    let round = 0;
+    mockProviderRef.current = {
+      kind: "test",
+      async *streamChat(input) {
+        round += 1;
+        if (round === 1) {
+          offeredTools = (input.tools ?? []).map((tool) => tool.name);
+          system = input.messages.find((message) => message.role === "system")?.content ?? "";
+          yield { type: "tool-call", toolCall: { id: "c1", name: "run_procedure", arguments: JSON.stringify({ procedure: "p-1", slots: { path: "notes.md" } }) } };
+        } else yield { type: "text-delta", text: "done" };
+      },
+      async listModels() { return []; },
+    };
+    const sent: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({ enableTools: true, workspaceRoot: "" }));
+    await vi.waitFor(() => expect(sent.some((payload) => payload.event.type === "turn-complete")).toBe(true));
+    expect(offeredTools).toContain("run_procedure");
+    expect(system).toContain("Learned procedures are available through run_procedure.");
+    expect(sent.filter((payload) => payload.event.type === "tool-call").map((payload) => (payload.event as { arguments: string }).arguments)).toEqual(["{\"path\":\"notes.md\"}", "{\"path\":\"README.md\"}"]);
+    await vi.waitFor(() => expect(procedureStore.recordOutcome).toHaveBeenCalledWith(["p-1"], expect.any(String)));
+    // Turning learning off withholds them.
+    offeredTools = [];
+    round = 0;
+    const off: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(off), request({ turnId: "t2", enableTools: true, workspaceRoot: "", learnProcedures: false }));
+    await vi.waitFor(() => expect(off.some((payload) => payload.event.type === "turn-complete")).toBe(true));
+    expect(offeredTools).not.toContain("run_procedure");
   });
 
   it("ranks narrowed tools by meaning only when the user opts in", async () => {

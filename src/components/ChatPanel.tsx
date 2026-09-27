@@ -48,7 +48,9 @@ import { RichResponse } from "./RichResponse";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { ToolActivity } from "./ToolActivity";
 import { ToolPreview } from "./ToolPreview";
+import { TurnDecisions } from "./TurnDecisions";
 import { TurnUndo } from "./TurnUndo";
+import { recordTurnDecision } from "../lib/turnDecisions";
 import { bindSuggestedCommand, VerificationSuggestions } from "./VerificationSuggestions";
 
 const ArtifactWorkspace = lazy(() => import("./ArtifactWorkspace").then((module) => ({ default: module.ArtifactWorkspace })));
@@ -710,6 +712,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       // Transient turn-progress note (e.g. a stream retry); shown on the status
       // line and cleared when the turn lands, like Aborted/Error.
       setStatus(ev.message);
+    } else if (ev.type === "harness-decision") {
+      recordTurnDecision(payload.turnId, ev.decision);
     } else if (ev.type === "confidence") {
       // Shadow label for the finished turn; shown as an opt-in chip until the
       // next turn launches.
@@ -842,6 +846,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         ? { constrainedOutput: activeSettings.constrainedOutput }
         : {}),
       ...(activeSettings.semanticRanking ? { semanticRanking: true } : {}),
+      ...(activeSettings.quarantineUntrusted ? { quarantineUntrusted: true } : {}),
+      ...(activeSettings.learnProcedures === false ? { learnProcedures: false } : {}),
+      ...(activeSettings.stepVoting && Object.keys(activeSettings.stepVoting).length > 0 ? { stepVoting: activeSettings.stepVoting } : {}),
       ...(activeSettings.recordTraces ? { recordTrace: true } : {}),
     });
   }
@@ -1429,6 +1436,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             onOpenSettings={onOpenSettings}
             readiness={readinessItems(settings)}
             guide={settings.onboardingDismissed ? undefined : {
+              onSetUp: () => onOpenSettings("models"),
               providerReady: !!settings.model && !!(settings.baseUrl ?? "").trim(),
               workspaceRoot: settings.workspaceRoot,
               onPickWorkspace: () => {
@@ -1556,6 +1564,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                   </div>
                 </div>
               ) : null}
+              {it.role === "assistant" && it.turnId ? <TurnDecisions turnId={it.turnId} onOpenSettings={onOpenSettings} /> : null}
               {it.role === "assistant" && it.turnId ? <TurnUndo turnId={it.turnId} /> : null}
             </div>
           ) : <ToolCard key={i} tool={it} onApprove={approve} workspaceRoot={settings.workspaceRoot} onOpenSettings={onOpenSettings} />

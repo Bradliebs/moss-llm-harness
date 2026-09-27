@@ -110,3 +110,48 @@ describe("find_tool in the turn loop", () => {
     expect(requests[1].tools?.map((tool) => tool.name)).toEqual(["read_file", "list_dir"]);
   });
 });
+
+
+describe("learned procedures in the turn loop", () => {
+  const procedureRun = (slots: Record<string, unknown>) => [{ type: "tool-call" as const, toolCall: { id: "p", name: "run_procedure", arguments: JSON.stringify({ procedure: "p-1", slots }) } }];
+  const expander = (raw: string) => {
+    const args = JSON.parse(raw) as { slots: Record<string, unknown> };
+    if (!args.slots.path) return { error: "run_procedure p-1 needs slots: path." };
+    return {
+      procedureId: "p-1",
+      name: "read_file → write_file",
+      calls: [
+        { id: "s1", name: "read_file", arguments: JSON.stringify({ path: args.slots.path }) },
+        { id: "s2", name: "write_file", arguments: JSON.stringify({ path: args.slots.path, content: "x" }) },
+      ],
+    };
+  };
+
+  it("expands the procedure into ordinary calls that still go through the permission policy", async () => {
+    const read = schemaTool("read_file", { path: { type: "string" } }, ["path"]);
+    const write = schemaTool("write_file", { path: { type: "string" }, content: { type: "string" } }, ["path", "content"]);
+    const approvals: string[] = [];
+    const events = await run(scripted([procedureRun({ path: "a.md" }), [{ type: "text-delta", text: "done" }]]), [read, write, { ...schemaTool("run_procedure", {}, []) }], {
+      expandProcedure: expander,
+      requestApproval: async (id) => { approvals.push(id); return { approved: true }; },
+    });
+    expect(read.execute).toHaveBeenCalledWith({ path: "a.md" }, expect.anything());
+    expect(write.execute).toHaveBeenCalledOnce();
+    // write_file is a change, so it still asked for approval.
+    expect(approvals).toEqual(["s2"]);
+    expect(events.filter((event) => event.type === "tool-call").map((event) => (event as { name: string }).name)).toEqual(["read_file", "write_file"]);
+    expect(events.some((event) => event.type === "harness-decision" && event.decision.kind === "procedure")).toBe(true);
+  });
+
+  it("stops at the first failed step and reports missing slots without running anything", async () => {
+    const read = schemaTool("read_file", { path: { type: "string" } }, ["path"], vi.fn(async () => ({ ok: false, content: "not found" })));
+    const write = schemaTool("write_file", { path: { type: "string" }, content: { type: "string" } }, ["path", "content"]);
+    const events = await run(scripted([procedureRun({ path: "a.md" }), [{ type: "text-delta", text: "done" }]]), [read, write], { expandProcedure: expander, autoApprove: true });
+    expect(write.execute).not.toHaveBeenCalled();
+    expect(results(events).map((result) => result.content)).toEqual(["not found", "Skipped: an earlier step of procedure read_file → write_file failed. Continue by hand from here."]);
+
+    const missing = await run(scripted([procedureRun({}), [{ type: "text-delta", text: "done" }]]), [read, write], { expandProcedure: expander });
+    expect(results(missing)[0]).toMatchObject({ ok: false, content: "run_procedure p-1 needs slots: path." });
+    expect(read.execute).toHaveBeenCalledOnce();
+  });
+});
