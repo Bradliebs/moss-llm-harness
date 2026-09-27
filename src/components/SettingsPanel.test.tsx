@@ -310,6 +310,23 @@ describe("SettingsPanel", () => {
     await waitFor(() => expect(screen.getByText("connected \u00b7 1 tools")).toBeDefined());
   });
 
+  it("trusts a connected server's read-only annotations, keeping the rest of its config", async () => {
+    window.moss.mcp.status = vi.fn(() =>
+      Promise.resolve([{ id: "docs", enabled: true, connected: true, toolCount: 2, tools: ["search", "write"], readOnlyTools: ["search"] }]),
+    );
+    window.moss.mcp.servers = vi.fn(() => Promise.resolve([{ type: "stdio" as const, id: "docs", command: "node", args: ["docs.js"] }]));
+    window.moss.mcp.update = vi.fn(() =>
+      Promise.resolve([{ id: "docs", enabled: true, connected: true, toolCount: 2, readOnlyTools: ["search"], trustAnnotations: true }]),
+    );
+    render(<SettingsPanel onClose={() => {}} />);
+    const trust = await screen.findByLabelText("Trust read-only annotations from docs");
+    expect(trust.closest("label")?.textContent).toContain("trust read-only (1)");
+    expect(trust.closest("label")?.getAttribute("title")).toContain("Declared read-only: search");
+    fireEvent.click(trust);
+    await waitFor(() => expect(window.moss.mcp.update).toHaveBeenCalledWith({ type: "stdio", id: "docs", command: "node", args: ["docs.js"], trustAnnotations: true }));
+    await waitFor(() => expect((screen.getByLabelText("Trust read-only annotations from docs") as HTMLInputElement).checked).toBe(true));
+  });
+
   it("shows a working state and disables the checkbox while a toggle is in flight", async () => {
     let resolveToggle!: (value: unknown) => void;
     window.moss.mcp.status = vi.fn(() =>

@@ -59,6 +59,27 @@ describe("mission budgets", () => {
     expect(budget.usage).toEqual({ inputTokens: 600, outputTokens: 10 });
   });
 
+  it("prices each request at the routed model and treats unpriced local models as free", async () => {
+    const provider: ChatProvider = { kind: "fixture", listModels: async () => [], async *streamChat() {
+      yield { type: "usage", usage: { inputTokens: 1_000, outputTokens: 1_000 } };
+    } };
+    let escalated = false;
+    const resolve = (model: string) => escalated ? { model: "cloud-big", local: false } : { model, local: true };
+    const budget = new MissionBudgetProvider(provider, { maxCostUsd: 1 }, { "cloud-big": { inputPer1M: 3, outputPer1M: 15 } }, resolve);
+    // A local model with no configured rate no longer blocks a cost-capped mission.
+    for await (const event of budget.streamChat(request, new AbortController().signal)) void event;
+    expect(budget.estimatedCostUsd).toBe(0);
+    escalated = true;
+    for await (const event of budget.streamChat(request, new AbortController().signal)) void event;
+    expect(budget.estimatedCostUsd).toBeCloseTo(0.018);
+  });
+
+  it("still fails closed for an unpriced remote route", async () => {
+    const provider: ChatProvider = { kind: "fixture", listModels: async () => [], async *streamChat() { yield { type: "text-delta", text: "no" }; } };
+    const budget = new MissionBudgetProvider(provider, { maxCostUsd: 1 }, undefined, () => ({ model: "mystery-cloud", local: false }));
+    await expect(async () => { for await (const event of budget.streamChat(request, new AbortController().signal)) void event; }).rejects.toThrow("model rate");
+  });
+
   it("aborts active work when its duration allowance expires", async () => {
     vi.useFakeTimers();
     try {

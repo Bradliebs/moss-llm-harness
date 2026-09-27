@@ -401,12 +401,46 @@ still required before closing end-to-end dictation acceptance.
       Demote a skill and confirm it no longer appears in the model's skill
       index; restore it and roll back to an earlier version.
 
+22. **Constrained output, cross-provider routing, tool recovery, and data-level provenance**
+    - Select `qwen2.5:1.5b` or `gemma3` on Ollama, profile it, select a
+      workspace, and ask for a two-step task such as reading a file and then
+      listing its folder. Confirm the "Using constrained tool output" notice,
+      that each step runs as a normal tool card, and that the final answer
+      appears.
+    - Under **Routing and adaptation**, set **Constrained tool output** to
+      **Never** and repeat. Confirm the notice is gone. Return it to
+      **Automatic**.
+    - Turn off adaptation and confirm constrained output stays off for the
+      profiled model unless it is set to **Always**.
+    - With a model that writes tool calls as text, confirm the "Recovered 1 tool
+      call" and "Repaired" notices and that the call runs.
+    - Save an API key for a cloud provider, return to Ollama, and choose that
+      provider and a model for **Escalation model**. Confirm the off-machine
+      warning in Settings. Trigger two rejections, for example by asking the
+      local model to read files that do not exist, and confirm the escalation
+      notice names the cloud destination and later rounds come from the cloud
+      model.
+    - Configure an embeddings model under **Settings > Knowledge**, turn on
+      **Rank tools and lessons by meaning**, profile a limited model, and ask
+      "why is CI red?". Confirm `run_command` is among the offered tools or
+      that the model uses `find_tool` to enable it. Turn the option off and
+      confirm no embeddings request reaches the endpoint during a turn.
+    - With auto-approve on, fetch a web page, then fetch a link from that page
+      exactly as written and run an unrelated web search. Confirm both run
+      without a prompt. Then ask the model to fetch a URL the page did not
+      contain, or a changed link on the page's host. Confirm each asks and the
+      approval card shows the rule that applied.
+    - Connect an MCP server that declares a read-only tool, check **trust
+      read-only** under **Settings > Knowledge**, and confirm that tool runs
+      without a prompt while its other tools still ask.
+
 ## Pass criteria
 
 - No uncaught errors in the main-process console or the renderer devtools.
 - Streaming, tool approval, auto-approve provenance, abort, titling, background
   inspection, templates, diagnostics, notifications, compact layout, approval
-  previews, undo, shortcuts, conversation organisation, and mission authority
+  previews, undo, shortcuts, conversation organisation, mission authority,
+  constrained output, cross-provider escalation, and data-level provenance
   behave as described above.
 - Reload preserves session history, titles, task state, and the "auto" provenance
   tag without replaying an interrupted action.

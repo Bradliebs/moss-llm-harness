@@ -13,6 +13,11 @@ const settings = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/settings", () => ({
+  PROVIDER_PRESETS: [
+    { id: "ollama", label: "Ollama", kind: "openai-compatible", baseUrl: "http://localhost:11434/v1" },
+    { id: "anthropic", label: "Anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com" },
+    { id: "custom", label: "Custom", kind: "openai-compatible", baseUrl: "" },
+  ],
   useSettings: () => settings.value,
   modelsStore: { use: () => ["small", "fast", "big"] },
   toProviderConfig: (s: { kind: string; baseUrl: string; model: string }) => ({ kind: s.kind, baseUrl: s.baseUrl, model: s.model }),
@@ -33,9 +38,13 @@ const report: ReplayReport = {
 };
 
 beforeEach(() => {
-  settings.value = { kind: "openai-compatible", baseUrl: "http://localhost:11434/v1", model: "small", apiKey: "" };
+  settings.value = { presetIndex: 0, kind: "openai-compatible", baseUrl: "http://localhost:11434/v1", model: "small", apiKey: "" };
   Object.assign(window, {
     moss: {
+      provider: {
+        getCredential: vi.fn(async () => "sk-stored"),
+        listModels: vi.fn(async () => ["claude-sonnet"]),
+      },
       model: {
         profiles: vi.fn(async () => [{ model: "fast", providerKind: "openai-compatible", endpoint: "http://localhost:11434/v1", tier: "capable", overall: 0.7, latency: { medianMs: 800, p90Ms: 1_000 } }]),
       },
@@ -72,6 +81,52 @@ describe("RoutingSettings", () => {
     expect(updateSettings).toHaveBeenCalledWith({ adaptiveScaffolding: false });
     expect(updateSettings).toHaveBeenCalledWith({ recordTraces: true });
     expect((screen.getByLabelText("After rejections") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("routes escalation to another configured provider and warns when context leaves the machine", async () => {
+    render(<RoutingSettings className="" />);
+    const provider = screen.getByLabelText("Escalation model provider");
+    // Custom has no base URL, so it is not offered.
+    expect([...provider.querySelectorAll("option")].map((option) => option.textContent)).toEqual(["This connection", "Anthropic"]);
+    fireEvent.change(provider, { target: { value: "anthropic" } });
+    await waitFor(() => expect(window.moss.provider.listModels).toHaveBeenCalledWith({ kind: "anthropic", baseUrl: "https://api.anthropic.com", apiKey: "sk-stored", model: "" }));
+    await screen.findByRole("option", { name: "claude-sonnet (not profiled)" });
+    fireEvent.change(screen.getByLabelText("Escalation model"), { target: { value: "claude-sonnet" } });
+    expect(updateSettings).toHaveBeenLastCalledWith({
+      escalationModel: undefined,
+      escalationRoute: { presetId: "anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet" },
+    });
+
+    settings.value = { ...settings.value, escalationRoute: { presetId: "anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet" } };
+    cleanup();
+    render(<RoutingSettings className="" />);
+    expect(await screen.findByText(/conversation and workspace context go to api\.anthropic\.com/)).toBeDefined();
+    expect((screen.getByLabelText("After rejections") as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it("opts in to ranking by meaning and names where request text goes", () => {
+    render(<RoutingSettings className="" />);
+    const toggle = screen.getByRole("checkbox", { name: /Rank tools and lessons by meaning/ });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    expect(toggle.closest("label")?.textContent).toContain("nomic-embed-text at localhost:11434");
+    fireEvent.click(toggle);
+    expect(updateSettings).toHaveBeenCalledWith({ semanticRanking: true });
+  });
+
+  it("sets constrained tool output for the current model", async () => {
+    render(<RoutingSettings className="" />);
+    const select = screen.getByLabelText("Constrained tool output for small");
+    expect((select as HTMLSelectElement).value).toBe("auto");
+    expect(screen.getByText(/Off for this model/)).toBeDefined();
+    fireEvent.change(select, { target: { value: "always" } });
+    expect(updateSettings).toHaveBeenCalledWith({ constrainedOutput: { small: "always" } });
+
+    settings.value = { ...settings.value, constrainedOutput: { small: "always" } };
+    cleanup();
+    render(<RoutingSettings className="" />);
+    expect(screen.getByText(/On for this model/)).toBeDefined();
+    fireEvent.change(screen.getByLabelText("Constrained tool output for small"), { target: { value: "auto" } });
+    expect(updateSettings).toHaveBeenLastCalledWith({ constrainedOutput: {} });
   });
 
   it("replays a recorded trace against a chosen model and shows the comparison", async () => {

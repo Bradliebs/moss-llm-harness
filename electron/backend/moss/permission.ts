@@ -5,6 +5,7 @@
 // guard (path-guard.ts) is a separate, always-on sandbox enforced at execution.
 
 import type { TaskExecutionGrant, ToolRisk } from "../../../common/types";
+import type { UntrustedDerivation } from "./safety/provenance";
 
 export type Permission = "allow" | "ask" | "deny";
 
@@ -13,6 +14,8 @@ const AUTO_ALLOW = new Set<string>([
   "plan",
   // working_state edits conversation state; protected paths are enforced by the host.
   "working_state",
+  // find_tool only changes which tools are offered this turn.
+  "find_tool",
   "read_file",
   "list_dir",
   "search_files",
@@ -175,6 +178,8 @@ export interface PolicyDecision {
   /** true when auto-approval was withheld because untrusted content entered
    *  the turn; the approval prompt explains why */
   provenanceGate?: boolean;
+  /** which rule decided, in plain language, for the approval prompt */
+  rule?: string;
 }
 
 export interface PolicyInput {
@@ -187,6 +192,24 @@ export interface PolicyInput {
   stepCapabilities?: readonly string[];
   /** untrusted content (web, MCP, browser, desktop) has entered this turn */
   untrusted?: boolean;
+  /** how the arguments relate to that content; absent is treated as derived */
+  untrustedDerivation?: UntrustedDerivation;
+  /** the tool is declared read-only by a source the user trusts */
+  readOnly?: boolean;
+  /** the tool is declared destructive by its source */
+  destructive?: boolean;
+}
+
+/** Tools that only read from the network. After untrusted content they keep
+ *  auto-approval unless their arguments derive from that content. */
+const NETWORK_READ_TOOLS = new Set(["web_search", "fetch_url", "browser_navigate"]);
+
+const GATE_RULE = "Changes after untrusted content always need approval.";
+
+function derivedReason(input: PolicyInput): string | undefined {
+  const derivation = input.untrustedDerivation;
+  if (!derivation) return "Its arguments may derive from untrusted content.";
+  return derivation.kind === "derived" ? derivation.reason : undefined;
 }
 
 /** Allow-listed tools that still write durable state and so must not be
@@ -205,11 +228,20 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
   )) {
     return { action: "deny", autoApproved: false };
   }
+  if (input.destructive) {
+    return { action: "prompt", autoApproved: false, risk: "destructive", rule: "The tool's server declares it destructive." };
+  }
+  if (input.readOnly) {
+    const reason = input.untrusted ? derivedReason(input) : undefined;
+    return reason
+      ? { action: "prompt", autoApproved: false, risk: "readonly", provenanceGate: true, rule: reason }
+      : { action: "run", autoApproved: false, risk: "readonly" };
+  }
   const base = classifyTool(input.name);
   if (base === "deny") return { action: "deny", autoApproved: false };
   if (base === "allow") {
     return input.untrusted && DURABLE_STATE_TOOLS.has(input.name)
-      ? { action: "prompt", autoApproved: false, risk: "mutating", provenanceGate: true }
+      ? { action: "prompt", autoApproved: false, risk: "mutating", provenanceGate: true, rule: "Saving memory after untrusted content always needs approval." }
       : { action: "run", autoApproved: false };
   }
 
@@ -245,7 +277,14 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
  *  whatever auto-approval would otherwise apply is withheld once it is present. */
 function autoOrPrompt(input: PolicyInput, risk: Exclude<ToolRisk, "destructive">): PolicyDecision {
   if (!mayAutoApprove(input, risk)) return { action: "prompt", autoApproved: false, risk };
-  if (input.untrusted) return { action: "prompt", autoApproved: false, risk, provenanceGate: true };
+  if (input.untrusted) {
+    if (NETWORK_READ_TOOLS.has(input.name)) {
+      const reason = derivedReason(input);
+      if (!reason) return { action: "run", autoApproved: true, risk };
+      return { action: "prompt", autoApproved: false, risk, provenanceGate: true, rule: reason };
+    }
+    return { action: "prompt", autoApproved: false, risk, provenanceGate: true, rule: GATE_RULE };
+  }
   return { action: "run", autoApproved: true, risk };
 }
 

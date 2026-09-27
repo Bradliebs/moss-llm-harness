@@ -134,4 +134,19 @@ describe("lesson recall", () => {
     expect(await store.relevant("")).toEqual([]);
     expect(renderLessons([])).toBe("");
   });
+
+  it("recalls a lesson by meaning when it shares no words with the request", async () => {
+    const store = new LessonStore(dir);
+    await store.merge([
+      { scope: "coding", summary: "Use npm test rather than vitest directly", outcome: "positive", capabilityIds: ["run_command"], successCount: 3, failureCount: 0, provenanceTaskId: "t1" },
+      { scope: "research", summary: "Browser search found pricing pages quickly", outcome: "positive", capabilityIds: ["web_search"], successCount: 3, failureCount: 0, provenanceTaskId: "t2" },
+    ]);
+    const request = "why is CI red?";
+    expect(await store.relevant(request)).toEqual([]);
+    const similarity = async (_query: string, texts: readonly string[]) => texts.map((text) => /npm test/.test(text) ? 0.66 : 0.4);
+    expect((await store.relevant(request, 3, similarity)).map((lesson) => lesson.summary)).toEqual(["Use npm test rather than vitest directly"]);
+    // An unavailable embedder falls back to word overlap.
+    expect(await store.relevant(request, 3, async () => null)).toEqual([]);
+    expect(await store.relevant(request, 3, async () => { throw new Error("offline"); })).toEqual([]);
+  });
 });

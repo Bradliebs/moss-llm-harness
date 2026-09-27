@@ -170,6 +170,7 @@ function ToolCard({
               <div className="mb-2 rounded-md border border-red-500/50 bg-red-500/10 px-2 py-1.5 text-xs text-red-900 dark:text-red-100" role="alert" aria-label="Untrusted content warning">
                 <span className="font-semibold">Untrusted content is in play.</span> This action follows content from {tool.provenance.untrustedSources.join(", ")}, which can contain instructions written by someone else. Approve only if it serves your request.
                 {tool.provenance.copiedFromUntrusted ? <span className="mt-1 block font-semibold">Its arguments include text or links copied from that content.</span> : null}
+                {tool.provenance.rule ? <span className="mt-1 block">Why approval is needed: {tool.provenance.rule}</span> : null}
               </div>
             ) : null}
             <div className="text-[10px] font-medium uppercase text-neutral-600 dark:text-neutral-300">Review</div>
@@ -826,15 +827,21 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       ...(typeof activeSettings.stallLimit === "number" ? { stallLimit: activeSettings.stallLimit } : {}),
       ...(activeSettings.untrustedContentGate === false ? { untrustedContentGate: false } : {}),
       adaptiveScaffolding: activeSettings.adaptiveScaffolding !== false,
-      ...(activeSettings.fastModel || activeSettings.escalationModel
+      ...(activeSettings.fastModel || activeSettings.escalationModel || activeSettings.fastRoute || activeSettings.escalationRoute
         ? {
             routing: {
-              ...(activeSettings.fastModel ? { fastModel: activeSettings.fastModel } : {}),
-              ...(activeSettings.escalationModel ? { escalationModel: activeSettings.escalationModel } : {}),
+              ...(activeSettings.fastRoute ? { fastRoute: activeSettings.fastRoute } : activeSettings.fastModel ? { fastModel: activeSettings.fastModel } : {}),
+              ...(activeSettings.escalationRoute
+                ? { escalationRoute: activeSettings.escalationRoute }
+                : activeSettings.escalationModel ? { escalationModel: activeSettings.escalationModel } : {}),
               ...(activeSettings.escalateAfter ? { escalateAfter: activeSettings.escalateAfter } : {}),
             },
           }
         : {}),
+      ...(activeSettings.constrainedOutput && Object.keys(activeSettings.constrainedOutput).length > 0
+        ? { constrainedOutput: activeSettings.constrainedOutput }
+        : {}),
+      ...(activeSettings.semanticRanking ? { semanticRanking: true } : {}),
       ...(activeSettings.recordTraces ? { recordTrace: true } : {}),
     });
   }

@@ -8,6 +8,7 @@
 
 import type { MossEvent } from "../../../../common/types";
 import type { ChatProvider, ChatRequest, ProviderStreamEvent } from "../providers/types";
+import { INVALID_ARGUMENTS_PREFIX } from "./tool-repair";
 
 export const DEFAULT_ESCALATE_AFTER = 2;
 
@@ -45,10 +46,16 @@ export class EscalatingProvider implements ChatProvider {
   }
 }
 
+/** Failures the harness caused (a tool it withheld) or a permission refusal,
+ *  which say nothing about the model's ability. */
+const NOT_MODEL_FAILURE = /^(?:User denied|Denied by policy|Tool call denied|Protected path:|Unknown tool:)/;
+
 /** Counts harness rejections of the model's work. */
 export class EscalationMonitor {
   private rejections = 0;
   private fired = false;
+  /** The first schema error per tool is a correction, not a rejection. */
+  private readonly schemaGrace = new Set<string>();
 
   constructor(private readonly threshold = DEFAULT_ESCALATE_AFTER) {}
 
@@ -60,9 +67,13 @@ export class EscalationMonitor {
   observe(event: MossEvent): boolean {
     // A failed tool call counts too, unless the user or policy refused it: those
     // are decisions about permission, not evidence the model is struggling.
+    if (event.type === "tool-result" && !event.ok && event.content.startsWith(INVALID_ARGUMENTS_PREFIX) && !this.schemaGrace.has(event.name)) {
+      this.schemaGrace.add(event.name);
+      return false;
+    }
     const rejected = (event.type === "verification" && !event.ok)
       || (event.type === "round-end" && event.finish === "rejected")
-      || (event.type === "tool-result" && !event.ok && !/^(?:User denied|Denied by policy|Tool call denied|Protected path:)/.test(event.content));
+      || (event.type === "tool-result" && !event.ok && !NOT_MODEL_FAILURE.test(event.content));
     if (!rejected || this.fired) return false;
     this.rejections += 1;
     if (this.rejections < Math.max(1, this.threshold)) return false;

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { ModelCapabilityProfile, MossEvent, ToolDefinition } from "../../../../common/types";
-import type { ChatProvider, ChatRequest, ProviderStreamEvent } from "../providers/types";
-import { DEFAULT_ESCALATE_AFTER, EscalatingProvider, EscalationMonitor } from "./escalation";
+import { DEFAULT_ESCALATE_AFTER, EscalationMonitor } from "./escalation";
+import { INVALID_ARGUMENTS_PREFIX } from "./tool-repair";
 import { applyScaffoldingMessages, planScaffolding, selectRelevantTools } from "./scaffolding";
 
 function toolDef(name: string, description = ""): ToolDefinition {
@@ -85,7 +85,9 @@ describe("planScaffolding", () => {
 
   it("warns when measured tool calling is unreliable and skips guidance for tool-less turns", () => {
     const avoid = profile("heavy", { tier: "unreliable", recommendation: { scaffolding: "heavy", toolUse: "avoid", structuredOutput: "repair", settings: {}, notes: [] } });
-    expect(planScaffolding(avoid, TOOLS, "x").notice).toMatch(/consider Chat only/);
+    // OpenAI-compatible endpoints carry weak tool callers with constrained output instead.
+    expect(planScaffolding(avoid, TOOLS, "x").notice).not.toMatch(/consider Chat only/);
+    expect(planScaffolding({ ...avoid, providerKind: "anthropic" }, TOOLS, "x").notice).toMatch(/consider Chat only/);
     expect(planScaffolding(avoid, [], "x")).toEqual({ level: "none", tools: [] });
   });
 });
@@ -108,28 +110,6 @@ describe("applyScaffoldingMessages", () => {
 });
 
 describe("escalation", () => {
-  it("rewrites primary-model requests only after escalating", async () => {
-    const seen: string[] = [];
-    const inner: ChatProvider = {
-      kind: "test",
-      async *streamChat(req: ChatRequest): AsyncIterable<ProviderStreamEvent> {
-        seen.push(req.model);
-        yield { type: "text-delta", text: "x" };
-      },
-      listModels: async () => ["a"],
-    };
-    const provider = new EscalatingProvider(inner, "small", "big");
-    const drain = async (model: string) => { for await (const _ of provider.streamChat({ model, messages: [] }, new AbortController().signal)) void _; };
-    await drain("small");
-    expect(provider.escalate()).toBe(true);
-    expect(provider.escalate()).toBe(false);
-    await drain("small");
-    await drain("fast");
-    expect(seen).toEqual(["small", "big", "fast"]);
-    expect(provider.isEscalated).toBe(true);
-    expect(await provider.listModels()).toEqual(["a"]);
-  });
-
   it("fires once when harness rejections reach the threshold", () => {
     const monitor = new EscalationMonitor();
     const rejected: MossEvent = { type: "round-end", round: 0, toolCallCount: 0, finish: "rejected" };
@@ -150,5 +130,16 @@ describe("escalation", () => {
     expect(monitor.observe(result(false, "Denied by policy: run_command"))).toBe(false);
     expect(monitor.observe(result(true, "fine"))).toBe(false);
     expect(monitor.observe(result(false, "File not found: a.txt"))).toBe(true);
+  });
+
+  it("forgives the first schema error per tool and tools the harness withheld", () => {
+    const monitor = new EscalationMonitor(1);
+    const result = (name: string, content: string): MossEvent => ({ type: "tool-result", callId: "c", name, ok: false, content, autoApproved: false });
+    expect(monitor.observe(result("write_file", "Unknown tool: run_command"))).toBe(false);
+    expect(monitor.observe(result("write_file", `${INVALID_ARGUMENTS_PREFIX} write_file: missing required 'content'.`))).toBe(false);
+    expect(monitor.observe(result("read_file", `${INVALID_ARGUMENTS_PREFIX} read_file: missing required 'path'.`))).toBe(false);
+    expect(monitor.count).toBe(0);
+    // The same mistake twice is the model struggling.
+    expect(monitor.observe(result("write_file", `${INVALID_ARGUMENTS_PREFIX} write_file: missing required 'content'.`))).toBe(true);
   });
 });

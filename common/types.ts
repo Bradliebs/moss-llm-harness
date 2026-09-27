@@ -581,13 +581,32 @@ export interface ChatStartRequest {
   stallLimit?: number;
   /** false lets auto-approve cover changes that follow untrusted content; absent means gated */
   untrustedContentGate?: boolean;
+  /** per-model constrained step protocol; absent or "auto" uses it for limited and unreliable profiles */
+  constrainedOutput?: Record<string, ConstrainedOutputMode>;
+  /** rank narrowed tools, find_tool results, and recalled lessons by meaning with `embed`; off unless opted in */
+  semanticRanking?: boolean;
 }
 
+/** A model on a specific provider connection. The main process resolves the
+ *  API key for `presetId` from secure storage; keys never travel in routes. */
+export interface ModelRoute {
+  presetId?: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  model: string;
+}
+
+export type ConstrainedOutputMode = "auto" | "always" | "never";
+
 export interface ModelRouting {
-  /** cheaper or faster model for context summaries and read-only subagents */
+  /** cheaper or faster model for context summaries and read-only subagents, on the current connection */
   fastModel?: string;
-  /** stronger model the turn switches to after repeated rejected work */
+  /** stronger model the turn switches to after repeated rejected work, on the current connection */
   escalationModel?: string;
+  /** fast model on any configured provider; takes precedence over fastModel */
+  fastRoute?: ModelRoute;
+  /** escalation model on any configured provider; takes precedence over escalationModel */
+  escalationRoute?: ModelRoute;
   /** rejected completions or failed verifications before escalating; default 2 */
   escalateAfter?: number;
 }
@@ -599,6 +618,10 @@ export interface TraceCall {
   startedAt: string;
   durationMs: number;
   model: string;
+  /** provider that served this call, when it differs from the trace's primary endpoint */
+  providerKind?: ProviderKind;
+  endpoint?: string;
+  constrained?: boolean;
   request: {
     messages: AgentMessage[];
     toolNames: string[];
@@ -893,6 +916,8 @@ export interface ApprovalProvenance {
   untrustedSources: string[];
   /** the arguments contain text or URLs copied from that untrusted content */
   copiedFromUntrusted: boolean;
+  /** the rule that required approval, in plain language */
+  rule?: string;
 }
 
 export interface SkillImportResult {
@@ -931,6 +956,10 @@ export interface McpServerStatus {
   /** names of the tools the server exposes (raw MCP tool names, unprefixed);
    *  present only while connected, for a hover/expand list in the settings UI */
   tools?: string[];
+  /** the user trusts this server's read-only annotations */
+  trustAnnotations?: boolean;
+  /** tools the server annotates as read-only (raw names), present while connected */
+  readOnlyTools?: string[];
   error?: string;
 }
 

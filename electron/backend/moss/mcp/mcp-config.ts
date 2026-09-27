@@ -24,6 +24,8 @@ export interface McpStdioServerConfig {
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  /** honor the server's readOnlyHint annotations; off by default */
+  trustAnnotations?: boolean;
 }
 
 export interface McpHttpServerConfig {
@@ -32,6 +34,8 @@ export interface McpHttpServerConfig {
   enabled?: boolean;
   url: string;
   headers?: Record<string, string>;
+  /** honor the server's readOnlyHint annotations; off by default */
+  trustAnnotations?: boolean;
 }
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;

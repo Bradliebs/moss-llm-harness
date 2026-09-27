@@ -9,6 +9,8 @@ export interface ChatRequest {
   maxTokens?: number;
   /** sampling temperature; omitted means the provider default */
   temperature?: number;
+  /** JSON schema the response must satisfy (grammar-constrained decoding); used instead of native tools */
+  responseSchema?: Record<string, unknown>;
 }
 
 /** Low-level provider stream events. The agent runner accumulates these into the

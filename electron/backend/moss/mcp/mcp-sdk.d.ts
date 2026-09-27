@@ -14,6 +14,14 @@ declare module "@modelcontextprotocol/sdk/client/index.js" {
     name: string;
     description?: string;
     inputSchema: Record<string, unknown>;
+    /** MCP tool annotations; hints from the server, not guarantees */
+    annotations?: {
+      title?: string;
+      readOnlyHint?: boolean;
+      destructiveHint?: boolean;
+      idempotentHint?: boolean;
+      openWorldHint?: boolean;
+    };
   }
 
   export interface McpContentBlock {

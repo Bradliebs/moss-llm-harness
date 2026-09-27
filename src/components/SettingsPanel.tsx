@@ -46,10 +46,10 @@ const SETTINGS_CATEGORIES: readonly { id: SettingsCategory | "all"; label: strin
   { id: "readiness", label: "Readiness", keywords: "setup profile diagnostics connection" },
   { id: "diagnostics", label: "Diagnostics", keywords: "local telemetry retention export clear privacy" },
   { id: "general", label: "General", keywords: "appearance theme avatar personality instructions confidence context accessibility text size contrast notifications shortcuts keyboard" },
-  { id: "models", label: "Models", keywords: "provider model api key pricing budget capability probe profile routing escalation trace replay" },
+  { id: "models", label: "Models", keywords: "provider model api key pricing budget capability probe profile routing escalation constrained output trace replay" },
   { id: "tools", label: "Tools", keywords: "tools workspace verification" },
   { id: "automation", label: "Automation", keywords: "browser desktop windows scopes" },
-  { id: "knowledge", label: "Knowledge", keywords: "memory index embeddings mcp" },
+  { id: "knowledge", label: "Knowledge", keywords: "memory index embeddings mcp trust annotations" },
   { id: "services", label: "Services", keywords: "speech email jev" },
   { id: "safety", label: "Safety", keywords: "external content injection approval untrusted provenance ask auto-approve" },
 ];
@@ -218,6 +218,21 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
     try {
       setMcp(await window.moss.mcp.setEnabled(id, enabled));
       setStatus(enabled ? `Enabled ${id}` : `Disabled ${id}`);
+    } catch {
+      setStatus(`Could not update ${id}`);
+      void refreshMcp();
+    } finally {
+      setPendingId(null);
+    }
+  }
+
+  async function trustMcp(id: string, trusted: boolean): Promise<void> {
+    setPendingId(id);
+    try {
+      const config = (await window.moss.mcp.servers()).find((server) => server.id === id);
+      if (!config) throw new Error("not configured");
+      setMcp(await window.moss.mcp.update({ ...config, trustAnnotations: trusted }));
+      setStatus(trusted ? `Trusting read-only annotations from ${id}` : `Ignoring read-only annotations from ${id}`);
     } catch {
       setStatus(`Could not update ${id}`);
       void refreshMcp();
@@ -914,7 +929,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
 
           <ModelProfileSettings className={sectionClass("models", "capability probe profile benchmark tool calling context coherence")} />
 
-          <RoutingSettings className={sectionClass("models", "routing escalation fast model adaptive scaffolding trace replay record")} />
+          <RoutingSettings className={sectionClass("models", "routing escalation fast model provider cloud constrained output repair adaptive scaffolding trace replay record")} />
 
           <section className={sectionClass("models", "budget daily cost cap")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Budget</h3>
@@ -1070,7 +1085,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             )}
           </section>
 
-          <section className={sectionClass("knowledge", "mcp servers tools protocol")}>
+          <section className={sectionClass("knowledge", "mcp servers tools protocol trust annotations read-only")}>
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">MCP servers</h3>
               <button className="text-xs text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100" onClick={() => void refreshMcp()}>
@@ -1093,6 +1108,23 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                       <span className="font-mono text-xs">{s.id}</span>
                     </label>
                     <div className="flex items-center gap-2">
+                      {s.connected ? (
+                        <label
+                          className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300"
+                          title={s.readOnlyTools && s.readOnlyTools.length > 0
+                            ? `Declared read-only: ${s.readOnlyTools.join(", ")}. Trusted read-only tools run without a prompt.`
+                            : "This server declares no read-only tools."}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={s.trustAnnotations === true}
+                            disabled={pendingId === s.id}
+                            aria-label={`Trust read-only annotations from ${s.id}`}
+                            onChange={(e) => void trustMcp(s.id, e.target.checked)}
+                          />
+                          trust read-only ({s.readOnlyTools?.length ?? 0})
+                        </label>
+                      ) : null}
                       <span
                         className={`text-xs ${s.connected ? "text-green-400" : "text-neutral-500 dark:text-neutral-400"}`}
                         title={s.connected && s.tools && s.tools.length > 0 ? s.tools.join(", ") : undefined}

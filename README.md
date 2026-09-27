@@ -45,7 +45,7 @@ substantially in tool use, instruction following, and context capacity.
 * Notifies you when background work needs attention, with per-turn undo
 * Offers a command palette, keyboard shortcuts, larger text, and high contrast
 * Profiles each model's tool, JSON, context, and planning reliability before you rely on it
-* Adapts tools and guidance to the measured model, escalates rejected work to a stronger model, and replays recorded turns against alternatives
+* Adapts tools and guidance to the measured model, constrains small local models to schema-valid tool calls, escalates rejected work to a stronger model on any provider, and replays recorded turns against alternatives
 * Keeps protected paths, invariants, and decisions in governed working state, stops unproductive loops, lets skills earn trust, and never lets untrusted content authorize a side effect
 * Reads, writes, searches, and checkpoints files inside the selected workspace
 * Runs shell commands with risk classification and approval controls
@@ -304,9 +304,13 @@ stores the latest profile per provider, endpoint, and model.
 Each profile has a weighted score, a tier (strong, capable, limited, or
 unreliable), a recommended scaffolding level, median response latency, and notes
 such as Ollama's default context length, tool calls emitted as text, or argument
-names outside the schema. **Apply suggested settings** can set the maximum tool
-rounds and context limit, and turns tools off when tool calling fails most
-probes. It never changes approval or authority settings.
+names outside the schema. When a native tool call fails, the probe also records
+whether Moss's tool-call repair would have recovered a correct call; scores stay
+native. **Apply suggested settings** can set the maximum tool rounds and context
+limit. For Anthropic it turns tools off when tool calling fails most probes; for
+OpenAI-compatible endpoints such as Ollama it leaves tools on, because
+constrained tool output carries those models instead. It never changes approval
+or authority settings.
 
 Probes sample at temperature 0 so repeated runs are comparable. An untimed
 warm-up request loads a local model before any probe is timed; a model that
@@ -343,30 +347,101 @@ response runs; the model is told to issue the next call on its own. Models that
 ignored a system-prompt rule during probing also get a short reminder in the
 latest user turn. A notice describes each adaptation.
 
-Tool relevance comes from word overlap between the request and each tool's name
+Tool relevance starts from word overlap between the request and each tool's name
 and description, with core workspace tools preferred and housekeeping tools such
-as memory and skill management ranked last unless the request names them. The
-adaptation changes only the model-facing request: saved conversations keep the
-original messages. Missions keep their granted capabilities unchanged. Turn it
-off under **Settings > Models > Routing and adaptation**.
+as memory and skill management ranked last unless the request names them. Turn
+on **Rank tools and lessons by meaning** under **Routing and adaptation** to add
+each tool's similarity in meaning, using the embeddings model from **Settings >
+Knowledge** (for example `nomic-embed-text` on Ollama). "Why is CI red?" then
+keeps `run_command` although it shares no words with it. The option is off by
+default because each request's text goes to the embeddings endpoint. Tool
+vectors are cached; a slow first request falls back to words and finishes in the
+background for the next turn, and an endpoint that fails is left alone for 10
+minutes. Whenever tools are narrowed, the model also
+gets `find_tool`: it describes what it needs, and the best matching hidden tools
+become available on its next step. Calling a hidden tool by name brings it in
+too. A tool the harness withheld never counts toward escalation.
+
+The adaptation changes only the model-facing request: saved conversations keep
+the original messages. Missions keep their granted capabilities unchanged. Turn
+it off under **Settings > Models > Routing and adaptation**.
+
+### Constrained tool output and repair
+
+Small local models often know which tool to use but write the call as text, use
+argument names outside the schema, or wander between prose and JSON. Moss fixes
+this in the provider adapter rather than hoping the model improves.
+
+**Constrained output.** For OpenAI-compatible endpoints such as Ollama, each
+request can carry a JSON schema instead of native tool definitions. Every
+response must be either a call to one offered tool, with arguments that match
+its schema, or a final answer, and the server enforces this with
+grammar-constrained decoding. Moss turns each step back into an ordinary tool
+call, so approvals, verification, and traces are unchanged. It also works for
+models without native tool support, such as `gemma3`. On a three-step lookup
+task through the real turn loop, `qwen2.5:1.5b` went from 0 of 3 with native
+tool calling to 2 of 3 constrained, and `gemma3` from 0 of 3 to 3 of 3.
+
+Choose it per model under **Routing and adaptation > Constrained tool output**:
+**Automatic** (the default) turns it on for models whose stored profile is
+limited or unreliable, **Always** forces it, and **Never** keeps native tool
+calling. Automatic follows adaptive scaffolding, so turning adaptation off turns
+it off too. Anthropic always uses native tools. Constrained answers arrive in
+one piece rather than streaming, and a notice names the models it applies to.
+
+**Tool-call repair** runs on every model, constrained or not, before anything
+executes:
+
+* Calls written as text are recovered from `<tool_call>` tags, `[TOOL_CALLS]`,
+  JSON code blocks, bare JSON, and `name({...})`. Only offered tool names are
+  accepted, so prose and code samples are not misread as calls.
+* Tool names that differ only in case or punctuation are corrected.
+* Argument names outside the schema are mapped by alias (`file` to `path`), by
+  close spelling, or when one unknown argument matches the one missing required
+  argument. Echoed schemas such as `{"type":"string","value":"Paris"}` are
+  unwrapped, and numbers and strings are converted to the declared type.
+* A call that still misses required arguments does not run. The model gets a
+  precise error naming the missing and expected properties.
+
+Each repair appears as a notice. The first schema error per tool is treated as a
+correction rather than a rejection, so one fixable mistake does not trigger
+escalation.
 
 ### Routing and escalation
 
-**Settings > Models > Routing and adaptation** can route work across models on
-the current provider connection, including Ollama cloud models:
+**Settings > Models > Routing and adaptation** can route work across models and
+providers:
 
 * A fast model handles context-compaction summaries and read-only subagents
   started with the `delegate` tool
 * An escalation model takes over a turn after Moss rejects the chat model's
   work a set number of times (default 2)
 
+Each route picks a provider and a model. **This connection** uses a model on the
+current provider, including Ollama cloud models. Any other provider you have
+configured, such as Anthropic or OpenAI, can be chosen too, so a local
+`llama3.1:8b` can do most of the turns and escalate to Claude, or a cloud chat
+model can hand summaries down to a local model. API keys stay in secure storage;
+the main process looks up each provider's saved key, so select a provider under
+**Provider** once to save its key before routing to it. Each route gets its own
+daily budget guard, trace recording, and constrained-output decision.
+
+Escalating off your machine sends the conversation and workspace context with
+it. Settings warns when a route leaves the machine, and each escalation that
+crosses from a local model to a remote one shows a notice naming the
+destination, for example `api.anthropic.com` or Ollama's cloud service for
+`:cloud` models served through a local Ollama.
+
 Rejections are harness evidence only: a failed tool call, failed verification,
-an empty response, or a refused task completion. Your own denials and policy
-refusals never count, and the model cannot request escalation itself. A plain
-chat answer that is merely unhelpful gives the harness nothing to reject, so it
-does not escalate. Escalation applies to ordinary turns and turn tasks; missions
-keep one model so their budgets stay accurate. Each choice shows the model's
-stored capability tier and latency.
+an empty response, or a refused task completion. Your own denials, policy
+refusals, and tools the harness withheld never count, and the model cannot
+request escalation itself. A plain chat answer that is merely unhelpful gives
+the harness nothing to reject, so it does not escalate. Escalation applies to
+ordinary turns, turn tasks, and missions. Mission budgets price every step at
+the model that actually ran it, so a local step costs nothing unless you set a
+rate for it and an escalated cloud step is charged at the cloud rate; a
+cost-capped mission still refuses a remote model with no known rate. Each choice
+shows the model's stored capability tier and latency.
 
 ### Turn traces and replay
 
@@ -491,8 +566,9 @@ about the task in the harness:
 |-------|------------------------|
 | Event record | Durable task journal, checkpoints, and opt-in replayable turn traces |
 | Model profiles | Capability probe suite with stored per-model profiles |
-| Adjustable scaffolding | Tool narrowing, step guidance, and per-round call limits from the profile |
-| Routing | Fast model for summaries and subagents; escalation after harness rejections |
+| Model adapter | Constrained step protocol for weak tool callers and tool-call repair for every model |
+| Adjustable scaffolding | Meaning-ranked tool narrowing with `find_tool`, step guidance, and per-round call limits |
+| Routing | Fast and escalation routes on any configured provider, with per-model mission pricing |
 | Governed state | Per-conversation working state, rendered every round and never summarized away |
 | Independent verification | Host-run checks bound to mission criteria; the model never grades itself |
 | Earned memory | Skill trust ledger with versions, plus recalled lessons from verified runs |
@@ -560,6 +636,16 @@ Moss can connect to MCP servers using standard I/O or HTTP transports. The
 Library and Settings surfaces expose server status and management, while the
 runtime adapts MCP tool names to provider-safe identifiers.
 
+MCP tools ask for approval by default, because Moss cannot verify what they do.
+Servers can annotate tools as read-only or destructive. A **destructive**
+annotation is always honored, since it only adds a prompt. A **read-only**
+annotation relaxes the policy, so it counts only for servers you trust: check
+**trust read-only** next to a connected server under **Settings > Knowledge**. The
+count shows how many tools that server declares read-only. Trusted read-only
+tools run without a prompt, also after untrusted content, unless their
+arguments derive from that content. The setting is stored as
+`trustAnnotations` in `mcp-servers.json`.
+
 Server configuration may include commands, arguments, working directories,
 environment variables, URLs, and headers. Treat third-party MCP servers as code
 with the same access as the account running Moss.
@@ -598,7 +684,8 @@ verification or a completed task, never the model's own claim.
 #### Lessons from earlier runs
 
 Completed and failed tasks leave lessons: what worked, what failed, and why.
-When a new request shares key words with a lesson, up to three are added to the
+When a new request shares key words with a lesson, or is close in meaning to it
+with **Rank tools and lessons by meaning** on, up to three are added to the
 system prompt as guidance, not instructions. Lessons about failures are recalled
 whenever failures back them; lessons about successes need a success rate of at
 least 50 percent.
@@ -653,14 +740,30 @@ irreversible effects.
 Auto-approval can reduce prompts for eligible reversible actions. It does not
 bypass controls for irreversible operations.
 
-Once content from outside your request enters a turn, every later side effect
-needs your explicit approval, even with auto-approve on or under a policy-scoped
+Once content from outside your request enters a turn, every later change needs
+your explicit approval, even with auto-approve on or under a policy-scoped
 mission grant. Untrusted sources are web search, fetched URLs, MCP servers,
 browser and desktop inspection, and audio transcription. Memory writes and
 deletions are included, so a web page cannot plant or erase durable memories.
-The approval card names the untrusted sources and warns when the arguments
-reuse a URL, email address, long token, or eight-word passage from that content.
 Read-only actions still run without a prompt.
+
+Reads that reach the network are tracked at the data level, so research does not
+drown in prompts. Under auto-approve, `web_search`, `fetch_url`, and
+`browser_navigate` keep running after untrusted content in two cases:
+
+* Following a link that appeared verbatim in the content, because it discloses
+  nothing the page did not already contain.
+* A search that does not reuse a long token or eight-word passage from the
+  content.
+
+Any other URL asks first, including a changed link on a host the content named
+or one of its subdomains, because a URL's host and path can carry data to
+wherever the content pointed. Trusted read-only MCP tools follow the same rule
+for their arguments.
+
+The approval card names the untrusted sources, warns when the arguments reuse a
+URL, email address, long token, or eight-word passage from that content, and
+states the rule that required approval.
 
 If you rely on browser or MCP automation and accept the risk, turn off **Ask
 before changes that follow web, MCP, or browser content** under **Settings >
@@ -982,11 +1085,25 @@ or open **Settings > General > Keyboard shortcuts** for the full list.
 
 After web search, a fetched page, or MCP or browser output enters a turn, Moss
 asks before every later change, even with auto-approve on, and the approval card
-shows an untrusted-content warning. MCP tools count as changes because Moss
-cannot tell which of them only read. If you accept the risk, turn off **Ask
-before changes that follow web, MCP, or browser content** under **Settings >
-Safety** and keep auto-approve on under **Settings > Tools**. Destructive
-commands, email, and irreversible actions still ask.
+shows an untrusted-content warning with the rule that applied. Searches that do
+not reuse that content, and links followed exactly as the content wrote them,
+keep running.
+MCP tools count as changes unless their server declares them read-only and you
+trust its annotations: check **trust read-only** next to the server under
+**Settings > Knowledge**. If you accept the remaining risk, turn off **Ask before
+changes that follow web, MCP, or browser content** under **Settings > Safety**
+and keep auto-approve on under **Settings > Tools**. Destructive commands, email,
+and irreversible actions still ask.
+
+### A small local model writes tool calls as text
+
+Moss repairs calls written as text automatically. If the model still misuses
+tools, profile it under **Settings > Models > Capability profile**; limited and
+unreliable models then use constrained tool output automatically. You can also
+set **Constrained tool output** to **Always** for the current model under
+**Routing and adaptation**. Constrained output needs an OpenAI-compatible
+endpoint whose server supports JSON-schema `response_format`, which current
+Ollama versions do.
 
 ### An approval shows no diff
 

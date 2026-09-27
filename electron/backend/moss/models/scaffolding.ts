@@ -49,9 +49,14 @@ function words(text: string): string[] {
  *  get a small head start, and tools whose name or description share words with
  *  the request rank above the rest. Ties keep the registry order. */
 export function selectRelevantTools(tools: readonly ToolDefinition[], query: string, limit: number): ToolDefinition[] {
-  if (tools.length <= limit) return [...tools];
+  return selectByScore(tools, relevanceScores(tools, query), limit);
+}
+
+/** Word relevance per tool: core workspace tools get a small head start,
+ *  housekeeping tools start below zero, and shared words add to the score. */
+export function relevanceScores(tools: readonly ToolDefinition[], query: string): number[] {
   const queryWords = new Set(words(query));
-  const scored = tools.map((tool, index) => {
+  return tools.map((tool) => {
     const nameWords = tool.name.toLowerCase().split(/[_-]+/);
     const descriptionWords = new Set(words(tool.description));
     let score = CORE_TOOLS.has(tool.name) ? 1 : LOW_PRIORITY.test(tool.name) ? -1 : 0;
@@ -60,10 +65,18 @@ export function selectRelevantTools(tools: readonly ToolDefinition[], query: str
       else if (descriptionWords.has(word)) score += 1;
     }
     if (query.toLowerCase().includes(tool.name.toLowerCase())) score += 5;
-    return { tool, index, score };
+    return score;
   });
+}
+
+/** Keep the `limit` highest-scoring tools in registry order; ties keep the registry order. */
+export function selectByScore(tools: readonly ToolDefinition[], scores: readonly number[], limit: number): ToolDefinition[] {
+  if (tools.length <= limit) return [...tools];
   const keep = new Set(
-    [...scored].sort((a, b) => b.score - a.score || a.index - b.index).slice(0, limit).map((item) => item.tool.name),
+    tools.map((tool, index) => ({ tool, index, score: scores[index] ?? 0 }))
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, limit)
+      .map((item) => item.tool.name),
   );
   return tools.filter((tool) => keep.has(tool.name));
 }
@@ -78,7 +91,9 @@ export function planScaffolding(
   const recommendation = profile.recommendation;
   const ignoresSystem = profile.results.some((result) =>
     result.dimension === "instruction-following" && result.trials.some((item) => item.id === "system-suffix" && !item.passed && !item.errored));
-  const toolWarning = recommendation.toolUse === "avoid" && tools.length > 0
+  // OpenAI-compatible models with weak native tool calling are carried by the
+  // constrained step protocol instead, so the warning applies elsewhere.
+  const toolWarning = recommendation.toolUse === "avoid" && tools.length > 0 && profile.providerKind !== "openai-compatible"
     ? ` Its measured tool calling is unreliable (${profile.tier}); consider Chat only for this model.`
     : "";
 

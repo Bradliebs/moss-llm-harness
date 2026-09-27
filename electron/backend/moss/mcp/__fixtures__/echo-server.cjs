@@ -12,6 +12,7 @@ server.registerTool(
   {
     description: "Echoes back the provided message",
     inputSchema: { message: z.string() },
+    annotations: { readOnlyHint: true },
   },
   async ({ message }) => ({ content: [{ type: "text", text: `echo: ${message}` }] }),
 );

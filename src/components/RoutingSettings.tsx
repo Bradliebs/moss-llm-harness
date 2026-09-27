@@ -1,14 +1,16 @@
 // src/components/RoutingSettings.tsx
 //
-// Model adaptation, routing, and trace replay. Routing uses models on the
-// current provider connection; stored capability profiles are shown next to
-// each choice so the selection rests on measurements.
+// Model adaptation, routing, and trace replay. Fast and escalation routes can
+// use any configured provider, so a local model can escalate to a cloud model;
+// stored capability profiles are shown next to each choice so the selection
+// rests on measurements.
 
 import { useEffect, useState } from "react";
 
-import type { ModelCapabilityProfile, ReplayReport, TurnTraceSummary } from "@common/types";
+import { isLocalRoute, routeDestination } from "@common/routes";
+import type { ConstrainedOutputMode, ModelCapabilityProfile, ModelRoute, ReplayReport, TurnTraceSummary } from "@common/types";
 
-import { modelsStore, toProviderConfig, updateSettings, useSettings } from "../lib/settings";
+import { modelsStore, PROVIDER_PRESETS, toProviderConfig, updateSettings, useSettings, type MossSettings } from "../lib/settings";
 import { LiveStatus } from "./LiveStatus";
 
 function profileLabel(profile: ModelCapabilityProfile | undefined): string {
@@ -20,6 +22,123 @@ function profileLabel(profile: ModelCapabilityProfile | undefined): string {
 function percent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
+
+type ProfileLookup = (kind: string, baseUrl: string, model: string) => ModelCapabilityProfile | undefined;
+
+function presetBaseUrl(settings: MossSettings, presetId: string): string {
+  const preset = PROVIDER_PRESETS.find((item) => item.id === presetId);
+  return (settings.providerProfiles?.[presetId]?.baseUrl ?? preset?.baseUrl ?? "").trim();
+}
+
+/** Provider and model for one route. "This connection" keeps the older
+ *  same-connection model setting; another provider stores a full route whose
+ *  API key stays in secure storage and is resolved by the main process. */
+function RoutePicker({
+  id,
+  label,
+  emptyLabel,
+  model,
+  route,
+  onChange,
+  profileFor,
+}: {
+  id: string;
+  label: string;
+  emptyLabel: string;
+  model: string | undefined;
+  route: ModelRoute | undefined;
+  onChange: (next: { model?: string; route?: ModelRoute }) => void;
+  profileFor: ProfileLookup;
+}): React.ReactElement {
+  const settings = useSettings();
+  const models = modelsStore.use();
+  const currentPresetId = PROVIDER_PRESETS[settings.presetIndex]?.id;
+  const [providerId, setProviderId] = useState<string>(route?.presetId && route.presetId !== currentPresetId ? route.presetId : "current");
+  const [remoteModels, setRemoteModels] = useState<string[]>([]);
+  const [loadError, setLoadError] = useState("");
+  const others = PROVIDER_PRESETS.filter((preset) => preset.id !== currentPresetId && presetBaseUrl(settings, preset.id));
+
+  useEffect(() => {
+    if (providerId === "current") return;
+    const preset = PROVIDER_PRESETS.find((item) => item.id === providerId);
+    if (!preset || !window.moss?.provider) return;
+    let cancelled = false;
+    setLoadError("");
+    void (async () => {
+      try {
+        const apiKey = await window.moss.provider.getCredential(preset.id);
+        const list = await window.moss.provider.listModels({ kind: preset.kind, baseUrl: presetBaseUrl(settings, preset.id), apiKey: apiKey || undefined, model: "" });
+        if (!cancelled) setRemoteModels(list);
+      } catch (error) {
+        if (!cancelled) {
+          setRemoteModels([]);
+          setLoadError(`Could not list ${preset.label} models. Select ${preset.label} under Provider once to save its API key. ${error instanceof Error ? error.message : ""}`.trim());
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+    // Settings changes that matter here are the preset base URLs, captured by providerId.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerId]);
+
+  const preset = PROVIDER_PRESETS.find((item) => item.id === providerId);
+  const current = providerId === "current";
+  const baseUrl = current ? settings.baseUrl : presetBaseUrl(settings, providerId);
+  const kind = current ? settings.kind : preset?.kind ?? settings.kind;
+  const listed = current ? models.filter((item) => item !== settings.model) : remoteModels;
+  const selected = current ? model ?? "" : route?.presetId === providerId ? route.model : "";
+  const choices = selected && !listed.includes(selected) ? [selected, ...listed] : listed;
+  const select = "w-full rounded bg-neutral-200 px-2 py-1 dark:bg-neutral-800";
+  const leavesMachine = Boolean(selected) && isLocalRoute(settings.baseUrl, settings.model) && !isLocalRoute(baseUrl, selected);
+
+  return (
+    <div className="space-y-1">
+      <span id={`${id}-label`} className="block text-neutral-600 dark:text-neutral-400">{label}</span>
+      <div className="grid gap-2 sm:grid-cols-[11rem_1fr]">
+        <select
+          aria-label={`${label} provider`}
+          className={select}
+          value={providerId}
+          onChange={(event) => {
+            setProviderId(event.target.value);
+            setRemoteModels([]);
+            onChange({});
+          }}
+        >
+          <option value="current">This connection</option>
+          {others.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+        </select>
+        <select
+          aria-labelledby={`${id}-label`}
+          className={select}
+          value={selected}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (!value) onChange({});
+            else if (current) onChange({ model: value });
+            else onChange({ route: { presetId: providerId, kind, baseUrl, model: value } });
+          }}
+        >
+          <option value="">{emptyLabel}</option>
+          {choices.map((item) => <option key={item} value={item}>{item} ({profileLabel(profileFor(kind, baseUrl, item))})</option>)}
+        </select>
+      </div>
+      {loadError ? <p className="text-xs text-amber-800 dark:text-amber-300">{loadError}</p> : null}
+      {leavesMachine ? (
+        <p className="text-xs text-amber-800 dark:text-amber-300">
+          This route runs off this machine: when it is used, the conversation and workspace context go to {routeDestination(baseUrl, selected)}.
+          Moss shows a notice each time a turn crosses to it.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+const CONSTRAINED_LABELS: Record<ConstrainedOutputMode, string> = {
+  auto: "Automatic",
+  always: "Always",
+  never: "Never",
+};
 
 export function RoutingSettings({ className }: { className: string }): React.ReactElement {
   const settings = useSettings();
@@ -50,10 +169,20 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
     return window.moss?.traces?.onReplayProgress((item) => setProgress(item));
   }, []);
 
-  const profileFor = (model: string): ModelCapabilityProfile | undefined => profiles.find((profile) =>
-    profile.model === model && profile.providerKind === settings.kind
-    && profile.endpoint.toLowerCase() === settings.baseUrl.replace(/\/+$/, "").toLowerCase());
-  const choices = models.filter((model) => model !== settings.model);
+  const profileAt: ProfileLookup = (kind, baseUrl, model) => profiles.find((profile) =>
+    profile.model === model && profile.providerKind === kind
+    && profile.endpoint.toLowerCase() === baseUrl.replace(/\/+$/, "").toLowerCase());
+  const profileFor = (model: string): ModelCapabilityProfile | undefined => profileAt(settings.kind, settings.baseUrl, model);
+  const constrainedMode = settings.constrainedOutput?.[settings.model] ?? "auto";
+  const currentTier = profileFor(settings.model)?.tier;
+  const constrainedNow = settings.kind === "openai-compatible"
+    && (constrainedMode === "always" || (constrainedMode === "auto" && (currentTier === "limited" || currentTier === "unreliable")));
+  function setConstrained(mode: ConstrainedOutputMode): void {
+    const next = { ...(settings.constrainedOutput ?? {}) };
+    if (mode === "auto") delete next[settings.model];
+    else next[settings.model] = mode;
+    updateSettings({ constrainedOutput: next });
+  }
 
   async function replay(trace: TurnTraceSummary): Promise<void> {
     if (!window.moss?.traces || !replayModel) return;
@@ -94,21 +223,62 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
           </span>
         </span>
       </label>
-      <label className="block">
-        <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Fast model for summaries and read-only subagents</span>
-        <select className={select} value={settings.fastModel ?? ""} onChange={(event) => updateSettings({ fastModel: event.target.value || undefined })}>
-          <option value="">Same as the chat model</option>
-          {choices.map((model) => <option key={model} value={model}>{model} ({profileLabel(profileFor(model))})</option>)}
-        </select>
+      <label className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          className="mt-0.5 accent-emerald-600"
+          checked={settings.semanticRanking === true}
+          onChange={(event) => updateSettings({ semanticRanking: event.target.checked })}
+        />
+        <span>
+          Rank tools and lessons by meaning
+          <span className="block text-xs text-neutral-600 dark:text-neutral-300">
+            Uses the embeddings model under Settings &gt; Knowledge ({settings.embedModel || "nomic-embed-text"} at{" "}
+            {routeDestination((settings.embedBaseUrl || settings.baseUrl || "").trim(), "")}) to keep the right tools when adaptation
+            narrows them and to recall related lessons. Each request's text goes to that endpoint. Without it, Moss matches
+            words.
+          </span>
+        </span>
       </label>
-      <div className="grid gap-2 sm:grid-cols-[1fr_8rem]">
+      {settings.kind === "openai-compatible" && settings.model ? (
         <label className="block">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Escalation model</span>
-          <select className={select} value={settings.escalationModel ?? ""} onChange={(event) => updateSettings({ escalationModel: event.target.value || undefined })}>
-            <option value="">Do not escalate</option>
-            {choices.map((model) => <option key={model} value={model}>{model} ({profileLabel(profileFor(model))})</option>)}
+          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Constrained tool output for {settings.model}</span>
+          <select
+            aria-label={`Constrained tool output for ${settings.model}`}
+            className={select}
+            value={constrainedMode}
+            onChange={(event) => setConstrained(event.target.value as ConstrainedOutputMode)}
+          >
+            {(Object.keys(CONSTRAINED_LABELS) as ConstrainedOutputMode[]).map((mode) => (
+              <option key={mode} value={mode}>{CONSTRAINED_LABELS[mode]}</option>
+            ))}
           </select>
+          <span className="mt-1 block text-xs text-neutral-600 dark:text-neutral-300">
+            Constrained output makes every model step a schema-valid tool call or a final answer, which lets small local models
+            use tools reliably. Automatic turns it on for limited and unreliable profiles. {constrainedNow ? "On for this model." : "Off for this model."}
+            {" "}Tool calls written as text are repaired either way.
+          </span>
         </label>
+      ) : null}
+      <RoutePicker
+        id="fast-route"
+        label="Fast model for summaries and read-only subagents"
+        emptyLabel="Same as the chat model"
+        model={settings.fastModel}
+        route={settings.fastRoute}
+        profileFor={profileAt}
+        onChange={(next) => updateSettings({ fastModel: next.model, fastRoute: next.route })}
+      />
+      <div className="grid gap-2 sm:grid-cols-[1fr_8rem] sm:items-end">
+        <RoutePicker
+          id="escalation-route"
+          label="Escalation model"
+          emptyLabel="Do not escalate"
+          model={settings.escalationModel}
+          route={settings.escalationRoute}
+          profileFor={profileAt}
+          onChange={(next) => updateSettings({ escalationModel: next.model, escalationRoute: next.route })}
+        />
         <label className="block">
           <span className="mb-1 block text-neutral-600 dark:text-neutral-400">After rejections</span>
           <input
@@ -116,7 +286,7 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
             min={1}
             max={5}
             className={select}
-            disabled={!settings.escalationModel}
+            disabled={!settings.escalationModel && !settings.escalationRoute}
             value={settings.escalateAfter ?? 2}
             onChange={(event) => updateSettings({ escalateAfter: Math.min(5, Math.max(1, Math.floor(Number(event.target.value) || 2))) })}
           />
@@ -125,7 +295,7 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
       <p className="text-xs text-neutral-600 dark:text-neutral-300">
         A turn switches to the escalation model after Moss rejects its work this many times: a failed tool call, failed
         verification, or a refused completion. Your own denials never count, and the model never decides this itself.
-        Escalation to a paid model uses your provider credits.
+        Escalation to a paid model uses your provider credits, and missions price each step at the model that ran it.
       </p>
 
       <label className="flex items-start gap-2">

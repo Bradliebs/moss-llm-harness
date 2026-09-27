@@ -82,6 +82,7 @@ export function recommendScaffolding(
   results: readonly CapabilityProbeResult[],
   baseUrl: string,
   maxContextTested: number,
+  providerKind?: ProviderKind,
 ): ModelScaffoldingRecommendation {
   const dims = byDimension(results.filter(isMeasured));
   const tier = capabilityTier(results);
@@ -102,15 +103,24 @@ export function recommendScaffolding(
     : toolScore >= 0.85 && (restraint ?? 1) >= 0.5 ? "reliable" : toolScore >= 0.5 ? "supervised" : "avoid";
   const toolsUnsupported = ["tool-calling", "tool-selection", "tool-restraint", "plan-coherence"]
     .reduce((sum, dimension) => sum + (dims[dimension as CapabilityDimension]?.metrics?.toolsUnsupported ?? 0), 0);
+  // OpenAI-compatible servers accept a JSON schema, so the constrained step
+  // protocol can carry tools for a model whose native tool calling fails.
+  const steppable = providerKind === "openai-compatible";
   if (toolUse === "avoid") {
-    settings.enableTools = false;
-    notes.push(toolsUnsupported > 0
-      ? "The server reports that this model does not support tools. Use it for chat only, or choose a model build with tool support."
-      : "Tool calls failed most probes. Use it for chat only, or pair it with a model that handles tools.");
+    if (!steppable) settings.enableTools = false;
+    notes.push(steppable
+      ? `${toolsUnsupported > 0 ? "The server reports that this model does not support native tools." : "Native tool calls failed most probes."} Moss uses constrained tool output for it automatically, which usually makes tools usable; you can change this under Routing and adaptation.`
+      : toolsUnsupported > 0
+        ? "The server reports that this model does not support tools. Use it for chat only, or choose a model build with tool support."
+        : "Tool calls failed most probes. Use it for chat only, or pair it with a model that handles tools.");
   }
   const textToolCalls = (dims["tool-calling"]?.metrics?.textToolCalls ?? 0) + (dims["tool-selection"]?.metrics?.textToolCalls ?? 0);
+  const repairable = (dims["tool-calling"]?.metrics?.repairable ?? 0) + (dims["tool-selection"]?.metrics?.repairable ?? 0);
   if (textToolCalls > 0) {
-    notes.push("It wrote tool calls as text instead of using native function calling. The server may need a tool-call parser or a model build with a tool template.");
+    notes.push("It wrote tool calls as text instead of using native function calling. Moss parses and repairs these calls, and constrained output avoids them.");
+  }
+  if (repairable > 0) {
+    notes.push(`Tool-call repair recovered ${repairable} of its failed tool calls in the probes.`);
   }
   if (restraint !== undefined && restraint < 1 && !toolsUnsupported) {
     notes.push("It called tools when none were needed. Expect extra rounds and approval prompts.");
@@ -195,7 +205,7 @@ export function buildCapabilityProfile(input: BuildProfileInput): ModelCapabilit
   const inputTokens = input.results.flatMap((result) => result.trials).reduce((sum, item) => sum + (item.inputTokens ?? 0), 0);
   const outputTokens = input.results.flatMap((result) => result.trials).reduce((sum, item) => sum + (item.outputTokens ?? 0), 0);
   const latency = latencySummary(input.results);
-  const recommendation = recommendScaffolding(input.results, input.baseUrl, input.maxContextTested);
+  const recommendation = recommendScaffolding(input.results, input.baseUrl, input.maxContextTested, input.providerKind);
   if (latency && latency.medianMs > 20_000) {
     recommendation.notes.push(`Its median response took ${Math.round(latency.medianMs / 1000)}s, which will feel slow for interactive work. Consider a faster model for quick subtasks.`);
   }

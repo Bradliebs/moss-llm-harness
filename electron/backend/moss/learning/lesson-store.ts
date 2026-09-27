@@ -31,6 +31,14 @@ export interface StoredLesson {
   supersededBy?: string;
 }
 
+/** Similarity of each text to the query in [0, 1], or null when unavailable. */
+export type LessonSimilarity = (query: string, texts: readonly string[]) => Promise<number[] | null>;
+
+/** Cosine similarity above which a lesson is recalled without shared words.
+ *  Calibrated on nomic-embed-text, where related text scores about 0.65 and
+ *  unrelated text stays under 0.55. */
+export const SEMANTIC_RECALL_THRESHOLD = 0.6;
+
 export interface CapabilityHistory {
   successCount: number;
   failureCount: number;
@@ -91,19 +99,28 @@ export class LessonStore {
   }
 
   /** Lessons worth recalling for a request: confident, not rolled back or
-   *  superseded, and sharing words with the request. Episodic memory for new turns. */
-  async relevant(query: string, limit = 3): Promise<StoredLesson[]> {
+   *  superseded, and related to the request by shared words or, when a
+   *  similarity function is given, by meaning. Episodic memory for new turns. */
+  async relevant(query: string, limit = 3, similarity?: LessonSimilarity): Promise<StoredLesson[]> {
     const queryWords = new Set(lessonWords(query));
-    if (queryWords.size === 0) return [];
-    return (await this.list())
+    if (!query.trim() || (queryWords.size === 0 && !similarity)) return [];
+    const candidates = (await this.list())
       // Confidence is a success rate: it vouches for positive lessons, while a
       // negative lesson is worth recalling whenever failures back it.
       .filter((lesson) => !lesson.supersededBy && (lesson.outcome === "negative"
         ? lesson.failureCount > 0
-        : !lesson.rolledBack && lesson.confidence >= 0.5))
-      .map((lesson) => ({ lesson, overlap: lessonWords(`${lesson.scope} ${lesson.summary} ${lesson.capabilityIds.join(" ")}`).filter((word) => queryWords.has(word)).length }))
-      .filter((item) => item.overlap >= 2)
-      .sort((a, b) => b.overlap - a.overlap || b.lesson.confidence - a.lesson.confidence)
+        : !lesson.rolledBack && lesson.confidence >= 0.5));
+    if (candidates.length === 0) return [];
+    const texts = candidates.map((lesson) => `${lesson.scope} ${lesson.summary} ${lesson.capabilityIds.join(" ")}`);
+    const meaning = similarity ? await similarity(query, texts).catch(() => null) : null;
+    return candidates
+      .map((lesson, index) => {
+        const overlap = lessonWords(texts[index]).filter((word) => queryWords.has(word)).length;
+        const semantic = meaning?.[index] ?? 0;
+        return { lesson, overlap, semantic, score: overlap / Math.max(1, queryWords.size) + semantic };
+      })
+      .filter((item) => item.overlap >= 2 || item.semantic >= SEMANTIC_RECALL_THRESHOLD)
+      .sort((a, b) => b.score - a.score || b.lesson.confidence - a.lesson.confidence)
       .slice(0, limit)
       .map((item) => item.lesson);
   }

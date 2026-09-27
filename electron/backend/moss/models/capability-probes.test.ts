@@ -123,10 +123,13 @@ describe("runCapabilityProbes", () => {
     });
     const results = await runCapabilityProbes({ provider, model: "fake", signal: new AbortController().signal }, { dimensions: ["tool-calling"] });
     expect(results.results[0].trials.map((item) => item.note)).toEqual([
-      "Used argument names outside the schema: location",
+      "Used argument names outside the schema: location (Moss can repair it)",
+      // Unwrapping the echoed schema still misses the requested unit.
       "Echoed the parameter schema instead of filling in values",
       undefined,
     ]);
+    expect(results.results[0].metrics).toMatchObject({ repairable: 1 });
+    expect(results.results[0].score).toBeCloseTo(1 / 3);
   });
 
   it("counts a server-side no-tools rejection as a measured failure and samples at temperature 0", async () => {

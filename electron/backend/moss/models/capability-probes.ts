@@ -15,6 +15,7 @@ import type {
   ToolDefinition,
 } from "../../../../common/types";
 import type { ChatProvider } from "../providers/types";
+import { parseTextToolCalls, repairToolCall } from "./tool-repair";
 
 export const PROBE_SUITE_VERSION = "1";
 export const DEFAULT_MAX_CONTEXT_TOKENS = 32_768;
@@ -258,6 +259,12 @@ function conversation(user: string, system = TOOL_SYSTEM): AgentMessage[] {
   return [{ role: "system", content: system }, { role: "user", content: user }];
 }
 
+interface ToolCounters {
+  textToolCalls: number;
+  /** failed native calls that tool-call repair turns into a correct call */
+  repairable: number;
+}
+
 interface ToolCase {
   id: string;
   prompt: string;
@@ -269,15 +276,28 @@ async function gradeToolCase(
   ctx: ProbeContext,
   testCase: ToolCase,
   tools: ToolDefinition[],
-  counters: { textToolCalls: number },
+  counters: ToolCounters,
 ): Promise<CapabilityTrial> {
   const completion = await complete(ctx, conversation(testCase.prompt), tools);
   if (completion.error) return trial(testCase.id, completion, false);
   const first = completion.toolCalls[0];
+  // Scores stay native; this records whether Moss's repair would have
+  // recovered a correct call, which constrained output and repair rely on.
+  const repairable = (): boolean => {
+    const candidate = first ?? parseTextToolCalls(completion.text, tools)[0];
+    if (!candidate) return false;
+    const repaired = repairToolCall(candidate, tools);
+    if (repaired.error || repaired.call.name !== testCase.tool) return false;
+    const args = parseArguments(repaired.call.arguments);
+    const ok = Boolean(args && testCase.check(args));
+    if (ok) counters.repairable += 1;
+    return ok;
+  };
   if (!first) {
     const asText = looksLikeTextToolCall(completion.text, tools.map((tool) => tool.name));
     if (asText) counters.textToolCalls += 1;
-    return trial(testCase.id, completion, false, asText ? "Wrote the tool call as text instead of calling it" : "Answered without calling a tool");
+    const note = asText ? "Wrote the tool call as text instead of calling it" : "Answered without calling a tool";
+    return trial(testCase.id, completion, false, repairable() ? `${note} (Moss can repair it)` : note);
   }
   if (first.name !== testCase.tool) return trial(testCase.id, completion, false, `Called ${first.name} instead of ${testCase.tool}`);
   const args = parseArguments(first.arguments);
@@ -285,14 +305,15 @@ async function gradeToolCase(
   if (testCase.check(args)) return trial(testCase.id, completion, true);
   const allowed = schemaKeys(tools.find((tool) => tool.name === first.name));
   const unknown = Object.keys(args).filter((key) => !allowed.includes(key));
-  if (unknown.length > 0) return trial(testCase.id, completion, false, `Used argument names outside the schema: ${unknown.join(", ")}`);
+  const fixable = repairable() ? " (Moss can repair it)" : "";
+  if (unknown.length > 0) return trial(testCase.id, completion, false, `Used argument names outside the schema: ${unknown.join(", ")}${fixable}`);
   const echoed = Object.values(args).some((value) => value && typeof value === "object" && ("type" in value || "description" in value));
-  if (echoed) return trial(testCase.id, completion, false, "Echoed the parameter schema instead of filling in values");
+  if (echoed) return trial(testCase.id, completion, false, `Echoed the parameter schema instead of filling in values${fixable}`);
   return trial(testCase.id, completion, false, `Arguments did not match the request: ${first.arguments.slice(0, 160)}`);
 }
 
 async function probeToolCalling(ctx: ProbeContext): Promise<CapabilityProbeResult> {
-  const counters = { textToolCalls: 0 };
+  const counters: ToolCounters = { textToolCalls: 0, repairable: 0 };
   const cases: ToolCase[] = [
     { id: "weather-paris", prompt: "What is the weather in Paris right now? Use the get_weather tool.", tool: "get_weather", check: (a) => includesText(a.city, /paris/i) },
     { id: "weather-unit", prompt: "Get the current weather in Tokyo, reported in celsius.", tool: "get_weather", check: (a) => includesText(a.city, /tokyo/i) && a.unit === "celsius" },
@@ -300,11 +321,11 @@ async function probeToolCalling(ctx: ProbeContext): Promise<CapabilityProbeResul
   ];
   const trials: CapabilityTrial[] = [];
   for (const testCase of cases) trials.push(await gradeToolCase(ctx, testCase, [WEATHER_TOOL], counters));
-  return summarize("tool-calling", trials, `${passedOf(trials)} native tool calls with correct arguments`, { textToolCalls: counters.textToolCalls });
+  return summarize("tool-calling", trials, `${passedOf(trials)} native tool calls with correct arguments`, { textToolCalls: counters.textToolCalls, repairable: counters.repairable });
 }
 
 async function probeToolSelection(ctx: ProbeContext): Promise<CapabilityProbeResult> {
-  const counters = { textToolCalls: 0 };
+  const counters: ToolCounters = { textToolCalls: 0, repairable: 0 };
   const cases: ToolCase[] = [
     { id: "select-calculate", prompt: "What is 1847 multiplied by 23? Use a tool to compute it exactly.", tool: "calculate", check: (a) => includesText(a.expression, /1847/) && includesText(a.expression, /23/) },
     { id: "select-search", prompt: "Find every file named config.yaml in the project.", tool: "search_files", check: (a) => includesText(a.pattern, /config\.yaml/i) },
@@ -313,7 +334,7 @@ async function probeToolSelection(ctx: ProbeContext): Promise<CapabilityProbeRes
   ];
   const trials: CapabilityTrial[] = [];
   for (const testCase of cases) trials.push(await gradeToolCase(ctx, testCase, TOOLBOX, counters));
-  return summarize("tool-selection", trials, `${passedOf(trials)} correct tool choices from five options`, { textToolCalls: counters.textToolCalls });
+  return summarize("tool-selection", trials, `${passedOf(trials)} correct tool choices from five options`, { textToolCalls: counters.textToolCalls, repairable: counters.repairable });
 }
 
 async function probeToolRestraint(ctx: ProbeContext): Promise<CapabilityProbeResult> {

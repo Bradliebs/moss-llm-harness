@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { loadMcpServers } from "./mcp-config";
-import { mcpManager } from "./mcp-manager";
+import { adaptMcpTool, mcpManager, mcpToolRisk } from "./mcp-manager";
 
 // reconnect() reloads a server's current config from disk; mock only the config
 // loader so reconnect is deterministic while the SDK stays real.
@@ -42,6 +42,17 @@ describe("mcpManager stdio integration", () => {
     );
     expect(result.ok).toBe(true);
     expect(result.content).toBe("echo: hello");
+  }, 20_000);
+
+  it("reads annotations from a live server but honors read-only only when trusted", async () => {
+    await mcpManager.init([{ type: "stdio", id: "echo", command: process.execPath, args: [fixture] }]);
+    expect(mcpManager.getStatus()[0]).toMatchObject({ readOnlyTools: ["echo"] });
+    expect(mcpManager.getStatus()[0].trustAnnotations).toBeUndefined();
+    expect(mcpManager.getTools()[0].readOnly).toBeUndefined();
+
+    await mcpManager.init([{ type: "stdio", id: "echo", command: process.execPath, args: [fixture], trustAnnotations: true }]);
+    expect(mcpManager.getStatus()[0]).toMatchObject({ trustAnnotations: true, readOnlyTools: ["echo"] });
+    expect(mcpManager.getTools()[0].readOnly).toBe(true);
   }, 20_000);
 
   it("isolates a failed server without throwing", async () => {
@@ -88,4 +99,18 @@ describe("mcpManager stdio integration", () => {
     });
     expect(mcpManager.getTools().filter((t) => t.name.startsWith("mcp__echo__"))).toHaveLength(1);
   }, 20_000);
+});
+
+
+describe("MCP tool annotations", () => {
+  it("trusts read-only claims only when asked, and destructive claims always", () => {
+    expect(mcpToolRisk({ annotations: { readOnlyHint: true } }, false)).toEqual({});
+    expect(mcpToolRisk({ annotations: { readOnlyHint: true } }, true)).toEqual({ readOnly: true });
+    expect(mcpToolRisk({ annotations: { readOnlyHint: true, destructiveHint: true } }, true)).toEqual({});
+    expect(mcpToolRisk({ annotations: { destructiveHint: true } }, false)).toEqual({ destructive: true });
+    expect(mcpToolRisk({}, true)).toEqual({});
+    const client = { callTool: vi.fn() };
+    const tool = adaptMcpTool("db", client as never, { name: "drop", inputSchema: {}, annotations: { destructiveHint: true } });
+    expect(tool).toMatchObject({ name: "mcp__db__drop", destructive: true });
+  });
 });

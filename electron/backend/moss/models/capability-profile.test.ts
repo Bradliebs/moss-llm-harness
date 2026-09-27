@@ -90,6 +90,20 @@ describe("capability profile", () => {
     expect(recommendation.notes).toEqual([expect.stringMatching(/does not support tools/)]);
   });
 
+  it("keeps tools on for OpenAI-compatible endpoints, where constrained output carries them", () => {
+    const noTools = [
+      result("tool-calling", 0, { completed: 3, toolsUnsupported: 3 }),
+      result("tool-selection", 0.25, { repairable: 2 }),
+    ];
+    const recommendation = recommendScaffolding(noTools, "http://localhost:11434/v1", 1_024, "openai-compatible");
+    expect(recommendation.toolUse).toBe("avoid");
+    expect(recommendation.settings.enableTools).toBeUndefined();
+    const notes = recommendation.notes.join("\n");
+    expect(notes).toMatch(/does not support native tools\. Moss uses constrained tool output for it automatically/);
+    expect(notes).toMatch(/Tool-call repair recovered 2 of its failed tool calls/);
+    expect(recommendScaffolding(noTools, "https://api.anthropic.com", 1_024, "anthropic").settings.enableTools).toBe(false);
+  });
+
   it("does not blame Ollama context length for a timeout", () => {
     const timedOut = [result("usable-context", 0.5, { usableContextTokens: 3_000, errors: 1, completed: 2 })];
     expect(recommendScaffolding(timedOut, "http://localhost:11434/v1", 8_192).notes.join(" ")).not.toMatch(/OLLAMA_CONTEXT_LENGTH/);

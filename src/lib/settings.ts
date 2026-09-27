@@ -4,7 +4,8 @@
 // master switch, the UI theme, and the tool workspace root. Persisted to
 // localStorage so the app reopens with the same provider/model selected.
 
-import type { EmbedConfig, InjectionMode, ProviderConfig, ProviderKind } from "@common/types";import { DEFAULT_PERSONALITY_ID } from "@common/personalities";
+import type { ConstrainedOutputMode, EmbedConfig, InjectionMode, ModelRoute, ProviderConfig, ProviderKind } from "@common/types";
+import { DEFAULT_PERSONALITY_ID } from "@common/personalities";
 
 import type { ModelRate } from "./pricing";
 import { modelRate } from "./pricing";
@@ -135,8 +136,16 @@ export interface MossSettings {
   fastModel?: string;
   /** Stronger model on the same connection used after repeated rejected work. */
   escalationModel?: string;
+  /** Fast model on another provider connection; takes precedence over fastModel. */
+  fastRoute?: ModelRoute;
+  /** Escalation model on another provider connection; takes precedence over escalationModel. */
+  escalationRoute?: ModelRoute;
   /** Rejections before escalating; default 2. */
   escalateAfter?: number;
+  /** Per-model constrained tool output; absent means automatic for limited and unreliable profiles. */
+  constrainedOutput?: Record<string, ConstrainedOutputMode>;
+  /** Rank narrowed tools and recalled lessons by meaning with the embeddings model. Off by default. */
+  semanticRanking?: boolean;
   /** Record every model call to a local, replayable trace. Off by default. */
   recordTraces?: boolean;
   /** Stop a turn after this many rounds without progress; 0 never stops. Absent means 5. */

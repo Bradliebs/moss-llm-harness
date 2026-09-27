@@ -50,8 +50,8 @@ declare global {
    *  mcp.servers(). A structural subset of the backend McpServerConfig: only the
    *  fields the form reads or writes (env/cwd/headers stay file-edited). */
   type MossMcpServerInput =
-    | { type: "stdio"; id: string; command: string; args?: string[]; enabled?: boolean }
-    | { type: "http"; id: string; url: string; enabled?: boolean };
+    | { type: "stdio"; id: string; command: string; args?: string[]; enabled?: boolean; trustAnnotations?: boolean }
+    | { type: "http"; id: string; url: string; enabled?: boolean; trustAnnotations?: boolean };
 
 
   interface Window {

@@ -69,7 +69,12 @@ export class TraceRecorder {
 export class RecordingProvider implements ChatProvider {
   readonly kind: string;
 
-  constructor(private readonly inner: ChatProvider, private readonly recorder: TraceRecorder, private readonly now: () => number = Date.now) {
+  constructor(
+    private readonly inner: ChatProvider,
+    private readonly recorder: TraceRecorder,
+    private readonly now: () => number = Date.now,
+    private readonly route?: { providerKind: ProviderKind; endpoint: string; constrained?: boolean },
+  ) {
     this.kind = inner.kind;
   }
 
@@ -98,6 +103,8 @@ export class RecordingProvider implements ChatProvider {
         startedAt: new Date(started).toISOString(),
         durationMs: this.now() - started,
         model: req.model,
+        ...(this.route ? { providerKind: this.route.providerKind, endpoint: endpointLabel(this.route.endpoint) } : {}),
+        ...(this.route?.constrained ? { constrained: true } : {}),
         request: {
           messages: req.messages,
           toolNames: (req.tools ?? []).map((tool) => tool.name),

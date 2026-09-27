@@ -20,6 +20,8 @@ import type {
   MissionCapabilityDescriptor,
   MissionLaunchPolicy,
   ModelProbeRequest,
+  ModelRoute,
+  ProviderConfig,
   MossEvent,
   ProductDiagnosticEntry,
   ProductDiagnosticKind,
@@ -66,7 +68,11 @@ import { readWorkspacePreview, suggestVerificationCommands } from "../backend/mo
 import { CONTEXT_LEVELS, DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_TIMEOUT_SECONDS, runCapabilityProbes } from "../backend/moss/models/capability-probes";
 import { buildCapabilityProfile } from "../backend/moss/models/capability-profile";
 import { modelProfileStore } from "../backend/moss/models/model-profile-store";
-import { DEFAULT_ESCALATE_AFTER, EscalatingProvider, EscalationMonitor } from "../backend/moss/models/escalation";
+import { DEFAULT_ESCALATE_AFTER, EscalationMonitor } from "../backend/moss/models/escalation";
+import { isLocalRoute, RoutedProvider, routeDestination, routeToken, type ProviderRoute } from "../backend/moss/models/routed-provider";
+import { StepProtocolProvider } from "../backend/moss/models/step-protocol";
+import { findToolTool, semanticIndex } from "../backend/moss/models/tool-index";
+import { endpointLabel } from "../backend/moss/models/capability-profile";
 import { applyScaffoldingMessages, planScaffolding } from "../backend/moss/models/scaffolding";
 import { RecordingProvider, TraceRecorder, traceStore } from "../backend/moss/models/trace-recorder";
 import { replayTrace } from "../backend/moss/models/trace-replay";
@@ -495,7 +501,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
   let recoveringReload = false;
   let pendingDurableApproval: { callId: string; persisted: Promise<TaskSnapshot> } | undefined;
   let traceRecorder: TraceRecorder | undefined;
-  let escalatingProvider: EscalatingProvider | undefined;
+  let routedProvider: RoutedProvider | undefined;
 
   let terminalEvent: Extract<MossEvent, { type: "turn-complete" | "turn-aborted" | "turn-error" }> | undefined;
   const approvalEvents = new Map<string, Extract<MossEvent, { type: "tool-approval-request" }>>();
@@ -592,25 +598,80 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
   event.sender.on("did-start-navigation", handleRendererNavigation);
 
   try {
-    const baseProvider = createProvider(req.config);
-    // Attach the daily-budget guard only when the user set a positive cap, so
-    // the default path is the bare provider with no behavior change.
-    const budgetedProvider =
-      req.dailyBudgetUsd && req.dailyBudgetUsd > 0
-        ? new BudgetEnforcingProvider(baseProvider, req.dailyBudgetUsd, req.modelRates)
-        : baseProvider;
-    // Wrapper order matters: escalation rewrites the model before the recorder
-    // and the budget guard see the request, so both account for the model that
-    // actually runs.
     traceRecorder = req.recordTrace
       ? new TraceRecorder({ id: req.turnId, providerKind: req.config.kind, baseUrl: req.config.baseUrl, model: req.config.model })
       : undefined;
-    const recordedProvider = traceRecorder ? new RecordingProvider(budgetedProvider, traceRecorder) : budgetedProvider;
-    const escalationModel = req.routing?.escalationModel?.trim();
-    escalatingProvider = escalationModel && escalationModel !== req.config.model
-      ? new EscalatingProvider(recordedProvider, req.config.model, escalationModel)
-      : undefined;
-    const provider = escalatingProvider ?? recordedProvider;
+    // Each route gets its own provider stack: base provider, optional constrained
+    // step protocol, daily budget, and trace recording, so every layer sees the
+    // model and endpoint that actually serve the request.
+    const buildRoute = async (key: string, config: ProviderConfig): Promise<ProviderRoute> => {
+      // "auto" follows the measured profile, so it is part of adaptive scaffolding.
+      const requested = req.constrainedOutput?.[config.model] ?? "auto";
+      const mode = requested === "auto" && req.adaptiveScaffolding === false ? "never" : requested;
+      const profile = mode === "auto" && config.kind === "openai-compatible"
+        ? await modelProfileStore.get(config.kind, config.baseUrl, config.model).catch(() => null)
+        : null;
+      const constrained = config.kind === "openai-compatible"
+        && (mode === "always" || (mode === "auto" && (profile?.tier === "limited" || profile?.tier === "unreliable")));
+      const base = createProvider(config);
+      const stepped = constrained ? new StepProtocolProvider(base) : base;
+      const budgeted = req.dailyBudgetUsd && req.dailyBudgetUsd > 0
+        ? new BudgetEnforcingProvider(stepped, req.dailyBudgetUsd, req.modelRates)
+        : stepped;
+      const recorded = traceRecorder
+        ? new RecordingProvider(budgeted, traceRecorder, Date.now, { providerKind: config.kind, endpoint: config.baseUrl, constrained })
+        : budgeted;
+      return {
+        key,
+        provider: recorded,
+        model: config.model,
+        providerKind: config.kind,
+        endpoint: config.baseUrl,
+        local: isLocalRoute(config.baseUrl, config.model),
+        constrained,
+      };
+    };
+    const routeConfig = (route: ModelRoute | undefined, sameConnectionModel: string | undefined): ProviderConfig | undefined => {
+      if (route?.model?.trim() && route.baseUrl?.trim()) {
+        const sameConnection = route.kind === req.config.kind && endpointLabel(route.baseUrl).toLowerCase() === endpointLabel(req.config.baseUrl).toLowerCase();
+        const apiKey = sameConnection ? req.config.apiKey : route.presetId ? providerCredentials.get(route.presetId) : undefined;
+        return { kind: route.kind, baseUrl: route.baseUrl, model: route.model.trim(), ...(apiKey ? { apiKey } : {}) };
+      }
+      const model = sameConnectionModel?.trim();
+      return model ? { ...req.config, model } : undefined;
+    };
+    // Ranking by meaning sends request text to the embeddings endpoint on every
+    // turn, so it runs only when the user opts in.
+    const rankingEmbed = req.semanticRanking === true && req.embed?.baseUrl && req.embed.model ? req.embed : undefined;
+    const primaryRoute = await buildRoute("chat", req.config);
+    const extraRoutes = new Map<string, ProviderRoute>();
+    const fastConfig = routeConfig(req.routing?.fastRoute, req.routing?.fastModel);
+    const escalationConfig = routeConfig(req.routing?.escalationRoute, req.routing?.escalationModel);
+    const sameAsPrimary = (config: ProviderConfig): boolean => config.model === req.config.model
+      && config.kind === req.config.kind && endpointLabel(config.baseUrl) === endpointLabel(req.config.baseUrl);
+    if (fastConfig && !sameAsPrimary(fastConfig)) extraRoutes.set("fast", await buildRoute("fast", fastConfig));
+    if (escalationConfig && !sameAsPrimary(escalationConfig)) extraRoutes.set("escalation", await buildRoute("escalation", escalationConfig));
+    routedProvider = new RoutedProvider(primaryRoute, extraRoutes);
+    const provider = routedProvider;
+    const constrainedNotice = [primaryRoute, ...extraRoutes.values()].filter((route) => route.constrained).map((route) => route.model);
+    if (constrainedNotice.length > 0) {
+      send({ type: "notice", level: "info", message: `Using constrained tool output for ${constrainedNotice.join(", ")}: each step is one validated tool call or a final answer.` });
+    }
+    if (routedProvider.route("escalation")) {
+      const monitor = new EscalationMonitor(req.routing?.escalateAfter ?? DEFAULT_ESCALATE_AFTER);
+      const router = routedProvider;
+      observeForEscalation = (observed) => {
+        if (!monitor.observe(observed)) return;
+        const target = router.escalate("escalation");
+        if (!target) return;
+        const crossesToCloud = primaryRoute.local && !target.local;
+        send({
+          type: "notice",
+          level: "warn",
+          message: `Escalating to ${target.model} after ${monitor.count} rejected attempt${monitor.count === 1 ? "" : "s"} by ${req.config.model}.${crossesToCloud ? ` This sends the conversation and workspace context to ${routeDestination(target.endpoint, target.model)}.` : ""}`,
+        });
+      };
+    }
     const enableTools = req.enableTools !== false;
     const routed = enableTools
       ? routeAvailableTools(req)
@@ -633,7 +694,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       : [buildSystemMessage({ includeSkills: enableTools, includeClarification: !req.taskSpec && !req.taskId, query: lastUser?.content ?? "", customInstructions: req.customInstructions, personalityId: req.personalityId, adaptiveTone: req.adaptiveTone }), ...req.messages];
     if (!hasSystem && lastUser?.content) {
       // Episodic memory: verified lessons from earlier runs that match this request.
-      const lessons = renderLessons(await lessonStore.relevant(lastUser.content).catch(() => []));
+      const lessons = renderLessons(await lessonStore.relevant(lastUser.content, 3, rankingEmbed ? (query, texts) => semanticIndex.similarities(query, texts, rankingEmbed, controller.signal) : undefined).catch(() => []));
       if (lessons) messages[0] = { ...messages[0], content: `${messages[0].content}\n\n${lessons}` };
     }
     const workingState = new WorkingStateStore(normalizeWorkingState(req.workingState));
@@ -675,7 +736,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       const capabilities = routed.tools.map((tool) => ({
         ...describeMissionCapability(tool.name),
       }));
-      const missionProvider = new MissionBudgetProvider(provider, remainingBudget(task, new Date()), req.modelRates);
+      const missionProvider = new MissionBudgetProvider(provider, remainingBudget(task, new Date()), req.modelRates, routedProvider.resolveModel);
       const planner = new MissionPlanner({
         provider: missionProvider,
         modelRates: req.modelRates,
@@ -694,6 +755,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         workingState,
         ...(stallLimit !== undefined ? { stallLimit } : {}),
         ...(req.untrustedContentGate === false ? { provenanceGate: false } : {}),
+        resolveModel: routedProvider.resolveModel,
         checkpoint,
         verify: req.verify,
         maxRounds,
@@ -787,37 +849,30 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     const profile = req.adaptiveScaffolding !== false && toolDefinitions.length > 0
       ? await modelProfileStore.get(req.config.kind, req.config.baseUrl, req.config.model).catch(() => null)
       : null;
-    const scaffolding = planScaffolding(profile, toolDefinitions, lastUser?.content ?? "");
-    if (scaffolding.notice) send({ type: "notice", level: "info", message: scaffolding.notice });
-    const offeredTools = new Set(scaffolding.tools.map((tool) => tool.name));
-    const scaffoldedRegistry = scaffolding.tools.length === toolDefinitions.length
-      ? toolRegistry
-      : new Map([...toolRegistry].filter(([name]) => offeredTools.has(name)));
-    if (escalatingProvider && escalationModel) {
-      const monitor = new EscalationMonitor(req.routing?.escalateAfter ?? DEFAULT_ESCALATE_AFTER);
-      const escalator = escalatingProvider;
-      observeForEscalation = (observed) => {
-        if (monitor.observe(observed) && escalator.escalate()) {
-          send({
-            type: "notice",
-            level: "warn",
-            message: `Escalating to ${escalationModel} after ${monitor.count} rejected attempt${monitor.count === 1 ? "" : "s"} by ${req.config.model}.`,
-          });
-        }
-      };
+    let scaffolding = planScaffolding(profile, toolDefinitions, lastUser?.content ?? "");
+    const narrowed = scaffolding.tools.length < toolDefinitions.length;
+    if (narrowed) {
+      // Rank by meaning when embeddings are configured, and always offer
+      // find_tool so a narrowed model can recover a tool it was not given.
+      const ranked = await semanticIndex.rankTools(toolDefinitions, lastUser?.content ?? "", scaffolding.tools.length, rankingEmbed, controller.signal);
+      scaffolding = { ...scaffolding, tools: [...ranked, { name: findToolTool.name, description: findToolTool.description, parameters: findToolTool.parameters }] };
     }
-    const fastModel = req.routing?.fastModel?.trim();
+    if (scaffolding.notice) send({ type: "notice", level: "info", message: scaffolding.notice });
+    const scaffoldedRegistry = narrowed ? new Map([...toolRegistry, [findToolTool.name, findToolTool]]) : toolRegistry;
+
     await runTurn({
       provider,
       model: req.config.model,
       messages: applyScaffoldingMessages(messages, scaffolding),
       tools: scaffolding.tools,
       toolRegistry: scaffoldedRegistry,
+      ...(narrowed ? { toolCatalog: toolDefinitions } : {}),
+      ...(rankingEmbed ? { rankingEmbed } : {}),
       ...(scaffolding.maxToolCallsPerRound ? { maxToolCallsPerRound: scaffolding.maxToolCallsPerRound } : {}),
       workingState,
       ...(stallLimit !== undefined ? { stallLimit } : {}),
       ...(req.untrustedContentGate === false ? { provenanceGate: false } : {}),
-      ...(fastModel && fastModel !== req.config.model ? { auxiliaryModel: fastModel } : {}),
+      ...(routedProvider.route("fast") ? { auxiliaryModel: routeToken("fast") } : {}),
       workspaceRoot,
       signal: controller.signal,
       onEvent: send,
@@ -934,7 +989,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       if (traceRecorder) {
         void traceStore.save(traceRecorder.finish({
           outcome,
-          ...(escalatingProvider?.isEscalated ? { escalatedTo: req.routing?.escalationModel?.trim() } : {}),
+          ...(routedProvider?.escalation ? { escalatedTo: routedProvider.escalation.model } : {}),
           ...(verificationCounts.passed + verificationCounts.failed > 0 ? { verification: verificationCounts } : {}),
         })).catch(() => undefined);
       }
