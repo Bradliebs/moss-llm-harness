@@ -336,6 +336,23 @@ describe("SettingsPanel", () => {
     await waitFor(() => expect((screen.getByLabelText("Trust read-only annotations from docs") as HTMLInputElement).checked).toBe(true));
   });
 
+  it("ignores a connected server's destructive flags on request", async () => {
+    window.moss.mcp.status = vi.fn(() =>
+      Promise.resolve([{ id: "playwright", enabled: true, connected: true, toolCount: 3, tools: ["browser_navigate", "browser_click", "browser_snapshot"], destructiveTools: ["browser_navigate", "browser_click"] }]),
+    );
+    window.moss.mcp.servers = vi.fn(() => Promise.resolve([{ type: "stdio" as const, id: "playwright", command: "npx", args: ["-y", "@playwright/mcp@latest"] }]));
+    window.moss.mcp.update = vi.fn(() =>
+      Promise.resolve([{ id: "playwright", enabled: true, connected: true, toolCount: 3, destructiveTools: ["browser_navigate", "browser_click"], ignoreDestructiveHints: true }]),
+    );
+    render(<SettingsPanel onClose={() => {}} />);
+    const ignore = await screen.findByLabelText("Ignore destructive flags from playwright");
+    expect(ignore.closest("label")?.textContent).toContain("ignore destructive flags (2)");
+    expect(ignore.closest("label")?.getAttribute("title")).toContain("still ask");
+    fireEvent.click(ignore);
+    await waitFor(() => expect(window.moss.mcp.update).toHaveBeenCalledWith({ type: "stdio", id: "playwright", command: "npx", args: ["-y", "@playwright/mcp@latest"], ignoreDestructiveHints: true }));
+    await waitFor(() => expect((screen.getByLabelText("Ignore destructive flags from playwright") as HTMLInputElement).checked).toBe(true));
+  });
+
   it("shows a working state and disables the checkbox while a toggle is in flight", async () => {
     let resolveToggle!: (value: unknown) => void;
     window.moss.mcp.status = vi.fn(() =>

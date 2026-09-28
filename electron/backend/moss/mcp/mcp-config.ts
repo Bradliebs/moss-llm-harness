@@ -26,6 +26,9 @@ export interface McpStdioServerConfig {
   cwd?: string;
   /** honor the server's readOnlyHint annotations; off by default */
   trustAnnotations?: boolean;
+  /** ignore the server's destructiveHint annotations, for servers that flag
+   *  every non-read tool; Moss's own irreversible-action checks still apply */
+  ignoreDestructiveHints?: boolean;
 }
 
 export interface McpHttpServerConfig {
@@ -36,6 +39,9 @@ export interface McpHttpServerConfig {
   headers?: Record<string, string>;
   /** honor the server's readOnlyHint annotations; off by default */
   trustAnnotations?: boolean;
+  /** ignore the server's destructiveHint annotations, for servers that flag
+   *  every non-read tool; Moss's own irreversible-action checks still apply */
+  ignoreDestructiveHints?: boolean;
 }
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;

@@ -797,6 +797,17 @@ tools run without a prompt, also after untrusted content, unless their
 arguments derive from that content. The setting is stored as
 `trustAnnotations` in `mcp-servers.json`.
 
+Some servers flag every tool that is not a pure read as destructive. The
+Playwright MCP server does this, so even navigating to a page asks for approval
+whatever your auto-approve and safety settings are. For such a server, check
+**ignore destructive flags** next to it under **Settings > Knowledge**; the count
+shows how many tools it flags. Its tools then follow the ordinary rules for
+changes: auto-approve and the untrusted-content gate apply. Tools that run page
+code, upload files, or install software (`browser_evaluate`, `browser_run_code`,
+`browser_file_upload`, `browser_install`) still ask, and so does any call whose
+arguments name an irreversible action such as delete, submit, pay, send, or
+confirm. The setting is stored as `ignoreDestructiveHints` in `mcp-servers.json`.
+
 Server configuration may include commands, arguments, working directories,
 environment variables, URLs, and headers. Treat third-party MCP servers as code
 with the same access as the account running Moss.
@@ -1344,6 +1355,14 @@ trust its annotations: check **trust read-only** next to the server under
 changes that follow web, MCP, or browser content** under **Settings > Safety**
 and keep auto-approve on under **Settings > Tools**. Destructive commands, email,
 and irreversible actions still ask.
+
+If the approval card says **Why approval is needed: The tool's server declares
+it destructive**, neither setting applies: the server itself flagged the tool,
+and Moss always asks before those. Playwright MCP flags navigation, clicks, and
+typing this way. Check **ignore destructive flags** next to the server under
+**Settings > Knowledge** (see [Model Context Protocol](#model-context-protocol)).
+The card can still show the untrusted-content warning for information after
+you turn the gate off.
 
 ### A small local model writes tool calls as text
 

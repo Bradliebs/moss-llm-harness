@@ -892,6 +892,7 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
     ...(gated && derivation ? { untrusted: true, untrustedDerivation: derivation } : {}),
     ...(tool.readOnly ? { readOnly: true } : {}),
     ...(tool.destructive ? { destructive: true } : {}),
+    ...(tool.checkIrreversible ? { checkIrreversible: true } : {}),
   });
   if (decision.action === "deny") {
     return { result: { ok: false, content: `Denied by policy: ${call.name}` }, autoApproved: false };

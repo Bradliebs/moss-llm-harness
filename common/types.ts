@@ -1153,6 +1153,10 @@ export interface McpServerStatus {
   tools?: string[];
   /** the user trusts this server's read-only annotations */
   trustAnnotations?: boolean;
+  /** the user chose to ignore this server's destructive flags */
+  ignoreDestructiveHints?: boolean;
+  /** tools the server flags as destructive (raw names), present while connected */
+  destructiveTools?: string[];
   /** tools the server annotates as read-only (raw names), present while connected */
   readOnlyTools?: string[];
   error?: string;

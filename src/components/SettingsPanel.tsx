@@ -230,6 +230,23 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
     }
   }
 
+  async function ignoreMcpDestructive(id: string, ignore: boolean): Promise<void> {
+    setPendingId(id);
+    try {
+      const config = (await window.moss.mcp.servers()).find((server) => server.id === id);
+      if (!config) throw new Error("not configured");
+      setMcp(await window.moss.mcp.update({ ...config, ignoreDestructiveHints: ignore }));
+      setStatus(ignore
+        ? `Ignoring destructive flags from ${id}; code-running, upload, and irreversible actions still ask`
+        : `Asking before every tool ${id} flags as destructive`);
+    } catch {
+      setStatus(`Could not update ${id}`);
+      void refreshMcp();
+    } finally {
+      setPendingId(null);
+    }
+  }
+
   async function trustMcp(id: string, trusted: boolean): Promise<void> {
     setPendingId(id);
     try {
@@ -1165,6 +1182,21 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                             onChange={(e) => void trustMcp(s.id, e.target.checked)}
                           />
                           trust read-only ({s.readOnlyTools?.length ?? 0})
+                        </label>
+                      ) : null}
+                      {s.connected && ((s.destructiveTools?.length ?? 0) > 0 || s.ignoreDestructiveHints === true) ? (
+                        <label
+                          className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300"
+                          title={`Flagged destructive by the server: ${(s.destructiveTools ?? []).join(", ") || "none"}. Moss always asks before these. Ignore the flags when the server marks every change as destructive, such as Playwright marking navigation; tools that run page code or upload files, and calls naming delete, submit, pay, send, and similar actions, still ask.`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={s.ignoreDestructiveHints === true}
+                            disabled={pendingId === s.id}
+                            aria-label={`Ignore destructive flags from ${s.id}`}
+                            onChange={(e) => void ignoreMcpDestructive(s.id, e.target.checked)}
+                          />
+                          ignore destructive flags ({s.destructiveTools?.length ?? 0})
                         </label>
                       ) : null}
                       <span

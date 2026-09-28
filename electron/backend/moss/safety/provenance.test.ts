@@ -73,4 +73,14 @@ describe("resolvePermission with declared tool risk", () => {
     const grant = { schemaVersion: 1, authority: "policy-scoped", allowedCapabilities: ["read_file"], maxAutoApprovedRisk: "mutating" } as never;
     expect(resolvePermission({ name: "mcp__docs__search", autoApprove: true, readOnly: true, executionGrant: grant, stepCapabilities: ["read_file"] })).toMatchObject({ action: "deny" });
   });
+
+  it("auto-approves ignored-flag tools unless their arguments name an irreversible action", () => {
+    const navigate = { name: "mcp__playwright__browser_navigate", autoApprove: true, checkIrreversible: true };
+    expect(resolvePermission({ ...navigate, args: { url: "https://www.dpreview.com/reviews/nikon-zr" } })).toMatchObject({ action: "run", autoApproved: true });
+    expect(resolvePermission({ ...navigate, name: "mcp__playwright__browser_click", args: { element: "Submit order button", ref: "e12" } }))
+      .toMatchObject({ action: "prompt", risk: "destructive", rule: expect.stringContaining("irreversible") });
+    expect(resolvePermission({ ...navigate, args: { nested: [{ label: "Delete account" }] } })).toMatchObject({ action: "prompt" });
+    // Without auto-approve it asks like any other change.
+    expect(resolvePermission({ ...navigate, autoApprove: false, args: { url: "https://example.com" } })).toMatchObject({ action: "prompt", risk: "mutating" });
+  });
 });

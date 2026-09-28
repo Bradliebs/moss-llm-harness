@@ -113,4 +113,16 @@ describe("MCP tool annotations", () => {
     const tool = adaptMcpTool("db", client as never, { name: "drop", inputSchema: {}, annotations: { destructiveHint: true } });
     expect(tool).toMatchObject({ name: "mcp__db__drop", destructive: true });
   });
+
+  it("can ignore a server's blanket destructive flags, except for code, uploads, and installs", () => {
+    const flagged = { annotations: { destructiveHint: true } };
+    expect(mcpToolRisk({ ...flagged, name: "browser_navigate" }, false, true)).toEqual({ checkIrreversible: true });
+    expect(mcpToolRisk({ ...flagged, name: "browser_click" }, false, true)).toEqual({ checkIrreversible: true });
+    for (const name of ["browser_evaluate", "browser_run_code", "browser_file_upload", "browser_install"]) {
+      expect(mcpToolRisk({ ...flagged, name }, false, true)).toEqual({ destructive: true });
+    }
+    const tool = adaptMcpTool("playwright", { callTool: vi.fn() } as never, { name: "browser_navigate", inputSchema: {}, ...flagged }, { ignoreDestructiveHints: true });
+    expect(tool.destructive).toBeUndefined();
+    expect(tool.checkIrreversible).toBe(true);
+  });
 });

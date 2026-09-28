@@ -67,13 +67,25 @@ function createTransport(config: McpServerConfig): { close(): Promise<void> } {
   });
 }
 
+/** Tools that run code or move files from the machine; they keep prompting
+ *  even when the user ignores the server's destructive flags. */
+const ALWAYS_DESTRUCTIVE_MCP = /(?:^|_)(?:evaluate|run_code|file_upload|install)$/;
+
 /** Annotations are claims made by the server. A read-only claim relaxes the
  *  permission policy, so it counts only for servers the user trusts; a
- *  destructive claim only tightens it, so it counts for every server. */
-export function mcpToolRisk(info: Pick<McpToolInfo, "annotations">, trustAnnotations: boolean): { readOnly?: true; destructive?: true } {
+ *  destructive claim only tightens it, so it counts for every server unless
+ *  the user ignores it for a server that flags every non-read tool. */
+export function mcpToolRisk(
+  info: Pick<McpToolInfo, "annotations"> & { name?: string },
+  trustAnnotations: boolean,
+  ignoreDestructiveHints = false,
+): { readOnly?: true; destructive?: true; checkIrreversible?: true } {
   const hints = info.annotations;
   if (!hints || typeof hints !== "object") return {};
-  if (hints.destructiveHint === true && hints.readOnlyHint !== true) return { destructive: true };
+  if (hints.destructiveHint === true && hints.readOnlyHint !== true) {
+    if (!ignoreDestructiveHints || ALWAYS_DESTRUCTIVE_MCP.test(info.name ?? "")) return { destructive: true };
+    return { checkIrreversible: true };
+  }
   if (trustAnnotations && hints.readOnlyHint === true && hints.destructiveHint !== true) return { readOnly: true };
   return {};
 }
@@ -82,7 +94,7 @@ export function adaptMcpTool(
   serverId: string,
   client: Pick<Client, "callTool">,
   info: Pick<McpToolInfo, "name" | "description" | "inputSchema" | "annotations">,
-  options: { trustAnnotations?: boolean } = {},
+  options: { trustAnnotations?: boolean; ignoreDestructiveHints?: boolean } = {},
 ): Tool {
   const name = adaptToolName(serverId, info.name);
   const parameters = info.inputSchema && typeof info.inputSchema === "object"
@@ -92,7 +104,7 @@ export function adaptMcpTool(
     description: info.description ?? `MCP tool "${info.name}" from server "${serverId}"`,
     parameters,
     timeoutMs: 180_000,
-    ...mcpToolRisk(info, options.trustAnnotations === true),
+    ...mcpToolRisk(info, options.trustAnnotations === true, options.ignoreDestructiveHints === true),
     async execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
       try {
         const result = await client.callTool({ name: info.name, arguments: args }, undefined, { signal: ctx.signal });
@@ -154,7 +166,7 @@ class McpManager {
       transport = createTransport(config);
       await client.connect(transport);
       const { tools } = await client.listTools();
-      const adapted = tools.map((t) => adaptMcpTool(config.id, client, t, { trustAnnotations: config.trustAnnotations === true }));
+      const adapted = tools.map((t) => adaptMcpTool(config.id, client, t, { trustAnnotations: config.trustAnnotations === true, ignoreDestructiveHints: config.ignoreDestructiveHints === true }));
       for (const tool of adapted) {
         if (this.tools.some((existing) => existing.name === tool.name)) {
           log.warn(`duplicate tool name ${tool.name} from server ${config.id} skipped`);
@@ -170,6 +182,8 @@ class McpManager {
         toolCount: adapted.length,
         tools: tools.map((t) => t.name),
         ...(config.trustAnnotations === true ? { trustAnnotations: true } : {}),
+        ...(config.ignoreDestructiveHints === true ? { ignoreDestructiveHints: true } : {}),
+        destructiveTools: tools.filter((t) => t.annotations?.destructiveHint === true && t.annotations.readOnlyHint !== true).map((t) => t.name),
         readOnlyTools: tools.filter((t) => t.annotations?.readOnlyHint === true && t.annotations.destructiveHint !== true).map((t) => t.name),
       });
       log.info(`server ${config.id}: ${adapted.length} tool(s)`);
