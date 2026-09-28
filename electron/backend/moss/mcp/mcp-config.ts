@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import { createLogger } from "../../../../common/logger";
 import { writeFileAtomicSync } from "../persistence/atomic-file";
@@ -51,7 +51,7 @@ const TEMPLATE: McpServerConfig[] = [
 ];
 
 function configPath(): string {
-  return join(app.getPath("userData"), "mcp-servers.json");
+  return join(userDataDir(), "mcp-servers.json");
 }
 
 function isValid(entry: unknown): entry is McpServerConfig {

@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import type { ModelPerformanceEntry, ModelTaskKind, ProviderKind } from "../../../../common/types";
 import { writeFileAtomic } from "../persistence/atomic-file";
@@ -48,7 +48,7 @@ export class ModelPerformanceStore {
   constructor(private readonly baseDir?: string, private readonly now: () => Date = () => new Date()) {}
 
   private file(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "model-profiles", "performance.json");
+    return join(this.baseDir ?? userDataDir(), "model-profiles", "performance.json");
   }
 
   list(): Promise<ModelPerformanceEntry[]> {

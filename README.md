@@ -176,6 +176,8 @@ from Moss's chat-model cost display and budget cap. Requests have a 15-second
 timeout and no automatic retries; cancellation cannot undo data already sent.
 Results are advisory and never replace tool permissions or host verification.
 Durable missions do not expose Jev because their budgets do not account for it.
+For an independent review inside a mission, bind a critic check to a criterion
+instead (see [Mission contract preflight](#mission-contract-preflight)).
 
 See the [TypeSafe introduction](https://docs.typesafe.ai/introduction) for the
 question types. After building, `node scripts/smoke-jev.mjs` checks settings,
@@ -486,6 +488,11 @@ providers:
   started with the `delegate` tool
 * An escalation model takes over a turn after Moss rejects the chat model's
   work a set number of times (default 2)
+* A critic reviews mission outputs bound to a critic check, and judges replays.
+  It must come from a different model family than the chat, escalation, and
+  fast models, so the model that did the work never grades it. Moss refuses the
+  check when a family is unknown or shared, and warns when the critic's measured
+  tier is weak
 
 Each route picks a provider and a model. **This connection** uses a model on the
 current provider, including Ollama cloud models. Any other provider you have
@@ -531,11 +538,22 @@ Settings, or from a terminal:
 ```powershell
 npm run replay -- --dir "$env:APPDATA\moss\turn-traces" --last 5 --model qwen2.5:7b --model ministral-3:8b
 npm run replay -- --trace path\to\trace.json --model llama3.1:8b --output replay.json
+npm run replay -- --dir "$env:APPDATA\moss\turn-traces" --model qwen2.5:7b --judge glm-5.3-flash:cloud
 ```
 
 The folder name follows the application's user data directory; **Open folder**
 in Settings shows the exact location. The command reuses each trace's provider
 endpoint unless you pass `--base-url` and `--kind`.
+
+Agreement with the first model is not the same as doing well, so a replay can
+also be judged. With a judge (the critic route in Settings, or `--judge` with
+optional `--judge-base-url`, `--judge-kind`, and `--judge-api-key-env`), each
+step where the candidate chose differently is graded on its own: does it serve
+the request, does it rely on facts nobody has seen yet, and is it irrelevant or
+premature? The baseline step gets the same questions, so the report shows how
+many divergent steps were reasonable and how many were better than the
+original. The judge must be from a different model family than the models it
+grades.
 
 ### Practice runs
 
@@ -607,9 +625,22 @@ Settings, such as tests, type checks, or builds.
 
 Before launch, every mandatory acceptance criterion needs a measurable outcome
 and an explicit verification method. The mission review supports configured
-commands, file existence, file content, and HTTP status checks. File and command
-checks also require a selected workspace. Commands must exactly match entries
-enabled under **Settings > Verification**.
+commands, file existence, file content, HTTP status, and critic review checks.
+File and command checks also require a selected workspace. Commands must exactly
+match entries enabled under **Settings > Verification**.
+
+A critic check is for work a command cannot grade, such as a research report or
+a summary. The critic from **Settings > Models > Routing and adaptation** reads
+the step's artifacts and up to five bound workspace files, then answers a
+checklist: each requirement in the criterion and optional rubric, whether it is
+met, and a quote as evidence. Moss decides the verdict, not the critic: every
+requirement must be met, and quoted evidence must actually appear in the
+materials. A review with invented quotes fails, and so does one where fewer than
+half the checks quote verified evidence. Materials flagged for prompt injection,
+or no materials at all, are refused rather than reviewed. Critic calls are
+charged to the mission budget. In testing, small local critics that approved a
+flawed report when asked for a single verdict caught it every time with the
+checklist.
 
 Launch remains disabled until the contract passes preflight. Constraints and
 assumptions are optional, but become part of the reviewed mission specification
@@ -672,6 +703,8 @@ the owning conversation, route paused or blocked work to its recovery controls,
 cancel an active durable task through the main-process task controller, or
 pause active work, or export a sanitized per-run diagnostic summary. Pausing
 aborts the current attempt before the durable task enters its resumable state.
+**Why?** on a run lists the harness decisions made during its attempts, such as
+scaffolding, constrained output, escalation, and critic reviews.
 
 ### Harness layers
 
@@ -686,11 +719,12 @@ about the task in the harness:
 | Adjustable scaffolding | Meaning-ranked tool narrowing with `find_tool`, step guidance, and per-round call limits |
 | Routing | Fast and escalation routes on any configured provider, with per-model mission pricing |
 | Governed state | Per-conversation working state, rendered every round and never summarized away |
-| Independent verification | Host-run checks bound to mission criteria; the model never grades itself |
+| Independent verification | Host-run checks bound to mission criteria, and a checklist critic from another model family; the model never grades itself |
 | Earned memory | Skill trust ledger with versions, recalled lessons, and learned procedures that run without planning |
 | Supervisor | No-progress detection, loop reminders, budgets, and a stop that asks you |
 | Provenance security | Untrusted content can inform decisions but never authorize a side effect; an optional quarantine reader keeps raw content away from the acting model |
-| Evaluation | Replay and practice runs against your own recorded work, graded by your verification |
+| Evaluation | Replay and practice runs against your own recorded work, graded by your verification or an independent judge |
+| Front ends | The same kernel runs headless through `npm run moss`, for CI jobs and other hosts |
 
 ### Agent execution design
 
@@ -1007,6 +1041,7 @@ and image attachment handling in a disposable Electron profile.
 | `npm run eval:health` | Validate corpus, reference solution, and grader publication health |
 | `npm run probe -- --model NAME` | Profile one or more models' tool, JSON, instruction, context, and planning reliability |
 | `npm run replay -- --trace FILE --model NAME` | Replay recorded turn traces against other models without running tools |
+| `npm run moss -- --model NAME --prompt TEXT` | Run one agent turn headless, without Electron; see [Headless runs](#headless-runs) |
 | `npm run build` | Build the Electron main process and Vite renderer |
 | `npm run check:bundle` | Enforce initial renderer JavaScript and CSS budgets |
 | `npm run pack` | Create an unpacked application directory |
@@ -1019,12 +1054,61 @@ The renderer alone expects APIs injected by `electron/preload.cjs`. Running
 `npm run dev:renderer` in a normal browser is useful for targeted UI work only
 when those APIs are mocked.
 
+## Headless runs
+
+`npm run moss` runs one agent turn with the desktop app's kernel in plain
+Node.js, with no Electron: the same tools, permission policy, provenance gate,
+no-progress supervisor, verification, adaptive scaffolding, and constrained
+output. Use it in CI jobs, scripts, or another front end.
+
+```powershell
+npm run moss -- --model llama3.1:8b --prompt "What does scripts/build.mjs do?"
+npm run moss -- --model qwen2.5:7b --approve safe --verify "npm test" --prompt "Fix the failing test"
+Get-Content task.md | npm run moss -- --model ministral-3:8b --json > run.jsonl
+```
+
+* **Endpoint.** It defaults to Ollama at `http://localhost:11434/v1`. Use
+  `--base-url`, `--kind openai-compatible|anthropic`, and `--api-key-env VAR`
+  for other providers (default variable `MOSS_API_KEY`). Keys come from the
+  environment, never from the desktop app's secure storage.
+* **Approvals.** `--approve deny` (the default) refuses every call that needs
+  approval and tells the model why. `safe` runs ordinary file changes and
+  commands, but still refuses destructive calls and calls after untrusted
+  content. `ask` prompts on the terminal. No mode approves those gated calls
+  unseen.
+* **Done means verified.** With `--verify CMD` (repeatable), the run cannot
+  finish until the checks pass. A final answer that never ran them, or ran them
+  and failed, is sent back to the model with the failure. After three failed
+  attempts the run fails with exit code 1.
+* **Scaffolding.** The model's measured profile from the desktop app, or from
+  `--profile FILE` written by `npm run probe -- --output FILE`, decides the tool
+  narrowing, step guidance, and constrained output (`--constrained
+  auto|always|never`). Without a profile, the model gets every tool and no extra
+  structure.
+* **Output.** Plain mode streams the answer to stdout and tool activity to
+  stderr. `--json` writes one JSON event per line, ending with a `run-summary`
+  event; `--events-out FILE` saves the same events alongside plain output.
+* **Exit codes.** `0` done (and verified, when checks are set), `1` failed or
+  unverified, `2` bad arguments, `130` cancelled with Ctrl+C.
+* **Data folder.** Runs share the desktop app's data folder, so profiles,
+  lessons, and tool-output artifacts carry over. Override it with `--data-dir`
+  or `MOSS_USER_DATA`.
+* **Other flags.** `--workspace DIR` (default: current folder), `--prompt-file
+  FILE` or stdin instead of `--prompt`, `--max-rounds N`, `--no-tools`, and
+  `--instructions FILE` for project instructions.
+
+Backend modules resolve their data folder through
+`electron/backend/moss/runtime/user-data.ts`, so the kernel imports cleanly
+outside Electron; only secure credential storage stays desktop-only.
+
 ## Project structure
 
 ```text
 common/                  Shared IPC contracts, types, logging, and personalities
 electron/
   backend/moss/          Agent runtime, tools, tasks, providers, and persistence
+    cli/                 Headless agent runner (npm run moss)
+    runtime/             Data-folder resolution that works with or without Electron
   ipc/                   Main-process IPC handlers
   main.ts                Electron composition root
   preload.cjs            Restricted renderer bridge
@@ -1061,11 +1145,13 @@ task recovery, verification, memory, skills, learning, and the evaluation harnes
 Model-harness tests cover capability probes, live scores, context-window fit,
 constrained output, voting, tool-call repair, cross-provider routing and
 escalation, provenance and the quarantine reader, practice runs in disposable
-git worktrees, learned procedures, and one-click setup.
+git worktrees, learned procedures, one-click setup, the mission critic and model
+family independence, judged replay, and headless runs through `npm run moss`.
 The bundle gate follows the renderer assets referenced by `dist/index.html` and
-limits initial JavaScript and CSS independently. Settings, Library, Run center,
-the command palette, artifact preview, PDF extraction, DOCX extraction, and
-syntax languages load only when their workflows need them.
+limits initial JavaScript to 600 KiB and CSS to 80 KiB. Settings, Library, Run
+center, the command palette, artifact preview, PDF extraction, DOCX extraction,
+the syntax highlighter, and its languages load only when their workflows need
+them.
 
 The evaluation harness runs production-loop tasks in isolated workspaces and
 grades their end state with independent validators. It supports governed corpus
@@ -1160,6 +1246,15 @@ of 94.04% statements and 85.57% branches. The initial renderer bundle measured
 for the command palette and verified the getting-started guide; supervised
 mission smokes passed. Windows notifications and approval diffs still need the
 interactive checks in the [GUI smoke checklist](docs/e42-gui-smoke-checklist.md).
+
+The September 27 harness round (mission critic, judged replay, Run center
+decisions, and headless runs) passed 1,796 deterministic tests with four gated
+live tests skipped, the expanded focused lint, and coverage of 94.83% statements
+and 84.36% branches. The initial renderer bundle measured 516.4 KiB of JavaScript
+and 69.2 KiB of CSS. The unsigned package passed the packaged smoke and the
+supervised mission smokes, and `eval:health` passed. Live runs with local
+Ollama models checked the checklist critic against good and flawed reports, the
+replay judge, and headless fix-and-verify runs in `safe` and `deny` modes.
 
 See the [harness feedback loop guide](docs/harness-feedback-loop.md) for corpus
 selection, provider runs, report inspection, resume behavior, and CI tiers.

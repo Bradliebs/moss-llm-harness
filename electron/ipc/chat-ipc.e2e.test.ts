@@ -377,6 +377,73 @@ describe("chat IPC turn (e2e)", () => {
     }
   });
 
+  it("completes a mission from an independent critic's review of the bound report", async () => {
+    const taskId = `mission-critic-${crypto.randomUUID()}`;
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "moss-mission-critic-"));
+    writeFileSync(join(workspaceRoot, "report.md"), "| Vendor | Price |\n|---|---|\n| Acme | $10 |\n| Birch | $12 |\n| Cedar | $9 |\n", "utf8");
+    const plan = {
+      schemaVersion: 1, revision: 1,
+      steps: [{
+        id: "review", description: "Review the report", state: "pending", dependsOn: [], requiredCapabilities: ["read_file"],
+        mission: { kind: "verify", workerRole: "verifier", executionLane: "readonly-parallel", acceptanceCriterionIds: ["prices"], budget: { maxDurationMs: 60_000, maxTokens: 50_000, maxActions: 1, maxCostUsd: 5 }, expectedArtifacts: ["report"] },
+      }],
+    };
+    const worker = scriptedProvider([
+      [{ type: "tool-call", toolCall: { id: "plan-1", name: "submit_mission_plan", arguments: JSON.stringify({ plan }) } }, { type: "usage", usage: { inputTokens: 20, outputTokens: 10 } }],
+      [{ type: "tool-call", toolCall: { id: "read-1", name: "read_file", arguments: JSON.stringify({ path: "report.md" }) } }, { type: "usage", usage: { inputTokens: 20, outputTokens: 10 } }],
+      [{ type: "text-delta", text: "The report is ready." }, { type: "usage", usage: { inputTokens: 20, outputTokens: 10 } }],
+    ]);
+    const criticRequests: Array<{ model: string; tools?: unknown[]; content: string }> = [];
+    mockProviderRef.factory = (config) => config.kind === "anthropic"
+      ? {
+          kind: "anthropic",
+          async *streamChat(input) {
+            criticRequests.push({ model: input.model, tools: input.tools, content: input.messages.map((message) => message.content).join("\n") });
+            yield { type: "text-delta", text: JSON.stringify({ checks: [
+              { requirement: "Three vendors", item: "report", met: true, evidence: "" },
+              { requirement: "Each vendor has a price", item: "Acme", met: true, evidence: "Acme | $10" },
+              { requirement: "Each vendor has a price", item: "Cedar", met: true, evidence: "Cedar | $9" },
+            ] }) };
+            yield { type: "usage", usage: { inputTokens: 50, outputTokens: 30 } };
+          },
+          async listModels() { return []; },
+        }
+      : worker;
+    const key = vi.spyOn(providerCredentials, "get").mockImplementation((id) => id === "anthropic" ? "sk-critic" : "");
+    const sent: ChatEventPayload[] = [];
+    try {
+      recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({
+        enableTools: true,
+        workspaceRoot,
+        taskId,
+        config: { kind: "openai-compatible", baseUrl: "http://localhost:11434/v1", model: "qwen2.5:7b" },
+        routing: { criticRoute: { presetId: "anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-5" } },
+        modelRates: { "qwen2.5:7b": { inputPer1M: 0, outputPer1M: 0 }, "claude-sonnet-4-5": { inputPer1M: 3, outputPer1M: 15 } },
+        taskSpec: {
+          objective: "Compare vendors",
+          acceptanceCriteria: [{ id: "prices", description: "The report lists three vendors, each with a price", mandatory: true, verification: { kind: "critic", paths: ["report.md"] } }],
+          constraints: [], assumptions: [], workspaceRoot,
+        },
+        mission: { authority: "supervised", requestedCapabilities: ["read_file"], maxAutoApprovedRisk: "readonly", budget: { maxActions: 2 } },
+      }));
+      await vi.waitFor(() => expect(sent.some((payload) => payload.event.type === "turn-complete" || payload.event.type === "turn-error")).toBe(true), { timeout: 15_000 });
+      expect(sent.find((payload) => payload.event.type === "turn-error")?.event).toBeUndefined();
+      expect(await taskStore.get(taskId)).toMatchObject({
+        state: "completed",
+        evidence: [{ criterionId: "prices", passed: true, kind: "model-review", summary: expect.stringContaining("Critic checked 3 requirements, all met") }],
+      });
+      expect(criticRequests).toHaveLength(1);
+      expect(criticRequests[0]).toMatchObject({ model: "claude-sonnet-4-5" });
+      expect(criticRequests[0].tools).toBeUndefined();
+      expect(criticRequests[0].content).toContain("Material: File report.md");
+      expect(sent.some((payload) => payload.event.type === "harness-decision" && payload.event.decision.kind === "critic")).toBe(true);
+    } finally {
+      key.mockRestore();
+      await taskStore.delete(taskId);
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it("completes a mission only from an explicitly bound passing project test", async () => {
     const taskId = `mission-complete-${crypto.randomUUID()}`;
     const workspaceRoot = mkdtempSync(join(tmpdir(), "moss-mission-ipc-"));

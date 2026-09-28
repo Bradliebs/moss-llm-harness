@@ -140,6 +140,10 @@ export interface MossSettings {
   fastRoute?: ModelRoute;
   /** Escalation model on another provider connection; takes precedence over escalationModel. */
   escalationRoute?: ModelRoute;
+  /** Critic for mission reviews on the current connection. */
+  criticModel?: string;
+  /** Critic for mission reviews on another provider connection; takes precedence over criticModel. */
+  criticRoute?: ModelRoute;
   /** Rejections before escalating; default 2. */
   escalateAfter?: number;
   /** Per-model constrained tool output; absent means automatic for limited and unreliable profiles. */

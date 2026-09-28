@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import type { AgentMessage, HarnessDecision, ProviderKind, ToolDefinition, TraceCall, TurnTrace, TurnTraceSummary } from "../../../../common/types";
 import { writeFileAtomic } from "../persistence/atomic-file";
@@ -156,7 +156,7 @@ export class TraceStore {
   constructor(private readonly baseDir?: string, private readonly now: () => number = Date.now) {}
 
   dir(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "turn-traces");
+    return join(this.baseDir ?? userDataDir(), "turn-traces");
   }
 
   private file(id: string): string {

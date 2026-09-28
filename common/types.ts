@@ -122,7 +122,9 @@ export type TaskCriterionVerification =
   | { kind: "commands"; commands: string[] }
   | { kind: "file-exists"; path: string }
   | { kind: "file-contains"; path: string; substring: string }
-  | { kind: "http"; url: string; expectedStatus?: number };
+  | { kind: "http"; url: string; expectedStatus?: number }
+  /** an independent critic model from another family judges the outcome from the materials */
+  | { kind: "critic"; rubric?: string; paths?: string[] };
 
 export interface TaskEvidence {
   id: string;
@@ -614,6 +616,10 @@ export interface ModelRouting {
   fastRoute?: ModelRoute;
   /** escalation model on any configured provider; takes precedence over escalationModel */
   escalationRoute?: ModelRoute;
+  /** critic for mission reviews, on the current connection */
+  criticModel?: string;
+  /** critic for mission reviews on any configured provider; takes precedence over criticModel */
+  criticRoute?: ModelRoute;
   /** rejected completions or failed verifications before escalating; default 2 */
   escalateAfter?: number;
 }
@@ -673,6 +679,15 @@ export interface TurnTraceSummary {
 
 export type ReplayAgreement = "same-action" | "different-tool" | "answered-instead" | "called-tool-instead" | "error";
 
+/** A third-family judge's view of a step where the candidate differed from the original. */
+export interface ReplayJudgement {
+  candidateReasonable: boolean;
+  /** candidate's step compared with the original model's */
+  comparison: "better" | "equal" | "worse";
+  reason: string;
+  judgeModel: string;
+}
+
 export interface ReplayCallResult {
   index: number;
   baseline: { toolNames: string[]; answered: boolean };
@@ -687,6 +702,7 @@ export interface ReplayCallResult {
     error?: string;
   };
   agreement: ReplayAgreement;
+  judgement?: ReplayJudgement;
 }
 
 export interface ReplayReport {
@@ -707,12 +723,24 @@ export interface ReplayReport {
     baselineMedianLatencyMs?: number;
     inputTokens: number;
     outputTokens: number;
+    /** differing steps a judge reviewed */
+    judged?: number;
+    /** same steps plus differing steps the judge found reasonable */
+    acceptable?: number;
+    acceptableRate?: number;
+    /** differing steps the judge preferred over the original */
+    better?: number;
   };
+  judgeModel?: string;
+  /** why differing steps were not judged */
+  judgeSkipped?: string;
 }
 
 export interface TraceReplayRequest {
   traceId: string;
   config: ProviderConfig;
+  /** judge for steps where the candidate differs; must be a third model family */
+  judge?: ModelRoute;
   timeoutSeconds?: number;
 }
 
@@ -982,7 +1010,7 @@ export interface Procedure {
 
 export type HarnessDecisionKind =
   | "scaffold" | "constrain" | "vote" | "repair" | "find-tool" | "route" | "escalate"
-  | "gate" | "stall" | "budget" | "quarantine" | "procedure" | "live-score" | "context";
+  | "gate" | "stall" | "budget" | "quarantine" | "procedure" | "live-score" | "context" | "critic";
 
 /** One thing the harness decided during a turn, for the Why timeline. */
 export interface HarnessDecision {

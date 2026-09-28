@@ -466,6 +466,26 @@ still required before closing end-to-end dictation acceptance.
       offers `run_procedure`, that each expanded step still asks for approval
       when it would, and that **Demote** removes it from the offer.
 
+24. **Mission critic, judged replay, Run center decisions, and headless runs**
+    - Under **Settings > Models > Routing and adaptation**, set **Critic for
+      mission reviews** to a model from the same family as the chat model.
+      Confirm the independence note, and that a mission with a critic check
+      cannot launch. Pick a model from another family and confirm launch is
+      allowed, with a weak-tier warning for a limited critic.
+    - Launch a Research mission with a critic check bound to its report and a
+      rubric requirement the report misses. Confirm the check fails with the
+      unmet requirement named, and that a corrected report passes. Confirm
+      **Why?** shows the critic decision.
+    - Open **Run center**, select the run, and confirm **Why?** lists the
+      decisions from every attempt.
+    - Replay a recorded trace with the critic set. Confirm the report shows
+      the reasonable and better counts for divergent steps.
+    - In a terminal, run `npm run moss -- --model NAME --workspace DIR
+      --approve safe --verify "npm test" --prompt "Fix the failing test"` on a
+      workspace with one failing test. Confirm the exit code is 0 only when
+      the test passes, 1 otherwise, and that `--approve deny` leaves the
+      workspace unchanged.
+
 ## Pass criteria
 
 - No uncaught errors in the main-process console or the renderer devtools.
@@ -473,7 +493,8 @@ still required before closing end-to-end dictation acceptance.
   inspection, templates, diagnostics, notifications, compact layout, approval
   previews, undo, shortcuts, conversation organisation, mission authority,
   constrained output, cross-provider escalation, data-level provenance, setup,
-  live scores, context fit, voting, Why, practice runs, quarantine, and learned
-  procedures behave as described above.
+  live scores, context fit, voting, Why, practice runs, quarantine, learned
+  procedures, the mission critic, judged replay, and headless runs behave as
+  described above.
 - Reload preserves session history, titles, task state, and the "auto" provenance
   tag without replaying an interrupted action.

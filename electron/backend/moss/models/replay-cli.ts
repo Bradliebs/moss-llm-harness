@@ -13,9 +13,10 @@ import type { ProviderConfig, ProviderKind, ReplayReport, TurnTrace } from "../.
 import { createProvider } from "../providers";
 import type { ChatProvider } from "../providers/types";
 import { DEFAULT_TIMEOUT_SECONDS } from "./capability-probes";
+import { createReplayJudge } from "./replay-judge";
 import { replayTrace } from "./trace-replay";
 
-export const REPLAY_USAGE = "Usage: replay (--trace FILE ... | --dir DIR [--last N]) --model NAME [--model NAME ...] [--base-url URL] [--kind openai-compatible|anthropic] [--api-key-env VAR] [--timeout SECONDS] [--output FILE]";
+export const REPLAY_USAGE = "Usage: replay (--trace FILE ... | --dir DIR [--last N]) --model NAME [--model NAME ...] [--base-url URL] [--kind openai-compatible|anthropic] [--api-key-env VAR] [--timeout SECONDS] [--judge NAME [--judge-base-url URL] [--judge-kind KIND] [--judge-api-key-env VAR]] [--output FILE]";
 
 export interface ReplayCliOptions {
   traces: string[];
@@ -27,11 +28,16 @@ export interface ReplayCliOptions {
   apiKey?: string;
   timeoutSeconds: number;
   output?: string;
+  judge?: { model: string; kind?: ProviderKind; baseUrl?: string; apiKey?: string };
 }
 
 export function parseReplayArgs(args: readonly string[], env: NodeJS.ProcessEnv = process.env): ReplayCliOptions {
   const options: ReplayCliOptions = { traces: [], last: 5, models: [], timeoutSeconds: DEFAULT_TIMEOUT_SECONDS };
   let apiKeyEnv = "MOSS_PROBE_API_KEY";
+  let judgeKeyEnv: string | undefined;
+  let judgeKind: ProviderKind | undefined;
+  let judgeBaseUrl: string | undefined;
+  let judgeModel: string | undefined;
   for (let index = 0; index < args.length; index++) {
     const flag = args[index];
     const value = args[index + 1];
@@ -58,12 +64,24 @@ export function parseReplayArgs(args: readonly string[], env: NodeJS.ProcessEnv 
       if (!Number.isFinite(seconds) || seconds < 5) throw new Error("--timeout must be at least 5 seconds");
       options.timeoutSeconds = seconds;
     } else if (flag === "--output") options.output = need();
+    else if (flag === "--judge") judgeModel = need();
+    else if (flag === "--judge-base-url") judgeBaseUrl = need();
+    else if (flag === "--judge-api-key-env") judgeKeyEnv = need();
+    else if (flag === "--judge-kind") {
+      const kind = need();
+      if (kind !== "openai-compatible" && kind !== "anthropic") throw new Error(`Unsupported provider kind: ${kind}`);
+      judgeKind = kind;
+    }
     else throw new Error(`Unknown argument: ${flag}`);
   }
   if (options.traces.length === 0 && !options.dir) throw new Error("Provide --trace FILE or --dir DIR");
   if (options.models.length === 0) throw new Error("At least one --model is required");
   const apiKey = env[apiKeyEnv]?.trim();
   if (apiKey) options.apiKey = apiKey;
+  if (judgeModel) {
+    const judgeKey = judgeKeyEnv ? env[judgeKeyEnv]?.trim() : apiKey;
+    options.judge = { model: judgeModel, ...(judgeKind ? { kind: judgeKind } : {}), ...(judgeBaseUrl ? { baseUrl: judgeBaseUrl } : {}), ...(judgeKey ? { apiKey: judgeKey } : {}) };
+  } else if (judgeKind || judgeBaseUrl || judgeKeyEnv) throw new Error("--judge-kind, --judge-base-url, and --judge-api-key-env need --judge");
   return options;
 }
 
@@ -97,13 +115,14 @@ function percent(value: number): string {
 export function formatReplayTable(reports: readonly ReplayReport[]): string {
   if (reports.length === 0) return "";
   const rows = [
-    ["Trace", "Baseline", "Candidate", "Calls", "Same action", "Valid args", "Errors", "Median latency"],
+    ["Trace", "Baseline", "Candidate", "Calls", "Same action", "Reasonable", "Valid args", "Errors", "Median latency"],
     ...reports.map((report) => [
       report.traceId.slice(0, 8),
       report.baselineModel,
       report.candidateModel,
       String(report.summary.calls),
       `${report.summary.sameAction} (${percent(report.summary.agreementRate)})`,
+      report.summary.acceptable !== undefined ? `${report.summary.acceptable} (${percent(report.summary.acceptableRate ?? 0)})` : "-",
       percent(report.summary.validArgumentRate),
       String(report.summary.errors),
       report.summary.medianLatencyMs !== undefined ? `${(report.summary.medianLatencyMs / 1000).toFixed(1)}s` : "-",
@@ -145,7 +164,24 @@ export async function runReplayCli(args: readonly string[], dependencies: Replay
         model,
         ...(options.apiKey ? { apiKey: options.apiKey } : {}),
       });
-      reports.push(await replayTrace(trace, provider, model, { signal: controller.signal, timeoutMs: options.timeoutSeconds * 1_000 }));
+      const judge = options.judge
+        ? {
+            model: options.judge.model,
+            judge: createReplayJudge({
+              provider: factory({
+                kind: options.judge.kind ?? options.kind ?? trace.providerKind,
+                baseUrl: options.judge.baseUrl ?? options.baseUrl ?? trace.endpoint,
+                model: options.judge.model,
+                ...(options.judge.apiKey ? { apiKey: options.judge.apiKey } : {}),
+              }),
+              model: options.judge.model,
+              judgeModel: options.judge.model,
+            }),
+          }
+        : undefined;
+      const report = await replayTrace(trace, provider, model, { signal: controller.signal, timeoutMs: options.timeoutSeconds * 1_000, ...(judge ? { judge } : {}) });
+      if (report.judgeSkipped) io.stderr(`Not judged: ${report.judgeSkipped}`);
+      reports.push(report);
     }
   }
   io.stdout(formatReplayTable(reports));

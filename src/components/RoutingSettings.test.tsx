@@ -70,7 +70,8 @@ describe("RoutingSettings", () => {
   it("offers other models with their measured profiles and saves routing choices", async () => {
     render(<RoutingSettings className="" />);
     const fast = screen.getByLabelText("Fast model for summaries and read-only subagents");
-    await waitFor(() => expect(screen.getAllByRole("option", { name: "fast (capable, 70%, 0.8s)" })).toHaveLength(2));
+    // Fast, escalation, and critic pickers each offer the model.
+    await waitFor(() => expect(screen.getAllByRole("option", { name: "fast (capable, 70%, 0.8s)" })).toHaveLength(3));
     expect([...fast.querySelectorAll("option")].map((option) => option.value)).toEqual(["", "fast", "big"]);
     fireEvent.change(fast, { target: { value: "fast" } });
     fireEvent.change(screen.getByLabelText("Escalation model"), { target: { value: "big" } });
@@ -111,6 +112,16 @@ describe("RoutingSettings", () => {
     expect(toggle.closest("label")?.textContent).toContain("nomic-embed-text at localhost:11434");
     fireEvent.click(toggle);
     expect(updateSettings).toHaveBeenCalledWith({ semanticRanking: true });
+  });
+
+  it("says whether the chosen critic is independent of the working models", () => {
+    settings.value = { ...settings.value, criticModel: "fast" };
+    render(<RoutingSettings className="" />);
+    expect(screen.getByText(/cannot tell which model family fast belongs to/)).toBeDefined();
+    cleanup();
+    settings.value = { ...settings.value, model: "qwen2.5:7b", criticRoute: { presetId: "anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-5" } };
+    render(<RoutingSettings className="" />);
+    expect(screen.getByText(/Independent: anthropic is a different model family/)).toBeDefined();
   });
 
   it("sets voting on each step for the current model", () => {

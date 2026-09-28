@@ -29,3 +29,9 @@ export function recordTurnDecision(turnId: string, decision: HarnessDecision): v
 export function useTurnDecisions(turnId: string): HarnessDecision[] {
   return turnDecisionsStore.use()[turnId] ?? [];
 }
+
+/** Decisions across several turns, such as every attempt of a mission, in order. */
+export function useDecisionsFor(turnIds: readonly string[]): HarnessDecision[] {
+  const all = turnDecisionsStore.use();
+  return [...new Set(turnIds)].flatMap((id) => all[id] ?? []);
+}

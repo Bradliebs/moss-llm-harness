@@ -85,6 +85,16 @@ describe("resolveMissionSpec", () => {
     });
   });
 
+  it("launches a critic-bound mission only with an independent critic", () => {
+    const criticSpec = { ...spec, acceptanceCriteria: [{ id: "done", description: "Report answers the question", mandatory: true, verification: { kind: "critic" as const } }] };
+    const policy = { authority: "supervised" as const, requestedCapabilities: ["read_file"], maxAutoApprovedRisk: "readonly" as const };
+    const config = { kind: "openai-compatible" as const, baseUrl: "http://localhost:11434/v1", model: "qwen2.5:7b" };
+    expect(() => resolveMissionSpec(criticSpec, policy, ["read_file"], { config })).toThrow(/No critic model is configured/);
+    expect(() => resolveMissionSpec(criticSpec, policy, ["read_file"], { config, routing: { criticModel: "qwen3.5:4b" } })).toThrow(/same model family/);
+    expect(() => resolveMissionSpec(criticSpec, policy, ["read_file"], { config, routing: { fastModel: "gemma3", criticRoute: { kind: "openai-compatible", baseUrl: "http://localhost:11434/v1", model: "gemma3:latest" } } })).toThrow(/same model family as gemma3/);
+    expect(resolveMissionSpec(criticSpec, policy, ["read_file"], { config, routing: { criticRoute: { presetId: "anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-5" } } }).acceptanceCriteria[0].verification).toEqual({ kind: "critic" });
+  });
+
   it("rejects capabilities that are absent from the live registry", () => {
     expect(() => resolveMissionSpec(spec, {
       authority: "supervised",

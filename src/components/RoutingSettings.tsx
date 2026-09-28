@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 
 import { liveScore, modelKey } from "@common/live-scores";
+import { checkCriticIndependence, workerModels } from "@common/model-family";
 import { isLocalRoute, routeDestination } from "@common/routes";
 import type { ConstrainedOutputMode, ModelCapabilityProfile, ModelLiveScore, ModelPerformanceEntry, ModelRoute, ReplayReport, TurnTraceSummary } from "@common/types";
 
@@ -193,6 +194,11 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
   const currentTier = profileFor(settings.model)?.tier;
   const constrainedNow = settings.kind === "openai-compatible"
     && (constrainedMode === "always" || (constrainedMode === "auto" && (currentTier === "limited" || currentTier === "unreliable")));
+  const criticModel = settings.criticRoute?.model ?? settings.criticModel;
+  const criticIndependence = criticModel ? checkCriticIndependence(criticModel, workerModels(settings)) : undefined;
+  const criticTier = settings.criticRoute
+    ? profileAt(settings.criticRoute.kind, settings.criticRoute.baseUrl, settings.criticRoute.model)?.tier
+    : settings.criticModel ? profileFor(settings.criticModel)?.tier : undefined;
   const votingMode = settings.stepVoting?.[settings.model] ?? "auto";
   const currentProfile = profileFor(settings.model);
   const votingNow = constrainedNow && isLocalRoute(settings.baseUrl, settings.model)
@@ -219,9 +225,15 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
     setProgress(null);
     setStatus("");
     try {
-      const result = await window.moss.traces.replay({ traceId: trace.id, config: { ...toProviderConfig(settings), model: replayModel } });
+      // The critic, when set, also judges steps where the candidate differs.
+      const judge: ModelRoute | undefined = settings.criticRoute
+        ?? (settings.criticModel ? { kind: settings.kind, baseUrl: settings.baseUrl, model: settings.criticModel } : undefined);
+      const result = await window.moss.traces.replay({ traceId: trace.id, config: { ...toProviderConfig(settings), model: replayModel }, ...(judge ? { judge } : {}) });
       setReport(result);
-      setStatus(`${replayModel} made the same decision as ${result.baselineModel} on ${result.summary.sameAction} of ${result.summary.calls} calls.`);
+      const judged = result.summary.acceptable !== undefined
+        ? ` Counting differing steps ${result.judgeModel} judged reasonable, ${result.summary.acceptable} of ${result.summary.calls} were acceptable.`
+        : result.judgeSkipped ? ` Differing steps were not judged: ${result.judgeSkipped}` : "";
+      setStatus(`${replayModel} made the same decision as ${result.baselineModel} on ${result.summary.sameAction} of ${result.summary.calls} calls.${judged}`);
     } catch (error) {
       setStatus(`Replay failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -342,6 +354,26 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
           />
         </label>
       </div>
+      <RoutePicker
+        id="critic-route"
+        label="Critic for mission reviews"
+        emptyLabel="No critic"
+        model={settings.criticModel}
+        route={settings.criticRoute}
+        profileFor={profileAt}
+        liveFor={liveAt}
+        onChange={(next) => updateSettings({ criticModel: next.model, criticRoute: next.route })}
+      />
+      {criticIndependence ? (
+        <p className={`text-xs ${criticIndependence.ok ? "text-neutral-600 dark:text-neutral-300" : "text-amber-800 dark:text-amber-300"}`}>
+          {criticIndependence.ok
+            ? `Independent: ${criticIndependence.criticFamily} is a different model family from the models doing the work. Missions can bind criteria to this critic in Mission review.`
+            : criticIndependence.reason}
+          {criticIndependence.ok && (criticTier === "limited" || criticTier === "unreliable")
+            ? ` Its measured tier is ${criticTier}; small models make unreliable critics, so prefer a capable or strong one.`
+            : ""}
+        </p>
+      ) : null}
       <p className="text-xs text-neutral-600 dark:text-neutral-300">
         A turn switches to the escalation model after Moss rejects its work this many times: a failed tool call, failed
         verification, or a refused completion. Your own denials never count, and the model never decides this itself.
@@ -432,6 +464,9 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
                 <td>
                   {call.agreement.replace(/-/g, " ")}
                   {call.candidate.unknownArguments.length ? ` (unknown arguments: ${call.candidate.unknownArguments.join(", ")})` : ""}
+                  {call.judgement
+                    ? ` · judged ${call.judgement.candidateReasonable ? "reasonable" : "not reasonable"}${call.judgement.comparison === "better" ? ", better than the original" : call.judgement.comparison === "worse" ? ", worse than the original" : ""}${call.judgement.reason ? `: ${call.judgement.reason}` : ""}`
+                    : ""}
                 </td>
               </tr>
             ))}
@@ -439,7 +474,9 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
           <tfoot>
             <tr className="text-neutral-700 dark:text-neutral-200">
               <td colSpan={4} className="pt-1">
-                Agreement {percent(report.summary.agreementRate)} · valid arguments {percent(report.summary.validArgumentRate)} · {report.summary.errors} errors
+                Agreement {percent(report.summary.agreementRate)}
+                {report.summary.acceptableRate !== undefined ? ` · reasonable ${percent(report.summary.acceptableRate)} (judged by ${report.judgeModel})` : ""}
+                {" "}· valid arguments {percent(report.summary.validArgumentRate)} · {report.summary.errors} errors
                 {report.summary.medianLatencyMs !== undefined ? ` · median ${(report.summary.medianLatencyMs / 1000).toFixed(1)}s` : ""}
                 {report.summary.baselineMedianLatencyMs !== undefined ? ` (original ${(report.summary.baselineMedianLatencyMs / 1000).toFixed(1)}s)` : ""}
               </td>

@@ -10,7 +10,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import { createLogger } from "../../../../common/logger";
 import { writeFileAtomicSync } from "../persistence/atomic-file";
@@ -34,7 +34,7 @@ export class DailyBudget {
   constructor(private readonly baseDir?: string) {}
 
   private file(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "daily-budget.json");
+    return join(this.baseDir ?? userDataDir(), "daily-budget.json");
   }
 
   /** Read the ledger, collapsing a stale day to zero spend. */

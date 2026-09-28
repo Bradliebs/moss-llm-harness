@@ -3,31 +3,10 @@ import { Children, isValidElement, useEffect, useRef, useState, type ReactElemen
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
-import { createBundledHighlighter, createSingletonShorthands } from "shiki/core";
-import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import { ResultTable } from "./ResultTable";
 
-const { codeToHtml } = createSingletonShorthands(createBundledHighlighter({
-  engine: () => createJavaScriptRegexEngine(),
-  langs: {
-    bash: () => import("@shikijs/langs/bash"),
-    css: () => import("@shikijs/langs/css"),
-    html: () => import("@shikijs/langs/html"),
-    javascript: () => import("@shikijs/langs/javascript"),
-    json: () => import("@shikijs/langs/json"),
-    markdown: () => import("@shikijs/langs/markdown"),
-    powershell: () => import("@shikijs/langs/powershell"),
-    python: () => import("@shikijs/langs/python"),
-    sql: () => import("@shikijs/langs/sql"),
-    tsx: () => import("@shikijs/langs/tsx"),
-    typescript: () => import("@shikijs/langs/typescript"),
-    yaml: () => import("@shikijs/langs/yaml"),
-  },
-  themes: {
-    "github-dark": () => import("@shikijs/themes/github-dark"),
-    "github-light": () => import("@shikijs/themes/github-light"),
-  },
-}));
+// The highlighter engine loads with the first code block, not at startup.
+const loadHighlighter = (): Promise<typeof import("../lib/highlight")> => import("../lib/highlight");
 
 const LANGUAGE_ALIASES: Record<string, string> = {
   js: "javascript",
@@ -106,11 +85,11 @@ function CodeBlock({ children, onCopy }: { children: ReactNode; onCopy: (text: s
 
   useEffect(() => {
     let active = true;
-    void codeToHtml(code, {
+    void loadHighlighter().then(({ codeToHtml }) => codeToHtml(code, {
       lang: highlightLanguage,
       themes: { light: "github-light", dark: "github-dark" },
       defaultColor: false,
-    })
+    }))
       .then((html) => {
         if (active) setHighlighted(html);
       })

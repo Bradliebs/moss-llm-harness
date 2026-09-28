@@ -1,6 +1,6 @@
 // src/components/ChatPanel.tsx
 
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, FileText, Menu, PanelRightOpen, RefreshCw, X } from "lucide-react";
 
 import type { AgentMessage, ApprovalProvenance, ChatEventPayload, ConfidenceMode, DocumentAttachment, MissionCapabilityDescriptor, MissionLaunchPolicy, Skill, TaskBudget, TaskHistoryEntry, TaskSnapshot, TaskSpec, TokenUsage } from "@common/types";
@@ -43,7 +43,7 @@ import { ChatComposer } from "./ChatComposer";
 import { ClarificationForm } from "./ClarificationForm";
 import { LiveStatus } from "./LiveStatus";
 import { blockerRecovery, MissionMonitor } from "./MissionMonitor";
-import { MissionContractEditor, missionContractIssues, type MissionContract } from "./MissionReview";
+import { criticSetup, MissionContractEditor, missionContractIssues, type MissionContract } from "./MissionReview";
 import { RichResponse } from "./RichResponse";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { ToolActivity } from "./ToolActivity";
@@ -428,7 +428,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const sessions = useSessions();
   const models = modelsStore.use();
   const current = currentSession(sessions);
-  const history = current?.messages ?? [];
+  const currentMessages = current?.messages;
+  const history = useMemo(() => currentMessages ?? [], [currentMessages]);
   const usage = sessionTokenUsage(history);
   const cost = estimateCost(usage, settings.model, settings.modelRates);
   const tools = sessionToolUsage(history);
@@ -490,9 +491,14 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const turnSessionRef = useRef<string | null>(null);
   const turnBaseRef = useRef<AgentMessage[]>([]);
   const settingsRef = useRef(settings);
-  settingsRef.current = settings;
   const currentSessionIdRef = useRef(current?.id);
-  currentSessionIdRef.current = current?.id;
+  // Event handlers and the once-subscribed event feed read the latest values.
+  useLayoutEffect(() => {
+    settingsRef.current = settings;
+    currentSessionIdRef.current = current?.id;
+  });
+  // Rendering needs to know which conversation owns the running turn.
+  const [activeTurnSessionId, setActiveTurnSessionId] = useState<string | null>(null);
   // The event feed is subscribed once, so its handler closes over first-render
   // state. Hold the pending user message in a ref (like the base) so the commit
   // paths read the current value instead of a stale null.
@@ -517,6 +523,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       )
     : [];
   const skillMenuOpen = !skillMenuDismissed && slashMatch !== null && matchingSkills.length > 0;
+  const slashActive = slashMatch !== null;
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -527,6 +534,11 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     setErrorGuidance(null);
     setEditingIndex(null);
   }, [current?.id]);
+
+  // Editing a sent message moves focus to the composer that holds it.
+  useEffect(() => {
+    if (editingIndex !== null) composerRef.current?.focus();
+  }, [editingIndex]);
 
   useEffect(() => {
     let cancelled = false;
@@ -543,7 +555,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   }, [current?.id, current?.taskId]);
 
   useEffect(() => {
-    if (!slashMatch || !window.moss.skills?.list) return;
+    if (!slashActive || !window.moss.skills?.list) return;
     let cancelled = false;
     void window.moss.skills
       .list()
@@ -556,18 +568,17 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     return () => {
       cancelled = true;
     };
-  }, [slashMatch !== null]);
+  }, [slashActive]);
 
+  // Capabilities depend on these settings; reload when any of them changes.
+  const missionCapabilityKey = [
+    settings.enableTools, settings.browserEnabled, settings.browserAllowedDomains, settings.browserHeadless,
+    settings.desktopEnabled, settings.desktopAllowedProcesses, settings.desktopAllowedWindows, settings.sttBaseUrl,
+    settings.baseUrl, settings.apiKey, settings.sttModel, settings.emailApiKey, settings.emailFrom,
+    settings.embedBaseUrl, settings.embedModel,
+  ].map(String).join("\u0000");
   useEffect(() => {
-    const off = window.moss.chat.onEvent((payload: ChatEventPayload) => {
-      if (payload.turnId !== turnIdRef.current && payload.turnId !== taskTurnIdRef.current) return;
-      handleEvent(payload);
-    });
-    return off;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
+    const settings = settingsRef.current;
     if (composerMode !== "mission" || !settings.enableTools || !window.moss.mission?.capabilities) return;
     let cancelled = false;
     setMissionCapabilitiesLoading(true);
@@ -606,15 +617,17 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     return () => {
       cancelled = true;
     };
-  }, [composerMode, settings.enableTools]);
+  }, [composerMode, missionCapabilityKey]);
 
+  const taskId = task?.id;
+  const taskRevision = task?.revision;
   useEffect(() => {
-    if (!task) {
+    if (!taskId) {
       setTaskHistory([]);
       return;
     }
     let cancelled = false;
-    void window.moss.task.history(task.id)
+    void window.moss.task.history(taskId)
       .then((entries) => {
         if (!cancelled) setTaskHistory(entries);
       })
@@ -624,7 +637,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     return () => {
       cancelled = true;
     };
-  }, [task?.id, task?.revision]);
+  }, [taskId, taskRevision]);
 
   // Surface how many tools the connected MCP servers contribute, mirroring the
   // settings panel count so it is visible without opening settings. Guarded so
@@ -735,6 +748,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       setBusy(false);
       turnIdRef.current = null;
       turnSessionRef.current = null;
+      setActiveTurnSessionId(null);
       setStatus(
         ev.type === "turn-aborted"
           ? "Aborted"
@@ -761,6 +775,16 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     }
   }
 
+  // Subscribed once: the handler reads turn and session state through refs.
+  useEffect(() => {
+    const off = window.moss.chat.onEvent((payload: ChatEventPayload) => {
+      if (payload.turnId !== turnIdRef.current && payload.turnId !== taskTurnIdRef.current) return;
+      handleEvent(payload);
+    });
+    return off;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /** Launch a turn: wire the turn refs, mark busy, and stream the request.
    *  Shared by the composer (send), regenerate, and edit/resend so the commit
    *  path in handleEvent rebuilds the session from the same base + user message. */
@@ -777,6 +801,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     taskTurnIdRef.current = turnId;
     taskSessionRef.current = sessionId;
     turnSessionRef.current = sessionId;
+    setActiveTurnSessionId(sessionId);
     turnBaseRef.current = base;
     turnPendingUserRef.current = userMsg;
     setPendingUser(userMsg);
@@ -831,13 +856,16 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       ...(typeof activeSettings.stallLimit === "number" ? { stallLimit: activeSettings.stallLimit } : {}),
       ...(activeSettings.untrustedContentGate === false ? { untrustedContentGate: false } : {}),
       adaptiveScaffolding: activeSettings.adaptiveScaffolding !== false,
-      ...(activeSettings.fastModel || activeSettings.escalationModel || activeSettings.fastRoute || activeSettings.escalationRoute
+      ...(activeSettings.fastModel || activeSettings.escalationModel || activeSettings.fastRoute || activeSettings.escalationRoute || activeSettings.criticModel || activeSettings.criticRoute
         ? {
             routing: {
               ...(activeSettings.fastRoute ? { fastRoute: activeSettings.fastRoute } : activeSettings.fastModel ? { fastModel: activeSettings.fastModel } : {}),
               ...(activeSettings.escalationRoute
                 ? { escalationRoute: activeSettings.escalationRoute }
                 : activeSettings.escalationModel ? { escalationModel: activeSettings.escalationModel } : {}),
+              ...(activeSettings.criticRoute
+                ? { criticRoute: activeSettings.criticRoute }
+                : activeSettings.criticModel ? { criticModel: activeSettings.criticModel } : {}),
               ...(activeSettings.escalateAfter ? { escalateAfter: activeSettings.escalateAfter } : {}),
             },
           }
@@ -853,7 +881,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     });
   }
 
-  runTurnRef.current = runTurn;
+  useLayoutEffect(() => {
+    runTurnRef.current = runTurn;
+  });
 
   function currentMissionBudget(): TaskBudget | null {
     const minutes = positiveNumber(missionBudget.minutes);
@@ -875,6 +905,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       missionContract,
       configuredVerificationCommands,
       settingsRef.current.workspaceRoot,
+      criticSetup(settingsRef.current),
     );
     if (!budget || selectedMissionCapabilities.length === 0 || contractIssues.length > 0) {
       setStatus(
@@ -1069,6 +1100,17 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   /** Pull the user turn at the given history index back into the composer
    *  (text + attachments). History is kept until the edited message is sent,
    *  so cancelling the edit leaves the conversation untouched. */
+  /** Answers the clarification on the latest reply by starting the next turn. */
+  function submitClarification(answer: string): boolean {
+    if (busy || turnIdRef.current || !current || current.id !== currentSessionIdRef.current || !settings.model) return false;
+    runTurnRef.current(current.id, getSessionMessages(current.id), { role: "user", content: answer });
+    return true;
+  }
+
+  function refuseClarification(): boolean {
+    return false;
+  }
+
   function editUserAt(index: number): void {
     if (busy) return;
     const sessionId = current?.id;
@@ -1079,7 +1121,6 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     setAttachments(userMsg.images ?? []);
     setDocuments(userMsg.documents ?? []);
     setEditingIndex(index);
-    composerRef.current?.focus();
   }
 
   function cancelEdit(): void {
@@ -1251,8 +1292,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     );
   }
 
-  const turnActiveElsewhere = busy && !!turnSessionRef.current && turnSessionRef.current !== current?.id;
-  const ownsActiveTurn = !busy || turnSessionRef.current === current?.id;
+  const turnActiveElsewhere = busy && !!activeTurnSessionId && activeTurnSessionId !== current?.id;
+  const ownsActiveTurn = !busy || activeTurnSessionId === current?.id;
   const items: ViewItem[] = [
     ...messagesToItems(history),
     ...(ownsActiveTurn && pendingUser ? [{ kind: "message", role: "user", content: pendingUser.content, images: pendingUser.images, documents: pendingUser.documents } as MessageView] : []),
@@ -1263,7 +1304,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const selectedArtifact = artifactSelection?.sessionId === current?.id && artifactSelection?.taskId === task?.id
     ? task?.artifacts?.find((artifact) => artifact.id === artifactSelection?.id)
     : undefined;
-  const missionIssues = missionContractIssues(missionContract, configuredVerificationCommands, settings.workspaceRoot);
+  const missionIssues = missionContractIssues(missionContract, configuredVerificationCommands, settings.workspaceRoot, criticSetup(settings));
   function openArtifact(id: string): void {
     if (current && task) setArtifactSelection({ sessionId: current.id, taskId: task.id, id });
   }
@@ -1485,11 +1526,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                   key={`${current?.id}:${i}:${it.content}`}
                   request={clarification}
                   disabled={busy || i !== items.length - 1 || !settings.model}
-                  onSubmit={(answer) => {
-                    if (busy || turnIdRef.current || !current || current.id !== currentSessionIdRef.current || i !== items.length - 1 || !settings.model) return false;
-                    runTurn(current.id, getSessionMessages(current.id), { role: "user", content: answer });
-                    return true;
-                  }}
+                  onSubmit={i === items.length - 1 ? submitClarification : refuseClarification}
                 /> : <RichResponse
                   key={`${current?.id}:${i}`}
                   content={it.content}

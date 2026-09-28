@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import type { Skill, SkillTrust, SkillTrustStatus } from "../../../../common/types";
 import { writeFileAtomicSync } from "../persistence/atomic-file";
@@ -61,7 +61,7 @@ export class SkillLedger {
   constructor(private readonly baseDir?: string, private readonly now: () => Date = () => new Date()) {}
 
   private file(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "m-skills", "ledger.json");
+    return join(this.baseDir ?? userDataDir(), "m-skills", "ledger.json");
   }
 
   private read(): Record<string, LedgerEntry> {

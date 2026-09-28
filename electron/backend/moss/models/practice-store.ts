@@ -8,7 +8,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import type { PracticeConfig, PracticeReport } from "../../../../common/types";
 import { writeFileAtomic } from "../persistence/atomic-file";
@@ -32,7 +32,7 @@ export class PracticeStore {
   constructor(private readonly baseDir?: string) {}
 
   private file(name: string): string {
-    return join(this.baseDir ?? app.getPath("userData"), "practice", name);
+    return join(this.baseDir ?? userDataDir(), "practice", name);
   }
 
   private async read<T>(name: string): Promise<T | null> {

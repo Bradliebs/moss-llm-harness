@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import type { Procedure, ProcedureArg, ProcedureStatus, ProcedureStep, ToolCall, ToolDefinition } from "../../../../common/types";
 import { writeFileAtomic } from "../persistence/atomic-file";
@@ -160,7 +160,7 @@ export class ProcedureStore {
   constructor(private readonly baseDir?: string, private readonly now: () => Date = () => new Date()) {}
 
   private file(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "learning", "procedures.json");
+    return join(this.baseDir ?? userDataDir(), "learning", "procedures.json");
   }
 
   private async read(): Promise<StoreFile> {

@@ -1,12 +1,14 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { app, safeStorage } from "electron";
+import { safeStorage } from "electron";
+
+import { userDataDir } from "./runtime/user-data";
 
 type EncryptedCredentials = Record<string, string>;
 
 function credentialPath(): string {
-  return join(app.getPath("userData"), "provider-credentials.json");
+  return join(userDataDir(), "provider-credentials.json");
 }
 
 function readCredentials(): EncryptedCredentials {
@@ -37,13 +39,13 @@ export const providerCredentials = {
     assertProviderId(providerId);
     const encrypted = readCredentials()[providerId];
     if (!encrypted) return "";
-    if (!safeStorage.isEncryptionAvailable()) throw new Error("Secure credential storage is unavailable");
+    if (!safeStorage?.isEncryptionAvailable?.()) throw new Error("Secure credential storage is unavailable; outside the desktop app pass the API key through an environment variable");
     return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
   },
 
   set(providerId: string, apiKey: string): void {
     assertProviderId(providerId);
-    if (!safeStorage.isEncryptionAvailable()) throw new Error("Secure credential storage is unavailable");
+    if (!safeStorage?.isEncryptionAvailable?.()) throw new Error("Secure credential storage is unavailable; outside the desktop app pass the API key through an environment variable");
     const credentials = readCredentials();
     const trimmed = apiKey.trim();
     if (trimmed) credentials[providerId] = safeStorage.encryptString(trimmed).toString("base64");

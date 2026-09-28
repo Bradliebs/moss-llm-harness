@@ -16,7 +16,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, relative, sep } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import { createLogger } from "../../../../common/logger";
 import type { CodebaseReindexResult, CodebaseStatus, EmbedConfig } from "../../../../common/types";
@@ -139,7 +139,7 @@ export class CodebaseIndex {
   constructor(private readonly baseDir?: string) {}
 
   private dir(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "index");
+    return join(this.baseDir ?? userDataDir(), "index");
   }
 
   private file(workspaceRoot: string): string {

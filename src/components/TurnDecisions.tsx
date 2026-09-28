@@ -6,7 +6,7 @@
 import type { HarnessDecisionKind } from "@common/types";
 
 import type { SettingsCategoryId } from "../lib/guidance";
-import { useTurnDecisions } from "../lib/turnDecisions";
+import { useDecisionsFor } from "../lib/turnDecisions";
 
 const LABELS: Record<HarnessDecisionKind, string> = {
   scaffold: "Adapted",
@@ -23,6 +23,7 @@ const LABELS: Record<HarnessDecisionKind, string> = {
   procedure: "Procedure",
   "live-score": "Live score",
   context: "Context",
+  critic: "Critic",
 };
 
 const SETTINGS_LABELS: Partial<Record<SettingsCategoryId, string>> = {
@@ -36,8 +37,9 @@ function category(value: string | undefined): SettingsCategoryId | undefined {
   return value && value in SETTINGS_LABELS ? value as SettingsCategoryId : undefined;
 }
 
-export function TurnDecisions({ turnId, onOpenSettings }: { turnId: string; onOpenSettings?: (category?: SettingsCategoryId) => void }): React.ReactElement | null {
-  const decisions = useTurnDecisions(turnId);
+/** Pass one turn id for a reply, or every turn id of a mission run. */
+export function TurnDecisions({ turnId, turnIds, onOpenSettings }: { turnId?: string; turnIds?: readonly string[]; onOpenSettings?: (category?: SettingsCategoryId) => void }): React.ReactElement | null {
+  const decisions = useDecisionsFor(turnIds ?? (turnId ? [turnId] : []));
   if (decisions.length === 0) return null;
   return (
     <details className="mt-1.5 text-[11px] text-neutral-700 dark:text-neutral-200">

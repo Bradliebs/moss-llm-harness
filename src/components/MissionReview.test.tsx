@@ -52,6 +52,14 @@ describe("missionContractIssues", () => {
     }), [], null)).toEqual([]);
   });
 
+  it("requires an independent critic for a critic-bound criterion", () => {
+    const critic = contract({ criteria: [{ id: "c", description: "Report answers it", mandatory: true, verification: { kind: "critic", rubric: "", paths: ["report.md"] } }] });
+    expect(missionContractIssues(critic, [], "C:\\ws", { model: "claude-sonnet-4-5", workers: ["qwen2.5:7b"] })).toEqual([]);
+    expect(missionContractIssues(critic, [], "C:\\ws", { workers: ["qwen2.5:7b"] })[0]).toMatch(/^Criterion 1: No critic model is configured/);
+    expect(missionContractIssues(critic, [], "C:\\ws", { model: "qwen3.5:4b", workers: ["qwen2.5:7b"] })[0]).toMatch(/same model family/);
+    expect(missionContractIssues(critic, [], null, { model: "claude-sonnet-4-5", workers: ["qwen2.5:7b"] })).toContain("Criterion 1 needs a selected workspace for the files the critic reviews.");
+  });
+
   it("rejects invalid HTTP status values", () => {
     expect(missionContractIssues(contract({
       criteria: [{
@@ -86,5 +94,16 @@ describe("MissionContractEditor", () => {
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
       criteria: [expect.objectContaining({ verification: { kind: "commands", commands: ["npm test"] } })],
     }));
+  });
+
+  it("edits a critic review's rubric and files", () => {
+    const onChange = vi.fn();
+    const input = contract({ criteria: [{ id: "c", description: "Report", mandatory: true, verification: { kind: "critic", rubric: "", paths: [] } }] });
+    render(<MissionContractEditor contract={input} configuredCommands={[]} onChange={onChange} />);
+    fireEvent.change(screen.getByLabelText("Critic rubric 1"), { target: { value: "Needs sources" } });
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ criteria: [expect.objectContaining({ verification: { kind: "critic", rubric: "Needs sources", paths: [] } })] }));
+    fireEvent.change(screen.getByLabelText("Critic files 1"), { target: { value: "a.md, my notes.md" } });
+    // Kept as typed, so a space inside a name survives; the verifier trims each path.
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ criteria: [expect.objectContaining({ verification: { kind: "critic", rubric: "", paths: ["a.md", " my notes.md"] } })] }));
   });
 });

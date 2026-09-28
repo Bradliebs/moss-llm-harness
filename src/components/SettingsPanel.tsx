@@ -190,8 +190,10 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
     }
   }
 
+  // Refresh the model list once when Settings opens.
+  const loadModelsOnOpen = useRef(loadModels);
   useEffect(() => {
-    void loadModels();
+    void loadModelsOnOpen.current();
   }, []);
 
   async function persistApiKey(apiKey: string): Promise<void> {

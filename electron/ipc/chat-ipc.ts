@@ -84,6 +84,9 @@ import { effectiveProfile, gradeTurn, modelPerformanceStore, taskKindFor } from 
 import { createContextVariant, inspectOllamaContext } from "../backend/moss/models/ollama-context";
 import { detectSetup, pullOllamaModel } from "../backend/moss/setup/pc-setup";
 import { createQuarantine } from "../backend/moss/safety/quarantine";
+import { createMissionCritic } from "../backend/moss/task/mission-critic";
+import { createReplayJudge } from "../backend/moss/models/replay-judge";
+import { checkCriticIndependence, workerModels } from "../../common/model-family";
 import { expandProcedure, PROCEDURE_HINT, procedureStore, procedureToolDefinition, runProcedureTool } from "../backend/moss/learning/procedure-store";
 import { captureOutcomeContext, runGit, runPractice } from "../backend/moss/models/practice";
 import { PracticeScheduler, practiceStore } from "../backend/moss/models/practice-store";
@@ -141,7 +144,7 @@ export function resolveMaxToolRounds(requested: number | undefined, verifyEnable
   return Math.min(MAX_TOOL_ROUNDS, Math.max(1, withVerificationRoom));
 }
 import { taskStore } from "../backend/moss/task/task-store";
-import { TOOL_DEFINITIONS, TOOL_REGISTRY } from "../backend/moss/tools";
+import { TOOL_REGISTRY } from "../backend/moss/tools";
 import { createJevTool } from "../backend/moss/tools/jev-tool";
 import { detectWorkspaceVerificationChecks, VerificationRegistry } from "../backend/moss/verify/verification-registry";
 import { runVerify } from "../backend/moss/verify/verifier";
@@ -492,9 +495,19 @@ export function registerChatIpc(): void {
     activeReplay = controller;
     try {
       const timeoutSeconds = Math.min(600, Math.max(15, Number(request.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS));
+      const judgeRoute = request.judge?.model?.trim() && request.judge.baseUrl?.trim() ? request.judge : undefined;
+      const judge = judgeRoute
+        ? (() => {
+            const sameConnection = judgeRoute.kind === request.config.kind && endpointLabel(judgeRoute.baseUrl).toLowerCase() === endpointLabel(request.config.baseUrl).toLowerCase();
+            const apiKey = sameConnection ? request.config.apiKey : judgeRoute.presetId ? providerCredentials.get(judgeRoute.presetId) : undefined;
+            const provider = createProvider({ kind: judgeRoute.kind, baseUrl: judgeRoute.baseUrl, model: judgeRoute.model, ...(apiKey ? { apiKey } : {}) });
+            return { model: judgeRoute.model, judge: createReplayJudge({ provider, model: judgeRoute.model, judgeModel: judgeRoute.model }) };
+          })()
+        : undefined;
       return await replayTrace(trace, createProvider(request.config), request.config.model, {
         signal: controller.signal,
         timeoutMs: timeoutSeconds * 1_000,
+        ...(judge ? { judge } : {}),
         onProgress: (completed, total) => {
           if (!event.sender.isDestroyed()) event.sender.send(IPC.traceReplayProgress, { completed, total });
         },
@@ -845,6 +858,8 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       && config.kind === req.config.kind && endpointLabel(config.baseUrl) === endpointLabel(req.config.baseUrl);
     if (fastConfig && !sameAsPrimary(fastConfig)) extraRoutes.set("fast", await buildRoute("fast", fastConfig));
     if (escalationConfig && !sameAsPrimary(escalationConfig)) extraRoutes.set("escalation", await buildRoute("escalation", escalationConfig));
+    const criticConfig = req.mission || req.taskSpec ? routeConfig(req.routing?.criticRoute, req.routing?.criticModel) : undefined;
+    if (criticConfig) extraRoutes.set("critic", await buildRoute("critic", criticConfig));
     routedProvider = new RoutedProvider(primaryRoute, extraRoutes);
     // The reader runs on the fast route when there is one, and never gets tools.
     const quarantine = req.quarantineUntrusted === true
@@ -1001,6 +1016,22 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         verifier: new WorkspaceMissionVerifier({
           workspaceRoot,
           checks: buildMissionVerificationChecks(task.spec, req.verify),
+          loadArtifact: async (taskId, artifactId) => (await taskArtifactStore.get(taskId, artifactId))?.content ?? null,
+          ...(routedProvider.route("critic") ? {
+            // The critic is charged to the mission budget at its own rate.
+            critic: createMissionCritic({
+              provider: missionProvider,
+              model: routeToken("critic"),
+              criticModel: routedProvider.route("critic")!.model,
+              workerModels: missionWorkerModels(req),
+              onVerdict: (criterion, outcome) => decide({
+                kind: "critic",
+                summary: `Critic ${routedProvider!.route("critic")!.model} judged "${criterion.slice(0, 80)}": ${outcome.passed ? "pass" : outcome.verdict ?? "unverified"}.`,
+                detail: outcome.summary.slice(0, 300),
+                settings: "models",
+              }),
+            }),
+          } : {}),
         }),
         onTaskState: (next) => {
           task = next;
@@ -1371,11 +1402,16 @@ async function ensureMissionTask(
   return task;
 }
 
+/** Every model that can do a mission's work: the chat model and its routes. */
+export function missionWorkerModels(req: Pick<ChatStartRequest, "config" | "routing">): string[] {
+  return workerModels({ model: req.config.model, ...(req.routing ?? {}) });
+}
+
 export function resolveMissionSpec(
   spec: TaskSpec,
   policy: MissionLaunchPolicy,
   availableCapabilities: readonly string[],
-  request: Pick<ChatStartRequest, "workspaceRoot" | "automation" | "verify">,
+  request: Pick<ChatStartRequest, "workspaceRoot" | "automation" | "verify"> & Partial<Pick<ChatStartRequest, "routing" | "config">>,
 ): TaskSpec {
   const available = new Set(availableCapabilities);
   const requested = policy.requestedCapabilities.map((capability) => capability.trim());
@@ -1384,6 +1420,12 @@ export function resolveMissionSpec(
   const unavailable = requested.filter((capability) => !available.has(capability));
   if (unavailable.length > 0) throw new Error(`Mission capabilities are unavailable: ${unavailable.join(", ")}`);
   buildMissionVerificationChecks(spec, request.verify);
+  // A critic-bound criterion is only launched with an independent critic.
+  if (spec.acceptanceCriteria.some((criterion) => criterion.verification?.kind === "critic")) {
+    const critic = request.routing?.criticRoute?.model ?? request.routing?.criticModel;
+    const independence = checkCriticIndependence(critic, request.config ? missionWorkerModels(request as ChatStartRequest) : []);
+    if (!independence.ok) throw new Error(independence.reason);
+  }
 
   const budget = boundMissionBudget(policy.budget);
   return {
@@ -1479,7 +1521,7 @@ async function finalizeTurnTask(
 
   let task;
   if (terminalEvent?.type === "turn-complete" && completion) {
-    task = await taskEngine.finishAttempt(taskId, attemptId, "succeeded");
+    await taskEngine.finishAttempt(taskId, attemptId, "succeeded");
     task = await taskEngine.beginVerification(taskId);
     send({ type: "task-state", task });
     const criterion = task.spec.acceptanceCriteria.find((item) => item.mandatory)!;

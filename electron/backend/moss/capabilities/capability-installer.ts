@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import type { CapabilityCatalogEntry } from "./capability-catalog";
 import { CapabilityCatalog } from "./capability-catalog";
@@ -169,7 +169,7 @@ export class CapabilityInstaller {
   }
 
   private root(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "capabilities");
+    return join(this.baseDir ?? userDataDir(), "capabilities");
   }
 
   private installedDir(id: string, version: string): string {

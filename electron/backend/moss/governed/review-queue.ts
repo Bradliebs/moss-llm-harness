@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import { createLogger } from "../../../../common/logger";
 import type { MemoryCategory, MemoryEntry } from "../../../../common/types";
@@ -44,7 +44,7 @@ export class MemoryReviewQueue {
   constructor(private readonly baseDir?: string) {}
 
   private file(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "memory-review-queue.json");
+    return join(this.baseDir ?? userDataDir(), "memory-review-queue.json");
   }
 
   private ensureLoaded(): void {
