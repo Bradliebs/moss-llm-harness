@@ -1157,6 +1157,8 @@ export interface McpServerStatus {
   ignoreDestructiveHints?: boolean;
   /** tools the server flags as destructive (raw names), present while connected */
   destructiveTools?: string[];
+  /** tools hidden from the model by the server's hiddenTools setting */
+  hiddenTools?: string[];
   /** tools the server annotates as read-only (raw names), present while connected */
   readOnlyTools?: string[];
   error?: string;

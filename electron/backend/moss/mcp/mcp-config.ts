@@ -29,6 +29,9 @@ export interface McpStdioServerConfig {
   /** ignore the server's destructiveHint annotations, for servers that flag
    *  every non-read tool; Moss's own irreversible-action checks still apply */
   ignoreDestructiveHints?: boolean;
+  /** raw tool names never offered to the model, e.g. a browser server's
+   *  code-running tools when its snapshot tool reads pages without code */
+  hiddenTools?: string[];
 }
 
 export interface McpHttpServerConfig {
@@ -42,6 +45,9 @@ export interface McpHttpServerConfig {
   /** ignore the server's destructiveHint annotations, for servers that flag
    *  every non-read tool; Moss's own irreversible-action checks still apply */
   ignoreDestructiveHints?: boolean;
+  /** raw tool names never offered to the model, e.g. a browser server's
+   *  code-running tools when its snapshot tool reads pages without code */
+  hiddenTools?: string[];
 }
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;

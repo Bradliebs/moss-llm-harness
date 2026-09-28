@@ -68,8 +68,20 @@ function createTransport(config: McpServerConfig): { close(): Promise<void> } {
 }
 
 /** Tools that run code or move files from the machine; they keep prompting
- *  even when the user ignores the server's destructive flags. */
-const ALWAYS_DESTRUCTIVE_MCP = /(?:^|_)(?:evaluate|run_code|file_upload|install)$/;
+ *  even when the user ignores the server's destructive flags, and the approval
+ *  card says why in Moss's words rather than the server's. */
+const ALWAYS_ASK_MCP: ReadonlyArray<[pattern: RegExp, reason: string]> = [
+  [/(?:^|_)(?:evaluate|run_code)$/, "It runs code inside the page, with your signed-in session, so it could click, submit, or send data as you. Moss always asks, even when the code looks read-only."],
+  [/(?:^|_)file_upload$/, "It sends files from this computer to the page. Moss always asks."],
+  [/(?:^|_)install$/, "It installs software on this computer. Moss always asks."],
+];
+
+function alwaysAskReason(name: string | undefined): string | undefined {
+  return ALWAYS_ASK_MCP.find(([pattern]) => pattern.test(name ?? ""))?.[1];
+}
+
+/** Steers models away from code tools when a read tool would do. */
+const CODE_TOOL_HINT = " Moss asks for approval every time this runs. To read page text or structure, prefer the server's snapshot or text tool, which runs no code in the page.";
 
 /** Annotations are claims made by the server. A read-only claim relaxes the
  *  permission policy, so it counts only for servers the user trusts; a
@@ -79,15 +91,36 @@ export function mcpToolRisk(
   info: Pick<McpToolInfo, "annotations"> & { name?: string },
   trustAnnotations: boolean,
   ignoreDestructiveHints = false,
-): { readOnly?: true; destructive?: true; checkIrreversible?: true } {
+): { readOnly?: true; destructive?: true; destructiveReason?: string; checkIrreversible?: true } {
   const hints = info.annotations;
   if (!hints || typeof hints !== "object") return {};
   if (hints.destructiveHint === true && hints.readOnlyHint !== true) {
-    if (!ignoreDestructiveHints || ALWAYS_DESTRUCTIVE_MCP.test(info.name ?? "")) return { destructive: true };
+    const reason = alwaysAskReason(info.name);
+    if (reason) return { destructive: true, destructiveReason: reason };
+    if (!ignoreDestructiveHints) return { destructive: true };
     return { checkIrreversible: true };
   }
   if (trustAnnotations && hints.readOnlyHint === true && hints.destructiveHint !== true) return { readOnly: true };
   return {};
+}
+
+/** Defaults for servers Moss recognizes, so they work well without tuning.
+ *  Playwright MCP flags every non-read tool destructive, which would ask
+ *  before every navigation, and its snapshot tool reads pages without running
+ *  code, so its code tools are hidden. Explicit config values win. */
+export function serverDefaults(config: McpServerConfig): { ignoreDestructiveHints?: boolean; hiddenTools?: string[] } {
+  const launch = config.type === "stdio" ? [config.command, ...(config.args ?? [])].join(" ") : config.url;
+  if (/@playwright\/mcp\b/.test(launch)) return { ignoreDestructiveHints: true, hiddenTools: ["browser_evaluate", "browser_run_code"] };
+  return {};
+}
+
+/** The options a server actually runs with: explicit config, then recognized defaults. */
+export function effectiveServerOptions(config: McpServerConfig): { ignoreDestructiveHints: boolean; hiddenTools: string[] } {
+  const defaults = serverDefaults(config);
+  return {
+    ignoreDestructiveHints: config.ignoreDestructiveHints ?? defaults.ignoreDestructiveHints ?? false,
+    hiddenTools: (config.hiddenTools ?? defaults.hiddenTools ?? []).filter((name): name is string => typeof name === "string"),
+  };
 }
 
 export function adaptMcpTool(
@@ -99,12 +132,15 @@ export function adaptMcpTool(
   const name = adaptToolName(serverId, info.name);
   const parameters = info.inputSchema && typeof info.inputSchema === "object"
     ? info.inputSchema : { type: "object", properties: {} };
+  const risk = mcpToolRisk(info, options.trustAnnotations === true, options.ignoreDestructiveHints === true);
+  const description = info.description ?? `MCP tool "${info.name}" from server "${serverId}"`;
+  const runsCode = risk.destructive === true && /(?:^|_)(?:evaluate|run_code)$/.test(info.name);
   return {
     name,
-    description: info.description ?? `MCP tool "${info.name}" from server "${serverId}"`,
+    description: runsCode ? `${description}${CODE_TOOL_HINT}` : description,
     parameters,
     timeoutMs: 180_000,
-    ...mcpToolRisk(info, options.trustAnnotations === true, options.ignoreDestructiveHints === true),
+    ...risk,
     async execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
       try {
         const result = await client.callTool({ name: info.name, arguments: args }, undefined, { signal: ctx.signal });
@@ -165,8 +201,11 @@ class McpManager {
     try {
       transport = createTransport(config);
       await client.connect(transport);
-      const { tools } = await client.listTools();
-      const adapted = tools.map((t) => adaptMcpTool(config.id, client, t, { trustAnnotations: config.trustAnnotations === true, ignoreDestructiveHints: config.ignoreDestructiveHints === true }));
+      const { tools: listed } = await client.listTools();
+      const effective = effectiveServerOptions(config);
+      const hidden = new Set(effective.hiddenTools);
+      const tools = listed.filter((t) => !hidden.has(t.name));
+      const adapted = tools.map((t) => adaptMcpTool(config.id, client, t, { trustAnnotations: config.trustAnnotations === true, ignoreDestructiveHints: effective.ignoreDestructiveHints }));
       for (const tool of adapted) {
         if (this.tools.some((existing) => existing.name === tool.name)) {
           log.warn(`duplicate tool name ${tool.name} from server ${config.id} skipped`);
@@ -182,7 +221,8 @@ class McpManager {
         toolCount: adapted.length,
         tools: tools.map((t) => t.name),
         ...(config.trustAnnotations === true ? { trustAnnotations: true } : {}),
-        ...(config.ignoreDestructiveHints === true ? { ignoreDestructiveHints: true } : {}),
+        ...(effective.ignoreDestructiveHints ? { ignoreDestructiveHints: true } : {}),
+        ...(hidden.size > 0 ? { hiddenTools: listed.filter((t) => hidden.has(t.name)).map((t) => t.name) } : {}),
         destructiveTools: tools.filter((t) => t.annotations?.destructiveHint === true && t.annotations.readOnlyHint !== true).map((t) => t.name),
         readOnlyTools: tools.filter((t) => t.annotations?.readOnlyHint === true && t.annotations.destructiveHint !== true).map((t) => t.name),
       });

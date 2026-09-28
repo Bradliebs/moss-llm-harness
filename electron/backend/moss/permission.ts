@@ -198,6 +198,8 @@ export interface PolicyInput {
   readOnly?: boolean;
   /** the tool is declared destructive by its source */
   destructive?: boolean;
+  /** Moss's own reason, shown instead of the server's declaration */
+  destructiveReason?: string;
   /** prompt when the arguments name an irreversible action */
   checkIrreversible?: boolean;
 }
@@ -242,7 +244,7 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
     return { action: "deny", autoApproved: false };
   }
   if (input.destructive) {
-    return { action: "prompt", autoApproved: false, risk: "destructive", rule: "The tool's server declares it destructive." };
+    return { action: "prompt", autoApproved: false, risk: "destructive", rule: input.destructiveReason ?? "The tool's server declares it destructive." };
   }
   if (input.checkIrreversible && argumentsNameIrreversibleAction(input.args)) {
     return { action: "prompt", autoApproved: false, risk: "destructive", rule: "Its arguments name an irreversible action, such as delete, submit, or pay." };

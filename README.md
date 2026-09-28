@@ -798,15 +798,24 @@ arguments derive from that content. The setting is stored as
 `trustAnnotations` in `mcp-servers.json`.
 
 Some servers flag every tool that is not a pure read as destructive. The
-Playwright MCP server does this, so even navigating to a page asks for approval
-whatever your auto-approve and safety settings are. For such a server, check
-**ignore destructive flags** next to it under **Settings > Knowledge**; the count
-shows how many tools it flags. Its tools then follow the ordinary rules for
-changes: auto-approve and the untrusted-content gate apply. Tools that run page
-code, upload files, or install software (`browser_evaluate`, `browser_run_code`,
-`browser_file_upload`, `browser_install`) still ask, and so does any call whose
-arguments name an irreversible action such as delete, submit, pay, send, or
-confirm. The setting is stored as `ignoreDestructiveHints` in `mcp-servers.json`.
+Playwright MCP server does this, which would mean a prompt before every
+navigation or click on every site. Moss recognizes Playwright MCP and handles it
+without any setup: it ignores the blanket flags and hides `browser_evaluate` and
+`browser_run_code` from the model, which reads pages with `browser_snapshot`
+instead. Its other tools then follow the ordinary rules for changes, so with
+auto-approve on under **Settings > Tools** they run without asking on any site.
+Uploads and installs still ask, and so does any call whose arguments name an
+irreversible action such as delete, submit, pay, send, or confirm. Page code
+runs with your signed-in session, and Moss cannot tell a script that only reads
+text from one that clicks or sends data, which is why the code tools are hidden
+rather than auto-approved.
+
+For other servers that flag everything, check **ignore destructive flags** next
+to the server under **Settings > Knowledge**; the count shows how many tools it
+flags. In `mcp-servers.json`, `ignoreDestructiveHints` and `hiddenTools` (raw
+tool names) override these defaults for any server, including Playwright; for
+example `"hiddenTools": []` offers Playwright's code tools again, and they ask
+every time they run.
 
 Server configuration may include commands, arguments, working directories,
 environment variables, URLs, and headers. Treat third-party MCP servers as code
@@ -1358,9 +1367,10 @@ and irreversible actions still ask.
 
 If the approval card says **Why approval is needed: The tool's server declares
 it destructive**, neither setting applies: the server itself flagged the tool,
-and Moss always asks before those. Playwright MCP flags navigation, clicks, and
-typing this way. Check **ignore destructive flags** next to the server under
-**Settings > Knowledge** (see [Model Context Protocol](#model-context-protocol)).
+and Moss always asks before those. Moss already ignores Playwright MCP's
+blanket flags; for another server, check **ignore destructive flags** next to it
+under **Settings > Knowledge** (see [Model Context Protocol](#model-context-protocol)).
+The setting is per server, so it covers every site that server visits.
 The card can still show the untrusted-content warning for information after
 you turn the gate off.
 
