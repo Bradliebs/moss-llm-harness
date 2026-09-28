@@ -54,10 +54,18 @@ function requiredCredentials(toolName: string): string[] {
 
 function availableCredentials(request: Pick<ChatStartRequest, "email" | "stt" | "embed">): string[] {
   const credentials: string[] = [];
-  if (request.email?.apiKey?.trim() && request.email.from.trim()) credentials.push("email");
+  if (hasEmailCredentials(request.email)) credentials.push("email");
   if (request.stt?.baseUrl.trim() && request.stt.model.trim()) credentials.push("stt");
   if (request.embed?.baseUrl.trim() && request.embed.model.trim()) credentials.push("embeddings");
   return credentials;
+}
+
+function hasEmailCredentials(email: ChatStartRequest["email"]): boolean {
+  if (!email) return false;
+  if (email.provider === "smtp") {
+    return Boolean(email.smtp?.host?.trim() && email.smtp.user?.trim() && email.smtp.pass?.trim());
+  }
+  return Boolean(email.apiKey?.trim() && email.from?.trim());
 }
 
 function capabilityTags(toolName: string, source: CapabilitySource): string[] {

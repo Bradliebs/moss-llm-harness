@@ -15,6 +15,7 @@ import {
   readinessProfilePatch,
   setModelRate,
   settingsStore,
+  toEmailConfig,
   toEmbedConfig,
   toProviderConfig,
   updateSettings,
@@ -32,8 +33,13 @@ const baseline: MossSettings = {
   workspaceRoot: null,
   sttBaseUrl: "",
   sttModel: "whisper-1",
+  emailProvider: "resend",
   emailApiKey: "",
   emailFrom: "",
+  smtpHost: "smtp.gmail.com",
+  smtpPort: 465,
+  smtpUser: "",
+  smtpPass: "",
   jevEnabled: false,
   embedBaseUrl: "",
   embedModel: "nomic-embed-text",
@@ -219,5 +225,24 @@ describe("setModelRate", () => {
     expect(settingsStore.get().modelRates).toEqual({});
     setModelRate("  ", { inputPer1M: 5, outputPer1M: 5 });
     expect(settingsStore.get().modelRates).toEqual({});
+  });
+});
+
+describe("toEmailConfig", () => {
+  it("keeps Resend as the route for existing settings", () => {
+    expect(toEmailConfig({ ...baseline, emailApiKey: "re_x", emailFrom: " Moss <a@b.com> " }))
+      .toEqual({ provider: "resend", apiKey: "re_x", from: "Moss <a@b.com>" });
+  });
+
+  it("builds an SMTP account and fills Gmail defaults missing from older saved settings", () => {
+    const saved = { ...baseline, emailProvider: "smtp", smtpUser: " me@gmail.com ", smtpPass: "abcd efgh" } as MossSettings;
+    delete (saved as Partial<MossSettings>).smtpHost;
+    delete (saved as Partial<MossSettings>).smtpPort;
+    expect(toEmailConfig(saved)).toEqual({
+      provider: "smtp",
+      apiKey: "",
+      from: "",
+      smtp: { host: "smtp.gmail.com", port: 465, user: "me@gmail.com", pass: "abcd efgh" },
+    });
   });
 });

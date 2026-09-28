@@ -608,7 +608,9 @@ you can configure dedicated endpoints in Settings:
 
 * Speech-to-text through an OpenAI-compatible `/audio/transcriptions` endpoint
 * Codebase embeddings through an OpenAI-compatible `/embeddings` endpoint
-* Email delivery through Resend with a verified sender address
+* Email delivery through Resend with a verified sender address, or through
+  Gmail or another SMTP account over TLS. Gmail needs an app password (Google
+  Account > Security > App passwords), not your normal password.
 
 ## Task execution
 

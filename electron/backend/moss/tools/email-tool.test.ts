@@ -6,6 +6,19 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const smtp = vi.hoisted(() => ({
+  sendMail: vi.fn(),
+  close: vi.fn(),
+  createTransport: vi.fn(),
+}));
+
+vi.mock("nodemailer", () => ({
+  createTransport: (options: unknown) => {
+    smtp.createTransport(options);
+    return { sendMail: smtp.sendMail, close: smtp.close };
+  },
+}));
+
 import { sendEmailTool } from "./email-tool";
 import type { ToolContext } from "./types";
 
@@ -19,6 +32,10 @@ const args = { to: "a@b.com", subject: "Hi", body: "Hello" };
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  smtp.sendMail.mockReset();
+  smtp.close.mockReset();
+  smtp.createTransport.mockReset();
 });
 
 describe("send_email", () => {
@@ -72,5 +89,77 @@ describe("send_email", () => {
     const res = await sendEmailTool.execute(args, ctx());
     expect(res.ok).toBe(false);
     expect(res.content).toContain("Resend error 401: bad key");
+  });
+});
+
+describe("send_email over SMTP", () => {
+  const GMAIL = { host: "smtp.gmail.com", port: 465, user: "me@gmail.com", pass: "abcd efgh ijkl mnop" };
+  const smtpCtx = (from = "", account = GMAIL) => ctx({ email: { provider: "smtp", apiKey: "", from, smtp: account } });
+
+  it("refuses without a complete SMTP account", async () => {
+    const res = await sendEmailTool.execute(args, smtpCtx("", { ...GMAIL, pass: "" }));
+    expect(res.ok).toBe(false);
+    expect(res.content).toContain("No SMTP account configured");
+    expect(smtp.createTransport).not.toHaveBeenCalled();
+  });
+
+  it("sends over implicit TLS from the account address by default", async () => {
+    smtp.sendMail.mockResolvedValue({ messageId: "<m1@gmail.com>" });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await sendEmailTool.execute({ ...args, to: "a@b.com, c@d.com", html: "<b>Hi</b>" }, smtpCtx());
+
+    expect(res).toEqual({ ok: true, content: "Email sent to a@b.com, c@d.com (id <m1@gmail.com>)" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(smtp.createTransport).toHaveBeenCalledWith(expect.objectContaining({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      requireTLS: false,
+      auth: { user: "me@gmail.com", pass: "abcdefghijklmnop" },
+    }));
+    expect(smtp.sendMail).toHaveBeenCalledWith({
+      from: "me@gmail.com",
+      to: ["a@b.com", "c@d.com"],
+      subject: "Hi",
+      text: "Hello",
+      html: "<b>Hi</b>",
+    });
+    expect(smtp.close).toHaveBeenCalled();
+  });
+
+  it("requires STARTTLS on other ports and keeps a configured from name", async () => {
+    smtp.sendMail.mockResolvedValue({});
+    const res = await sendEmailTool.execute(args, smtpCtx("Moss <me@gmail.com>", { ...GMAIL, port: 587 }));
+
+    expect(res).toEqual({ ok: true, content: "Email sent to a@b.com" });
+    expect(smtp.createTransport).toHaveBeenCalledWith(expect.objectContaining({ port: 587, secure: false, requireTLS: true }));
+    expect(smtp.sendMail).toHaveBeenCalledWith(expect.objectContaining({ from: "Moss <me@gmail.com>" }));
+  });
+
+  it("explains a rejected Gmail login", async () => {
+    smtp.sendMail.mockRejectedValue(Object.assign(new Error("Invalid login"), { code: "EAUTH", responseCode: 535 }));
+    const res = await sendEmailTool.execute(args, smtpCtx());
+
+    expect(res.ok).toBe(false);
+    expect(res.content).toContain("app password");
+    expect(smtp.close).toHaveBeenCalled();
+  });
+
+  it("reports other SMTP failures", async () => {
+    smtp.sendMail.mockRejectedValue(new Error("connect ECONNREFUSED"));
+    const res = await sendEmailTool.execute(args, smtpCtx());
+
+    expect(res).toEqual({ ok: false, content: "Send failed: connect ECONNREFUSED" });
+  });
+
+  it("stops waiting when the turn is aborted", async () => {
+    smtp.sendMail.mockReturnValue(new Promise(() => undefined));
+    const controller = new AbortController();
+    const pending = sendEmailTool.execute(args, { ...smtpCtx(), signal: controller.signal });
+    controller.abort();
+
+    expect(await pending).toEqual({ ok: false, content: "Send timed out or aborted" });
+    expect(smtp.close).toHaveBeenCalled();
   });
 });

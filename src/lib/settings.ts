@@ -4,7 +4,7 @@
 // master switch, the UI theme, and the tool workspace root. Persisted to
 // localStorage so the app reopens with the same provider/model selected.
 
-import type { ConstrainedOutputMode, EmbedConfig, InjectionMode, ModelRoute, ProviderConfig, ProviderKind } from "@common/types";
+import type { ConstrainedOutputMode, EmailConfig, EmbedConfig, InjectionMode, ModelRoute, ProviderConfig, ProviderKind } from "@common/types";
 import { DEFAULT_PERSONALITY_ID } from "@common/personalities";
 
 import type { ModelRate } from "./pricing";
@@ -85,10 +85,19 @@ export interface MossSettings {
   sttBaseUrl: string;
   /** transcription model name for the /audio/transcriptions endpoint */
   sttModel: string;
+  /** how send_email delivers: the Resend API or an SMTP account such as Gmail */
+  emailProvider: "resend" | "smtp";
   /** Resend API key for the send_email tool (empty = tool disabled) */
   emailApiKey: string;
-  /** verified sender address for the send_email tool */
+  /** sender address for the send_email tool (verified for Resend; optional for SMTP) */
   emailFrom: string;
+  /** SMTP server for send_email when emailProvider is "smtp" */
+  smtpHost: string;
+  smtpPort: number;
+  /** SMTP login, usually the full email address */
+  smtpUser: string;
+  /** SMTP password; for Gmail an app password */
+  smtpPass: string;
   jevEnabled: boolean;
   /** embeddings endpoint base URL for the codebase index (empty = reuse provider baseUrl) */
   embedBaseUrl: string;
@@ -186,8 +195,13 @@ const DEFAULT_SETTINGS: MossSettings = {
   workspaceRoot: null,
   sttBaseUrl: "",
   sttModel: "whisper-1",
+  emailProvider: "resend",
   emailApiKey: "",
   emailFrom: "",
+  smtpHost: "smtp.gmail.com",
+  smtpPort: 465,
+  smtpUser: "",
+  smtpPass: "",
   jevEnabled: false,
   embedBaseUrl: "",
   embedModel: "nomic-embed-text",
@@ -224,6 +238,7 @@ export function readinessItems(
   const hasOptionalService = Boolean(
     (settings.sttBaseUrl ?? "").trim()
     || (settings.emailApiKey ?? "").trim()
+    || (settings.emailProvider === "smtp" && (settings.smtpUser ?? "").trim())
     || (settings.embedBaseUrl ?? "").trim()
     || settings.jevEnabled,
   );
@@ -417,6 +432,26 @@ export async function applyPreset(index: number): Promise<void> {
 
 export function toProviderConfig(s: MossSettings): ProviderConfig {
   return { kind: s.kind, baseUrl: s.baseUrl, apiKey: s.apiKey || undefined, model: s.model };
+}
+
+/** Email config for the send_email tool. Settings saved before SMTP support
+ *  lack the SMTP fields, so each falls back to the Gmail defaults. */
+export function toEmailConfig(s: MossSettings): EmailConfig {
+  const from = (s.emailFrom ?? "").trim();
+  if (s.emailProvider === "smtp") {
+    return {
+      provider: "smtp",
+      apiKey: "",
+      from,
+      smtp: {
+        host: (s.smtpHost ?? "").trim() || "smtp.gmail.com",
+        port: Number(s.smtpPort) || 465,
+        user: (s.smtpUser ?? "").trim(),
+        pass: s.smtpPass ?? "",
+      },
+    };
+  }
+  return { provider: "resend", apiKey: s.emailApiKey || "", from };
 }
 
 /** Embeddings config for the codebase index. Falls back to the provider baseUrl

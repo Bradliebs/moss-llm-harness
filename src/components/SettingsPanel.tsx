@@ -811,31 +811,105 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             </p>
           </section>
 
-          <section className={sectionClass("services", "email resend sender")}>
+          <section className={sectionClass("services", "email resend gmail smtp sender app password")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Email</h3>
             <label className="block">
-              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Resend API key</span>
-              <input
+              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Send with</span>
+              <select
                 className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
-                type="password"
-                placeholder="re_..."
-                value={settings.emailApiKey ?? ""}
-                onChange={(e) => updateSettings({ emailApiKey: e.target.value })}
-              />
+                value={settings.emailProvider === "smtp" ? "smtp" : "resend"}
+                onChange={(e) => updateSettings({ emailProvider: e.target.value === "smtp" ? "smtp" : "resend" })}
+              >
+                <option value="smtp">Gmail or other SMTP account</option>
+                <option value="resend">Resend</option>
+              </select>
             </label>
-            <label className="block">
-              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">From address</span>
-              <input
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
-                placeholder="Moss &lt;noreply@yourdomain.com&gt;"
-                value={settings.emailFrom ?? ""}
-                onChange={(e) => updateSettings({ emailFrom: e.target.value })}
-              />
-            </label>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
-              The send_email tool delivers mail through Resend over HTTPS. Use a verified sender
-              domain; sends are still approval-gated before they go out.
-            </p>
+            {settings.emailProvider === "smtp" ? (
+              <>
+                <div className="flex gap-2">
+                  <label className="block flex-1">
+                    <span className="mb-1 block text-neutral-600 dark:text-neutral-400">SMTP server</span>
+                    <input
+                      className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                      placeholder="smtp.gmail.com"
+                      value={settings.smtpHost ?? "smtp.gmail.com"}
+                      onChange={(e) => updateSettings({ smtpHost: e.target.value })}
+                    />
+                  </label>
+                  <label className="block w-24">
+                    <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Port</span>
+                    <input
+                      className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={settings.smtpPort ?? 465}
+                      onChange={(e) => updateSettings({ smtpPort: Number(e.target.value) || 465 })}
+                    />
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Email address</span>
+                  <input
+                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    type="email"
+                    placeholder="you@gmail.com"
+                    value={settings.smtpUser ?? ""}
+                    onChange={(e) => updateSettings({ smtpUser: e.target.value })}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-neutral-600 dark:text-neutral-400">App password</span>
+                  <input
+                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    type="password"
+                    placeholder="xxxx xxxx xxxx xxxx"
+                    value={settings.smtpPass ?? ""}
+                    onChange={(e) => updateSettings({ smtpPass: e.target.value })}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-neutral-600 dark:text-neutral-400">From name (optional)</span>
+                  <input
+                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    placeholder="Moss &lt;you@gmail.com&gt;"
+                    value={settings.emailFrom ?? ""}
+                    onChange={(e) => updateSettings({ emailFrom: e.target.value })}
+                  />
+                </label>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  For Gmail, turn on 2-Step Verification, then create an app password under Google
+                  Account &gt; Security &gt; App passwords. Your normal Gmail password will not work.
+                  Mail goes out over TLS, and each send still asks for your approval first.
+                </p>
+              </>
+            ) : (
+              <>
+                <label className="block">
+                  <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Resend API key</span>
+                  <input
+                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    type="password"
+                    placeholder="re_..."
+                    value={settings.emailApiKey ?? ""}
+                    onChange={(e) => updateSettings({ emailApiKey: e.target.value })}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-neutral-600 dark:text-neutral-400">From address</span>
+                  <input
+                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    placeholder="Moss &lt;noreply@yourdomain.com&gt;"
+                    value={settings.emailFrom ?? ""}
+                    onChange={(e) => updateSettings({ emailFrom: e.target.value })}
+                  />
+                </label>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  The send_email tool delivers mail through Resend over HTTPS. Use a verified sender
+                  domain; sends are still approval-gated before they go out.
+                </p>
+              </>
+            )}
           </section>
 
           <div className={sectionClass("services", "typesafe jev evaluation")}>

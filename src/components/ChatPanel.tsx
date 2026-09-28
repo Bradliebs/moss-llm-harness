@@ -34,7 +34,7 @@ import {
   setSessionWorkingState,
   useSessions,
 } from "../lib/sessions";
-import { modelsStore, readinessItems, toEmbedConfig, toProviderConfig, updateSettings, useSettings } from "../lib/settings";
+import { modelsStore, readinessItems, toEmailConfig, toEmbedConfig, toProviderConfig, updateSettings, useSettings } from "../lib/settings";
 import { explainToolFailure, providerErrorGuidance, type ProviderErrorGuidance, type SettingsCategoryId } from "../lib/guidance";
 import { currentNotifyContext, shouldNotify, showDesktopNotification } from "../lib/notifications";
 import { type ToolStatus, toolStatusColor } from "../lib/toolStatus";
@@ -574,7 +574,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const missionCapabilityKey = [
     settings.enableTools, settings.browserEnabled, settings.browserAllowedDomains, settings.browserHeadless,
     settings.desktopEnabled, settings.desktopAllowedProcesses, settings.desktopAllowedWindows, settings.sttBaseUrl,
-    settings.baseUrl, settings.apiKey, settings.sttModel, settings.emailApiKey, settings.emailFrom,
+    settings.baseUrl, settings.apiKey, settings.sttModel, settings.emailProvider, settings.emailApiKey, settings.emailFrom,
+    settings.smtpHost, settings.smtpPort, settings.smtpUser, settings.smtpPass,
     settings.embedBaseUrl, settings.embedModel,
   ].map(String).join("\u0000");
   useEffect(() => {
@@ -597,7 +598,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         apiKey: settings.apiKey || undefined,
         model: settings.sttModel || "whisper-1",
       },
-      email: { apiKey: settings.emailApiKey || "", from: settings.emailFrom || "" },
+      email: toEmailConfig(settings),
       embed: toEmbedConfig(settings),
     }).then((capabilities) => {
       if (cancelled) return;
@@ -836,7 +837,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         apiKey: activeSettings.apiKey || undefined,
         model: activeSettings.sttModel || "whisper-1",
       },
-      email: { apiKey: activeSettings.emailApiKey || "", from: activeSettings.emailFrom || "" },
+      email: toEmailConfig(activeSettings),
       verify: {
         enabled: activeSettings.verifyEnabled,
         commands: (activeSettings.verifyCommands || "")

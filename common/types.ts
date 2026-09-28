@@ -23,11 +23,25 @@ export interface SttConfig {
   model: string;
 }
 
+/** SMTP account for the send_email tool (for example Gmail with an app password).
+ *  Connections always use TLS: implicit on port 465, STARTTLS required otherwise. */
+export interface SmtpConfig {
+  host: string;
+  port: number;
+  user: string;
+  pass: string;
+}
+
 /** Email-sending config carried alongside a turn so the send_email tool can
- *  reach the Resend HTTPS API. apiKey empty = tool refuses (no plaintext SMTP). */
+ *  deliver through the Resend HTTPS API or an SMTP account. With the chosen
+ *  provider's credentials missing the tool refuses. */
 export interface EmailConfig {
+  /** delivery route; absent means Resend */
+  provider?: "resend" | "smtp";
   apiKey: string;
+  /** sender address; for SMTP, empty falls back to the account user */
   from: string;
+  smtp?: SmtpConfig;
 }
 
 /** Embeddings endpoint config for the semantic codebase index and the

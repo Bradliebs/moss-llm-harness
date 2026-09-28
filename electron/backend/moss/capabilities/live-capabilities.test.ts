@@ -44,4 +44,22 @@ describe("routeLiveCapabilities", () => {
     expect(route.tools).toEqual([email]);
     expect(route.unmet).toEqual([]);
   });
+
+  it("offers send_email for a complete SMTP account and withholds it for an incomplete one", () => {
+    const email = tool("send_email");
+    const smtp = { host: "smtp.gmail.com", port: 465, user: "me@gmail.com", pass: "app pass" };
+    const configured = routeLiveCapabilities(
+      [{ source: "built-in", tools: [email] }],
+      { email: { provider: "smtp", apiKey: "", from: "", smtp } },
+      "win32",
+    );
+    const missingPassword = routeLiveCapabilities(
+      [{ source: "built-in", tools: [email] }],
+      { email: { provider: "smtp", apiKey: "", from: "", smtp: { ...smtp, pass: " " } } },
+      "win32",
+    );
+
+    expect(configured.tools).toEqual([email]);
+    expect(missingPassword.tools).toEqual([]);
+  });
 });
