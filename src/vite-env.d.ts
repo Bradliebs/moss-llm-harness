@@ -18,6 +18,15 @@ import type {
   MissionCapabilitiesRequest,
   MissionCapabilityDescriptor,
   ModelCapabilityProfile,
+  ModelPerformanceEntry,
+  OllamaContextReport,
+  PracticeConfig,
+  Procedure,
+  ProcedureStatus,
+  PracticeProgress,
+  PracticeReport,
+  SetupDetection,
+  SetupDetectionRequest,
   ModelProbeProgress,
   ModelProbeRequest,
   ProviderConfig,
@@ -50,8 +59,8 @@ declare global {
    *  mcp.servers(). A structural subset of the backend McpServerConfig: only the
    *  fields the form reads or writes (env/cwd/headers stay file-edited). */
   type MossMcpServerInput =
-    | { type: "stdio"; id: string; command: string; args?: string[]; enabled?: boolean; trustAnnotations?: boolean }
-    | { type: "http"; id: string; url: string; enabled?: boolean; trustAnnotations?: boolean };
+    | { type: "stdio"; id: string; command: string; args?: string[]; enabled?: boolean; trustAnnotations?: boolean; ignoreDestructiveHints?: boolean }
+    | { type: "http"; id: string; url: string; enabled?: boolean; trustAnnotations?: boolean; ignoreDestructiveHints?: boolean };
 
 
   interface Window {
@@ -104,7 +113,27 @@ declare global {
         cancelProbe: () => Promise<void>;
         profile: (kind: ProviderKind, baseUrl: string, model: string) => Promise<ModelCapabilityProfile | null>;
         profiles: () => Promise<ModelCapabilityProfile[]>;
+        performance?: () => Promise<ModelPerformanceEntry[]>;
+        clearPerformance?: (kind: ProviderKind, baseUrl: string, model: string) => Promise<void>;
+        inspectContext?: (baseUrl: string, model: string) => Promise<OllamaContextReport>;
+        createContextVariant?: (baseUrl: string, model: string, numCtx: number) => Promise<string>;
         onProbeProgress: (handler: (progress: ModelProbeProgress) => void) => () => void;
+      };
+      procedures?: {
+        list: () => Promise<Procedure[]>;
+        setStatus: (id: string, status: ProcedureStatus) => Promise<Procedure[]>;
+        remove: (id: string) => Promise<Procedure[]>;
+      };
+      practice?: {
+        get: () => Promise<{ config: PracticeConfig; latest: PracticeReport | null; running: boolean }>;
+        configure: (config: PracticeConfig) => Promise<PracticeConfig>;
+        run: () => Promise<PracticeReport>;
+        cancel: () => Promise<void>;
+        onProgress: (handler: (progress: PracticeProgress) => void) => () => void;
+      };
+      setup?: {
+        detect: (request: SetupDetectionRequest) => Promise<SetupDetection>;
+        pull: (baseUrl: string, model: string) => Promise<void>;
       };
       traces?: {
         list: () => Promise<{ count: number; traces: TurnTraceSummary[]; dir: string }>;

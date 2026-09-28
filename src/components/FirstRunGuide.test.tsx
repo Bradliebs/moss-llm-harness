@@ -30,6 +30,16 @@ describe("FirstRunGuide", () => {
     expect((screen.getByRole("button", { name: /Try:/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("offers one-click setup when the host provides it", () => {
+    const onSetUp = vi.fn();
+    render(<FirstRunGuide {...props({ onSetUp })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Set up for this PC" }));
+    expect(onSetUp).toHaveBeenCalledOnce();
+    cleanup();
+    render(<FirstRunGuide {...props()} />);
+    expect(screen.queryByRole("button", { name: "Set up for this PC" })).toBeNull();
+  });
+
   it("runs a read-only workspace sample and can be dismissed", () => {
     const value = props({ providerReady: true, workspaceRoot: "C:\\ws" });
     render(<FirstRunGuide {...value} />);

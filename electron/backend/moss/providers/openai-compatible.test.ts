@@ -198,6 +198,24 @@ describe("OpenAiCompatibleProvider.streamChat", () => {
     expect(events).toContainEqual({ type: "usage", usage: { inputTokens: 11, outputTokens: 22 } });
   });
 
+  it("retries without reasoning_effort when the server rejects it, and sends it per request", async () => {
+    const stream = sse({ choices: [{ delta: { content: "ok" } }] });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, body: undefined, text: async () => "Unsupported parameter: 'reasoning_effort'" })
+      .mockResolvedValueOnce({ ok: true, status: 200, body: bodyFrom(stream), text: async () => stream });
+    vi.stubGlobal("fetch", fetchMock);
+    const events = [];
+    for await (const event of new OpenAiCompatibleProvider("http://x/v1").streamChat({ ...req, reasoning: "none" }, new AbortController().signal)) events.push(event);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({ reasoning_effort: "none" });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).not.toHaveProperty("reasoning_effort");
+    expect(events).toContainEqual({ type: "text-delta", text: "ok" });
+
+    // Other 400s are not retried.
+    stubStream("bad model", { ok: false, status: 400 });
+    await expect((async () => { for await (const event of new OpenAiCompatibleProvider("http://x/v1").streamChat({ ...req, reasoning: "none" }, new AbortController().signal)) void event; })()).rejects.toThrow(/HTTP 400 bad model/);
+    expect(vi.mocked(fetch)).toHaveBeenCalledOnce();
+  });
+
   it("throws with the HTTP status on a failed response", async () => {
     stubStream("upstream boom", { ok: false, status: 503 });
     await expect(collect(new OpenAiCompatibleProvider("http://x/v1"))).rejects.toThrow(/HTTP 503/);

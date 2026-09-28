@@ -11,6 +11,8 @@ export interface ChatRequest {
   temperature?: number;
   /** JSON schema the response must satisfy (grammar-constrained decoding); used instead of native tools */
   responseSchema?: Record<string, unknown>;
+  /** "none" asks reasoning models to answer without a thinking phase */
+  reasoning?: "none";
 }
 
 /** Low-level provider stream events. The agent runner accumulates these into the

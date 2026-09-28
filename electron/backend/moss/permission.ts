@@ -198,6 +198,10 @@ export interface PolicyInput {
   readOnly?: boolean;
   /** the tool is declared destructive by its source */
   destructive?: boolean;
+  /** Moss's own reason, shown instead of the server's declaration */
+  destructiveReason?: string;
+  /** prompt when the arguments name an irreversible action */
+  checkIrreversible?: boolean;
 }
 
 /** Tools that only read from the network. After untrusted content they keep
@@ -219,6 +223,17 @@ const DURABLE_STATE_TOOLS = new Set(["m_remember", "m_forget"]);
 const IRREVERSIBLE_ACTION_PATTERN = /\b(delete|destroy|remove|submit|publish|pay|send|confirm|purchase)\b/i;
 const ALWAYS_PROMPT_TOOLS = new Set(["send_email"]);
 
+function argumentsNameIrreversibleAction(args: Readonly<Record<string, unknown>> | undefined): boolean {
+  const values: string[] = [];
+  const collect = (value: unknown): void => {
+    if (typeof value === "string") values.push(value);
+    else if (Array.isArray(value)) value.forEach(collect);
+    else if (value && typeof value === "object") Object.values(value).forEach(collect);
+  };
+  collect(args);
+  return values.some((value) => IRREVERSIBLE_ACTION_PATTERN.test(value));
+}
+
 /** Resolve whether a tool call runs, prompts, or is denied. Centralizes the
  *  whole policy so the agent runner stays thin and the rules stay testable. */
 export function resolvePermission(input: PolicyInput): PolicyDecision {
@@ -229,7 +244,10 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
     return { action: "deny", autoApproved: false };
   }
   if (input.destructive) {
-    return { action: "prompt", autoApproved: false, risk: "destructive", rule: "The tool's server declares it destructive." };
+    return { action: "prompt", autoApproved: false, risk: "destructive", rule: input.destructiveReason ?? "The tool's server declares it destructive." };
+  }
+  if (input.checkIrreversible && argumentsNameIrreversibleAction(input.args)) {
+    return { action: "prompt", autoApproved: false, risk: "destructive", rule: "Its arguments name an irreversible action, such as delete, submit, or pay." };
   }
   if (input.readOnly) {
     const reason = input.untrusted ? derivedReason(input) : undefined;

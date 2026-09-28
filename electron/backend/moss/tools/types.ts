@@ -59,6 +59,11 @@ export interface Tool {
   readOnly?: boolean;
   /** Declared destructive; always prompts, even under auto-approve. */
   destructive?: boolean;
+  /** Why Moss treats the tool as destructive, when it is Moss's own rule. */
+  destructiveReason?: string;
+  /** Prompt when the arguments name an irreversible action (delete, submit,
+   *  pay...). Set for MCP tools whose server's destructive flags are ignored. */
+  checkIrreversible?: boolean;
   dispose?(): Promise<void>;
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }

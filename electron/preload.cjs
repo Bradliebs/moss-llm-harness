@@ -38,6 +38,20 @@ const CH = {
   modelProbeProgress: "moss:model:probeProgress",
   modelProfileGet: "moss:model:profileGet",
   modelProfileList: "moss:model:profileList",
+  modelPerformanceList: "moss:model:performanceList",
+  modelPerformanceClear: "moss:model:performanceClear",
+  ollamaContextInspect: "moss:ollama:contextInspect",
+  ollamaContextCreate: "moss:ollama:contextCreate",
+  setupDetect: "moss:setup:detect",
+  setupPull: "moss:setup:pull",
+  practiceGet: "moss:practice:get",
+  practiceConfigure: "moss:practice:configure",
+  practiceRun: "moss:practice:run",
+  practiceCancel: "moss:practice:cancel",
+  practiceProgress: "moss:practice:progress",
+  proceduresList: "moss:procedures:list",
+  procedureSetStatus: "moss:procedures:setStatus",
+  procedureDelete: "moss:procedures:delete",
   tracesList: "moss:traces:list",
   tracesClear: "moss:traces:clear",
   tracesOpenFolder: "moss:traces:openFolder",
@@ -126,11 +140,35 @@ contextBridge.exposeInMainWorld("moss", {
   window: {
     focus: () => ipcRenderer.invoke(CH.windowFocus),
   },
+  procedures: {
+    list: () => ipcRenderer.invoke(CH.proceduresList),
+    setStatus: (id, status) => ipcRenderer.invoke(CH.procedureSetStatus, id, status),
+    remove: (id) => ipcRenderer.invoke(CH.procedureDelete, id),
+  },
+  practice: {
+    get: () => ipcRenderer.invoke(CH.practiceGet),
+    configure: (config) => ipcRenderer.invoke(CH.practiceConfigure, config),
+    run: () => ipcRenderer.invoke(CH.practiceRun),
+    cancel: () => ipcRenderer.invoke(CH.practiceCancel),
+    onProgress: (handler) => {
+      const listener = (_event, progress) => handler(progress);
+      ipcRenderer.on(CH.practiceProgress, listener);
+      return () => ipcRenderer.removeListener(CH.practiceProgress, listener);
+    },
+  },
+  setup: {
+    detect: (request) => ipcRenderer.invoke(CH.setupDetect, request),
+    pull: (baseUrl, model) => ipcRenderer.invoke(CH.setupPull, baseUrl, model),
+  },
   model: {
     probe: (request) => ipcRenderer.invoke(CH.modelProbeRun, request),
     cancelProbe: () => ipcRenderer.invoke(CH.modelProbeCancel),
     profile: (kind, baseUrl, model) => ipcRenderer.invoke(CH.modelProfileGet, kind, baseUrl, model),
     profiles: () => ipcRenderer.invoke(CH.modelProfileList),
+    performance: () => ipcRenderer.invoke(CH.modelPerformanceList),
+    clearPerformance: (kind, baseUrl, model) => ipcRenderer.invoke(CH.modelPerformanceClear, kind, baseUrl, model),
+    inspectContext: (baseUrl, model) => ipcRenderer.invoke(CH.ollamaContextInspect, baseUrl, model),
+    createContextVariant: (baseUrl, model, numCtx) => ipcRenderer.invoke(CH.ollamaContextCreate, baseUrl, model, numCtx),
     onProbeProgress: (handler) => {
       const listener = (_event, progress) => handler(progress);
       ipcRenderer.on(CH.modelProbeProgress, listener);

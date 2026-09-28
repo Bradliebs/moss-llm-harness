@@ -4,7 +4,8 @@ import { dirname, extname, relative, resolve, sep } from "node:path";
 const distDir = resolve(process.argv[2] ?? "dist");
 const indexPath = resolve(distDir, "index.html");
 const budgets = {
-  initialJavaScript: 675 * 1024,
+  // Lowered from 675 KiB once the syntax highlighter moved out of the startup bundle.
+  initialJavaScript: 600 * 1024,
   initialStyles: 80 * 1024,
 };
 

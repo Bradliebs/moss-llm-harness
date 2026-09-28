@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TaskSnapshot } from "@common/types";
 
+import { recordTurnDecision, turnDecisionsStore } from "../lib/turnDecisions";
 import { RunCenter } from "./RunCenter";
 
 const selectSession = vi.fn();
@@ -108,6 +109,18 @@ describe("RunCenter", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     await waitFor(() => expect(window.moss.task.pause).toHaveBeenCalledWith("task-1", "Paused from Run center"));
     expect(refreshTaskRuns).toHaveBeenCalledOnce();
+  });
+
+  it("lists the harness decisions from every attempt of a run", () => {
+    const snapshot = task("completed");
+    snapshot.attempts = [{ id: "attempt-1", turnId: "turn-9", startedAt: snapshot.createdAt, actionCount: 1, usage: {}, estimatedCostUsd: 0 }];
+    run.value = snapshot;
+    recordTurnDecision("task-1", { kind: "constrain", summary: "Using constrained tool output for tiny." });
+    recordTurnDecision("turn-9", { kind: "critic", summary: "Critic claude judged \"Report\": pass." });
+    render(<RunCenter onClose={vi.fn()} />);
+    expect(screen.getByText("Why? 2 harness decisions")).toBeDefined();
+    expect(screen.getByText("Critic claude judged \"Report\": pass.")).toBeDefined();
+    turnDecisionsStore.set({});
   });
 
   it("shows progress, budget, evidence, and artifact details", () => {

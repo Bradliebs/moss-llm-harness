@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, CirclePause, LoaderCircle, X } from "lucid
 import { useEffect, useRef, useState } from "react";
 
 import { selectSession, useSessions } from "../lib/sessions";
+import { TurnDecisions } from "./TurnDecisions";
 import { isRunActive, refreshTaskRuns, useTaskRuns } from "../lib/taskRuns";
 
 interface RunCenterProps {
@@ -205,6 +206,7 @@ export function RunCenter({ onClose }: RunCenterProps): React.ReactElement {
                             <div><dt className="inline font-medium">Evidence: </dt><dd className="inline">{run.evidence.filter((evidence) => evidence.passed).length}/{run.evidence.length} passed</dd></div>
                             <div><dt className="inline font-medium">Artifacts: </dt><dd className="inline">{run.artifacts?.length ?? 0}</dd></div>
                           </dl>
+                          <TurnDecisions turnIds={[run.id, ...run.attempts.map((attempt) => attempt.turnId).filter((id): id is string => !!id)]} />
                           {run.steps.length > 0 ? (
                             <ol className="mt-2 space-y-1" aria-label="Run steps">
                               {run.steps.map((step) => (

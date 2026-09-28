@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import { createLogger } from "../../../../common/logger";
 import { writeFileAtomicSync } from "../persistence/atomic-file";
@@ -26,6 +26,12 @@ export interface McpStdioServerConfig {
   cwd?: string;
   /** honor the server's readOnlyHint annotations; off by default */
   trustAnnotations?: boolean;
+  /** ignore the server's destructiveHint annotations, for servers that flag
+   *  every non-read tool; Moss's own irreversible-action checks still apply */
+  ignoreDestructiveHints?: boolean;
+  /** raw tool names never offered to the model, e.g. a browser server's
+   *  code-running tools when its snapshot tool reads pages without code */
+  hiddenTools?: string[];
 }
 
 export interface McpHttpServerConfig {
@@ -36,6 +42,12 @@ export interface McpHttpServerConfig {
   headers?: Record<string, string>;
   /** honor the server's readOnlyHint annotations; off by default */
   trustAnnotations?: boolean;
+  /** ignore the server's destructiveHint annotations, for servers that flag
+   *  every non-read tool; Moss's own irreversible-action checks still apply */
+  ignoreDestructiveHints?: boolean;
+  /** raw tool names never offered to the model, e.g. a browser server's
+   *  code-running tools when its snapshot tool reads pages without code */
+  hiddenTools?: string[];
 }
 
 export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
@@ -51,7 +63,7 @@ const TEMPLATE: McpServerConfig[] = [
 ];
 
 function configPath(): string {
-  return join(app.getPath("userData"), "mcp-servers.json");
+  return join(userDataDir(), "mcp-servers.json");
 }
 
 function isValid(entry: unknown): entry is McpServerConfig {

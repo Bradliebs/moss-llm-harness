@@ -8,6 +8,8 @@ import { useEffect, useState } from "react";
 import type { CapabilityDimension, ModelCapabilityProfile, ModelProbeProgress } from "@common/types";
 
 import { toProviderConfig, updateSettings, useSettings } from "../lib/settings";
+import { ContextFitSettings } from "./ContextFitSettings";
+import { LiveScoreSummary } from "./LiveScoreSummary";
 import { LiveStatus } from "./LiveStatus";
 
 const LABELS: Record<CapabilityDimension, string> = {
@@ -221,6 +223,8 @@ export function ModelProfileSettings({ className }: { className: string }): Reac
           </div>
         </div>
       ) : null}
+      {settings.model && settings.baseUrl ? <LiveScoreSummary kind={settings.kind} baseUrl={settings.baseUrl} model={settings.model} profile={profile} /> : null}
+      <ContextFitSettings />
     </section>
   );
 }

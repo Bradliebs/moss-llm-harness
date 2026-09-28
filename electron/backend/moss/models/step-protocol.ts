@@ -84,10 +84,46 @@ export function toStepMessages(messages: readonly AgentMessage[], tools: readonl
   }, []);
 }
 
+export interface VoteResult {
+  samples: number;
+  /** samples that agreed with the chosen step */
+  agreeing: number;
+  /** chosen tool name, or "final answer" */
+  choice: string;
+}
+
+export interface StepProtocolOptions {
+  /** constrained samples per step; the most common step wins. 1 disables voting */
+  votes?: number;
+  /** sampling temperature for voting, unless the request sets one */
+  voteTemperature?: number;
+  onVote?: (result: VoteResult) => void;
+}
+
+/** Stable identity of a step: the tool and its arguments with sorted keys. */
+export function stepKey(events: readonly ProviderStreamEvent[]): string | undefined {
+  const call = events.find((event) => event.type === "tool-call");
+  if (call?.type === "tool-call") {
+    const canonical = (value: unknown): unknown => Array.isArray(value)
+      ? value.map(canonical)
+      : value && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)]))
+        : typeof value === "string" ? value.trim() : value;
+    let args: unknown;
+    try {
+      args = JSON.parse(call.toolCall.arguments || "{}");
+    } catch {
+      args = call.toolCall.arguments;
+    }
+    return `tool:${call.toolCall.name}:${JSON.stringify(canonical(args))}`;
+  }
+  return events.some((event) => event.type === "text-delta") ? "final" : undefined;
+}
+
 export class StepProtocolProvider implements ChatProvider {
   readonly kind: string;
 
-  constructor(private readonly inner: ChatProvider) {
+  constructor(private readonly inner: ChatProvider, private readonly options: StepProtocolOptions = {}) {
     this.kind = inner.kind;
   }
 
@@ -98,19 +134,54 @@ export class StepProtocolProvider implements ChatProvider {
       yield* this.inner.streamChat(req, signal);
       return;
     }
-    let text = "";
-    for await (const event of this.inner.streamChat({
+    const votes = Math.max(1, Math.min(5, Math.floor(this.options.votes ?? 1)));
+    const temperature = req.temperature ?? (votes > 1 ? this.options.voteTemperature ?? 0.6 : undefined);
+    const stepRequest: ChatRequest = {
       model: req.model,
       messages: toStepMessages(req.messages, tools),
       responseSchema: buildStepSchema(tools),
       ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
-      ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-    }, signal)) {
-      if (event.type === "text-delta") text += event.text;
-      else if (event.type === "usage") yield event;
-      else if (event.type === "tool-call") yield event;
+      ...(temperature !== undefined ? { temperature } : {}),
+    };
+    const sample = async (): Promise<{ events: ProviderStreamEvent[]; usage: ProviderStreamEvent[] }> => {
+      let text = "";
+      const usage: ProviderStreamEvent[] = [];
+      const native: ProviderStreamEvent[] = [];
+      for await (const event of this.inner.streamChat(stepRequest, signal)) {
+        if (event.type === "text-delta") text += event.text;
+        else if (event.type === "usage") usage.push(event);
+        else if (event.type === "tool-call") native.push(event);
+      }
+      return { events: native.length > 0 ? native : [...interpretStep(text, tools)], usage };
+    };
+    if (votes === 1) {
+      const only = await sample();
+      yield* only.usage;
+      yield* only.events;
+      return;
     }
-    yield* interpretStep(text, tools);
+    // Samples run one after another: local servers usually serve a single
+    // request at a time, and an early abort then skips the rest.
+    const results: Array<{ events: ProviderStreamEvent[]; usage: ProviderStreamEvent[] }> = [];
+    for (let index = 0; index < votes; index++) {
+      signal.throwIfAborted();
+      results.push(await sample());
+    }
+    for (const result of results) yield* result.usage;
+    const tally = new Map<string, number>();
+    for (const result of results) {
+      const key = stepKey(result.events);
+      if (key) tally.set(key, (tally.get(key) ?? 0) + 1);
+    }
+    // Most common step; ties go to the earliest sample.
+    const best = results.reduce<{ index: number; count: number }>((winner, result, index) => {
+      const count = tally.get(stepKey(result.events) ?? "") ?? 0;
+      return count > winner.count ? { index, count } : winner;
+    }, { index: 0, count: 0 });
+    const chosen = results[best.index].events;
+    const call = chosen.find((event) => event.type === "tool-call");
+    this.options.onVote?.({ samples: votes, agreeing: best.count, choice: call?.type === "tool-call" ? call.toolCall.name : "final answer" });
+    yield* chosen;
   }
 
   listModels(): Promise<string[]> {

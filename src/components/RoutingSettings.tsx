@@ -7,16 +7,21 @@
 
 import { useEffect, useState } from "react";
 
+import { liveScore, modelKey } from "@common/live-scores";
+import { checkCriticIndependence, workerModels } from "@common/model-family";
 import { isLocalRoute, routeDestination } from "@common/routes";
-import type { ConstrainedOutputMode, ModelCapabilityProfile, ModelRoute, ReplayReport, TurnTraceSummary } from "@common/types";
+import type { ConstrainedOutputMode, ModelCapabilityProfile, ModelLiveScore, ModelPerformanceEntry, ModelRoute, ReplayReport, TurnTraceSummary } from "@common/types";
 
 import { modelsStore, PROVIDER_PRESETS, toProviderConfig, updateSettings, useSettings, type MossSettings } from "../lib/settings";
 import { LiveStatus } from "./LiveStatus";
 
-function profileLabel(profile: ModelCapabilityProfile | undefined): string {
-  if (!profile) return "not profiled";
+function profileLabel(profile: ModelCapabilityProfile | undefined, live?: ModelLiveScore): string {
+  const liveText = live && live.graded > 0 && live.successRate !== undefined
+    ? `${Math.round(live.successRate * 100)}% on your work over ${Math.round(live.graded)} runs`
+    : "";
+  if (!profile) return liveText || "not profiled";
   const latency = profile.latency ? `, ${(profile.latency.medianMs / 1000).toFixed(1)}s` : "";
-  return `${profile.tier}, ${Math.round(profile.overall * 100)}%${latency}`;
+  return `${profile.tier}, ${Math.round(profile.overall * 100)}%${latency}${liveText ? `; ${liveText}` : ""}`;
 }
 
 function percent(value: number): string {
@@ -24,6 +29,7 @@ function percent(value: number): string {
 }
 
 type ProfileLookup = (kind: string, baseUrl: string, model: string) => ModelCapabilityProfile | undefined;
+type LiveLookup = (kind: string, baseUrl: string, model: string) => ModelLiveScore | undefined;
 
 function presetBaseUrl(settings: MossSettings, presetId: string): string {
   const preset = PROVIDER_PRESETS.find((item) => item.id === presetId);
@@ -41,6 +47,7 @@ function RoutePicker({
   route,
   onChange,
   profileFor,
+  liveFor,
 }: {
   id: string;
   label: string;
@@ -49,6 +56,7 @@ function RoutePicker({
   route: ModelRoute | undefined;
   onChange: (next: { model?: string; route?: ModelRoute }) => void;
   profileFor: ProfileLookup;
+  liveFor?: LiveLookup;
 }): React.ReactElement {
   const settings = useSettings();
   const models = modelsStore.use();
@@ -120,7 +128,7 @@ function RoutePicker({
           }}
         >
           <option value="">{emptyLabel}</option>
-          {choices.map((item) => <option key={item} value={item}>{item} ({profileLabel(profileFor(kind, baseUrl, item))})</option>)}
+          {choices.map((item) => <option key={item} value={item}>{item} ({profileLabel(profileFor(kind, baseUrl, item), liveFor?.(kind, baseUrl, item))})</option>)}
         </select>
       </div>
       {loadError ? <p className="text-xs text-amber-800 dark:text-amber-300">{loadError}</p> : null}
@@ -144,6 +152,7 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
   const settings = useSettings();
   const models = modelsStore.use();
   const [profiles, setProfiles] = useState<ModelCapabilityProfile[]>([]);
+  const [performance, setPerformance] = useState<ModelPerformanceEntry[]>([]);
   const [traces, setTraces] = useState<{ count: number; traces: TurnTraceSummary[] } | null>(null);
   const [replayModel, setReplayModel] = useState("");
   const [replayingId, setReplayingId] = useState<string | null>(null);
@@ -155,6 +164,9 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
     let cancelled = false;
     void window.moss?.model?.profiles()
       .then((list) => { if (!cancelled) setProfiles(list); })
+      .catch(() => undefined);
+    void window.moss?.model?.performance?.()
+      .then((list) => { if (!cancelled) setPerformance(list); })
       .catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
@@ -173,10 +185,32 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
     profile.model === model && profile.providerKind === kind
     && profile.endpoint.toLowerCase() === baseUrl.replace(/\/+$/, "").toLowerCase());
   const profileFor = (model: string): ModelCapabilityProfile | undefined => profileAt(settings.kind, settings.baseUrl, model);
+  const liveAt: LiveLookup = (kind, baseUrl, model) => {
+    const key = modelKey(kind, baseUrl, model);
+    const own = performance.filter((entry) => modelKey(entry.providerKind, entry.endpoint, entry.model) === key);
+    return own.length > 0 ? liveScore(own, "all") : undefined;
+  };
   const constrainedMode = settings.constrainedOutput?.[settings.model] ?? "auto";
   const currentTier = profileFor(settings.model)?.tier;
   const constrainedNow = settings.kind === "openai-compatible"
     && (constrainedMode === "always" || (constrainedMode === "auto" && (currentTier === "limited" || currentTier === "unreliable")));
+  const criticModel = settings.criticRoute?.model ?? settings.criticModel;
+  const criticIndependence = criticModel ? checkCriticIndependence(criticModel, workerModels(settings)) : undefined;
+  const criticTier = settings.criticRoute
+    ? profileAt(settings.criticRoute.kind, settings.criticRoute.baseUrl, settings.criticRoute.model)?.tier
+    : settings.criticModel ? profileFor(settings.criticModel)?.tier : undefined;
+  const votingMode = settings.stepVoting?.[settings.model] ?? "auto";
+  const currentProfile = profileFor(settings.model);
+  const votingNow = constrainedNow && isLocalRoute(settings.baseUrl, settings.model)
+    && (votingMode === "always" || (votingMode === "auto" && settings.adaptiveScaffolding !== false
+      && (currentTier === "limited" || currentTier === "unreliable")
+      && currentProfile?.latency !== undefined && currentProfile.latency.medianMs <= 4_000));
+  function setVoting(mode: ConstrainedOutputMode): void {
+    const next = { ...(settings.stepVoting ?? {}) };
+    if (mode === "auto") delete next[settings.model];
+    else next[settings.model] = mode;
+    updateSettings({ stepVoting: next });
+  }
   function setConstrained(mode: ConstrainedOutputMode): void {
     const next = { ...(settings.constrainedOutput ?? {}) };
     if (mode === "auto") delete next[settings.model];
@@ -191,9 +225,15 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
     setProgress(null);
     setStatus("");
     try {
-      const result = await window.moss.traces.replay({ traceId: trace.id, config: { ...toProviderConfig(settings), model: replayModel } });
+      // The critic, when set, also judges steps where the candidate differs.
+      const judge: ModelRoute | undefined = settings.criticRoute
+        ?? (settings.criticModel ? { kind: settings.kind, baseUrl: settings.baseUrl, model: settings.criticModel } : undefined);
+      const result = await window.moss.traces.replay({ traceId: trace.id, config: { ...toProviderConfig(settings), model: replayModel }, ...(judge ? { judge } : {}) });
       setReport(result);
-      setStatus(`${replayModel} made the same decision as ${result.baselineModel} on ${result.summary.sameAction} of ${result.summary.calls} calls.`);
+      const judged = result.summary.acceptable !== undefined
+        ? ` Counting differing steps ${result.judgeModel} judged reasonable, ${result.summary.acceptable} of ${result.summary.calls} were acceptable.`
+        : result.judgeSkipped ? ` Differing steps were not judged: ${result.judgeSkipped}` : "";
+      setStatus(`${replayModel} made the same decision as ${result.baselineModel} on ${result.summary.sameAction} of ${result.summary.calls} calls.${judged}`);
     } catch (error) {
       setStatus(`Replay failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -260,6 +300,26 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
           </span>
         </label>
       ) : null}
+      {settings.kind === "openai-compatible" && settings.model ? (
+        <label className="block">
+          <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Vote on each step for {settings.model}</span>
+          <select
+            aria-label={`Vote on each step for ${settings.model}`}
+            className={select}
+            value={votingMode}
+            onChange={(event) => setVoting(event.target.value as ConstrainedOutputMode)}
+          >
+            {(Object.keys(CONSTRAINED_LABELS) as ConstrainedOutputMode[]).map((mode) => (
+              <option key={mode} value={mode}>{CONSTRAINED_LABELS[mode]}</option>
+            ))}
+          </select>
+          <span className="mt-1 block text-xs text-neutral-600 dark:text-neutral-300">
+            With constrained output on a local model, Moss samples each step three times and runs the most common one. It
+            about doubles the time per step and catches one-off wrong calls. Automatic votes for limited and unreliable models
+            whose median reply takes under 4 seconds. {votingNow ? "Voting is on for this model." : "Voting is off for this model."}
+          </span>
+        </label>
+      ) : null}
       <RoutePicker
         id="fast-route"
         label="Fast model for summaries and read-only subagents"
@@ -267,6 +327,7 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
         model={settings.fastModel}
         route={settings.fastRoute}
         profileFor={profileAt}
+        liveFor={liveAt}
         onChange={(next) => updateSettings({ fastModel: next.model, fastRoute: next.route })}
       />
       <div className="grid gap-2 sm:grid-cols-[1fr_8rem] sm:items-end">
@@ -277,6 +338,7 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
           model={settings.escalationModel}
           route={settings.escalationRoute}
           profileFor={profileAt}
+        liveFor={liveAt}
           onChange={(next) => updateSettings({ escalationModel: next.model, escalationRoute: next.route })}
         />
         <label className="block">
@@ -292,6 +354,26 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
           />
         </label>
       </div>
+      <RoutePicker
+        id="critic-route"
+        label="Critic for mission reviews"
+        emptyLabel="No critic"
+        model={settings.criticModel}
+        route={settings.criticRoute}
+        profileFor={profileAt}
+        liveFor={liveAt}
+        onChange={(next) => updateSettings({ criticModel: next.model, criticRoute: next.route })}
+      />
+      {criticIndependence ? (
+        <p className={`text-xs ${criticIndependence.ok ? "text-neutral-600 dark:text-neutral-300" : "text-amber-800 dark:text-amber-300"}`}>
+          {criticIndependence.ok
+            ? `Independent: ${criticIndependence.criticFamily} is a different model family from the models doing the work. Missions can bind criteria to this critic in Mission review.`
+            : criticIndependence.reason}
+          {criticIndependence.ok && (criticTier === "limited" || criticTier === "unreliable")
+            ? ` Its measured tier is ${criticTier}; small models make unreliable critics, so prefer a capable or strong one.`
+            : ""}
+        </p>
+      ) : null}
       <p className="text-xs text-neutral-600 dark:text-neutral-300">
         A turn switches to the escalation model after Moss rejects its work this many times: a failed tool call, failed
         verification, or a refused completion. Your own denials never count, and the model never decides this itself.
@@ -382,6 +464,9 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
                 <td>
                   {call.agreement.replace(/-/g, " ")}
                   {call.candidate.unknownArguments.length ? ` (unknown arguments: ${call.candidate.unknownArguments.join(", ")})` : ""}
+                  {call.judgement
+                    ? ` · judged ${call.judgement.candidateReasonable ? "reasonable" : "not reasonable"}${call.judgement.comparison === "better" ? ", better than the original" : call.judgement.comparison === "worse" ? ", worse than the original" : ""}${call.judgement.reason ? `: ${call.judgement.reason}` : ""}`
+                    : ""}
                 </td>
               </tr>
             ))}
@@ -389,7 +474,9 @@ export function RoutingSettings({ className }: { className: string }): React.Rea
           <tfoot>
             <tr className="text-neutral-700 dark:text-neutral-200">
               <td colSpan={4} className="pt-1">
-                Agreement {percent(report.summary.agreementRate)} · valid arguments {percent(report.summary.validArgumentRate)} · {report.summary.errors} errors
+                Agreement {percent(report.summary.agreementRate)}
+                {report.summary.acceptableRate !== undefined ? ` · reasonable ${percent(report.summary.acceptableRate)} (judged by ${report.judgeModel})` : ""}
+                {" "}· valid arguments {percent(report.summary.validArgumentRate)} · {report.summary.errors} errors
                 {report.summary.medianLatencyMs !== undefined ? ` · median ${(report.summary.medianLatencyMs / 1000).toFixed(1)}s` : ""}
                 {report.summary.baselineMedianLatencyMs !== undefined ? ` (original ${(report.summary.baselineMedianLatencyMs / 1000).toFixed(1)}s)` : ""}
               </td>

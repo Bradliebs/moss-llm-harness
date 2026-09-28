@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "./runtime/user-data";
 
 import type {
   ProductDiagnosticEntry,
@@ -37,7 +37,7 @@ export class ProductDiagnosticsStore {
   constructor(private readonly baseDir?: string) {}
 
   private root(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "product-diagnostics");
+    return join(this.baseDir ?? userDataDir(), "product-diagnostics");
   }
 
   private eventsFile(): string {

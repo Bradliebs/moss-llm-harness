@@ -8,7 +8,7 @@
 // the model.
 
 import { randomUUID } from "node:crypto";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, posix, relative, resolve } from "node:path";
 
 import type { AgentMessage, WorkingState, WorkingStateEntry, WorkingStateKind } from "../../../../common/types";
 import { classifyCommand } from "../permission";
@@ -162,9 +162,11 @@ function normalizePath(path: string): string {
   return process.platform === "win32" ? slashed.toLowerCase() : slashed;
 }
 
+/** Workspace-relative form with `.` and `..` collapsed, so `src/../secret.txt`
+ *  is matched as `secret.txt`, exactly as the path guard resolves it. */
 function toRelative(path: string, workspaceRoot: string): string {
-  if (workspaceRoot && isAbsolute(path)) return relative(workspaceRoot, path);
-  return path;
+  if (workspaceRoot) return relative(resolve(workspaceRoot), resolve(workspaceRoot, path));
+  return isAbsolute(path) ? path : posix.normalize(path.replace(/\\/g, "/"));
 }
 
 function globToRegExp(pattern: string): RegExp {

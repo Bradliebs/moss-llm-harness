@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import { writeFileAtomic } from "../persistence/atomic-file";
 
@@ -37,7 +37,7 @@ export class ToolOutputStore {
   constructor(private readonly baseDir?: string) {}
 
   private root(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "tool-output");
+    return join(this.baseDir ?? userDataDir(), "tool-output");
   }
 
   private file(id: string): string {

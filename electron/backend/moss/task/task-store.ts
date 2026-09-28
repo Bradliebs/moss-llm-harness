@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import type { TaskApproval, TaskBlocker, TaskHistoryEntry, TaskSnapshot, TaskSpec, TaskState } from "../../../../common/types";
 
@@ -97,7 +97,7 @@ export class TaskStore {
   constructor(private readonly baseDir?: string) {}
 
   private root(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "tasks");
+    return join(this.baseDir ?? userDataDir(), "tasks");
   }
 
   private taskDir(id: string): string {

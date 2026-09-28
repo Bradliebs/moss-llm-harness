@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 const RENAME_RETRIES = 5;
 const RENAME_RETRY_BASE_MS = 20;
@@ -158,7 +158,7 @@ export class RunJournal {
   }
 
   private root(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "learning", "runs");
+    return join(this.baseDir ?? userDataDir(), "learning", "runs");
   }
 
   private file(taskId: string): string {

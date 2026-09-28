@@ -7,7 +7,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import type { ModelCapabilityProfile, ProviderKind } from "../../../../common/types";
 import { writeFileAtomic } from "../persistence/atomic-file";
@@ -30,7 +30,7 @@ export class ModelProfileStore {
   constructor(private readonly baseDir?: string) {}
 
   private file(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "model-profiles", "profiles.json");
+    return join(this.baseDir ?? userDataDir(), "model-profiles", "profiles.json");
   }
 
   list(): Promise<ModelCapabilityProfile[]> {

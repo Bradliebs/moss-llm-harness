@@ -434,13 +434,67 @@ still required before closing end-to-end dictation acceptance.
       read-only** under **Settings > Knowledge**, and confirm that tool runs
       without a prompt while its other tools still ask.
 
+23. **Setup, live scores, context window, voting, Why, practice, quarantine, and procedures**
+    - On a PC with Ollama, select **Set up for this PC** in the first-run guide.
+      Confirm the proposal names models that fit the GPU, lists the context
+      check and profiling, and changes nothing until **Apply**. Untick one line,
+      apply, and confirm the progress list and that approval settings did not
+      change.
+    - Under **Capability profile**, confirm **Live results on your work** fills in
+      after a few verified turns and that **Forget results** clears it.
+    - Select **Check context window** for a large local model. Confirm the report
+      shows served, trained, and GPU figures; when it offers a variant, create it
+      and confirm the model switches and the original model still exists in
+      `ollama list`.
+    - With a limited, fast local model and constrained output on, confirm the
+      "Voting on each step" notice, and set **Vote on each step** to **Never** to
+      turn it off.
+    - After an adapted turn, open **Why?** under the reply. Confirm the entries
+      and that each settings link opens the right category.
+    - Turn on trace recording and verification in a clean git workspace, finish
+      a coding task, then select **Practice now** with two local candidates.
+      Confirm the report, that the workspace, its `node_modules`, and
+      `git worktree list` are unchanged afterwards, and that applying a
+      recommendation changes only the named model. Confirm that a turn which
+      fetched a web page is not re-run forward.
+    - Turn on the quarantine reader under **Settings > Safety**, fetch a page
+      containing an instruction to the assistant, and confirm **Why?** shows
+      "Quarantined fetch_url output" and that the model does not act on the
+      instruction.
+    - Repeat the same verified two-step tool task three times. Confirm a
+      candidate procedure appears in the Library, that the next similar request
+      offers `run_procedure`, that each expanded step still asks for approval
+      when it would, and that **Demote** removes it from the offer.
+
+24. **Mission critic, judged replay, Run center decisions, and headless runs**
+    - Under **Settings > Models > Routing and adaptation**, set **Critic for
+      mission reviews** to a model from the same family as the chat model.
+      Confirm the independence note, and that a mission with a critic check
+      cannot launch. Pick a model from another family and confirm launch is
+      allowed, with a weak-tier warning for a limited critic.
+    - Launch a Research mission with a critic check bound to its report and a
+      rubric requirement the report misses. Confirm the check fails with the
+      unmet requirement named, and that a corrected report passes. Confirm
+      **Why?** shows the critic decision.
+    - Open **Run center**, select the run, and confirm **Why?** lists the
+      decisions from every attempt.
+    - Replay a recorded trace with the critic set. Confirm the report shows
+      the reasonable and better counts for divergent steps.
+    - In a terminal, run `npm run moss -- --model NAME --workspace DIR
+      --approve safe --verify "npm test" --prompt "Fix the failing test"` on a
+      workspace with one failing test. Confirm the exit code is 0 only when
+      the test passes, 1 otherwise, and that `--approve deny` leaves the
+      workspace unchanged.
+
 ## Pass criteria
 
 - No uncaught errors in the main-process console or the renderer devtools.
 - Streaming, tool approval, auto-approve provenance, abort, titling, background
   inspection, templates, diagnostics, notifications, compact layout, approval
   previews, undo, shortcuts, conversation organisation, mission authority,
-  constrained output, cross-provider escalation, and data-level provenance
-  behave as described above.
+  constrained output, cross-provider escalation, data-level provenance, setup,
+  live scores, context fit, voting, Why, practice runs, quarantine, learned
+  procedures, the mission critic, judged replay, and headless runs behave as
+  described above.
 - Reload preserves session history, titles, task state, and the "auto" provenance
   tag without replaying an interrupted action.

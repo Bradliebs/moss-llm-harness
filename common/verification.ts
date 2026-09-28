@@ -55,7 +55,14 @@ export interface ReceiptVerificationCheck extends VerificationCheckBase {
   source?: "manual" | "external";
 }
 
+export interface CriticVerificationCheck extends VerificationCheckBase {
+  kind: "critic";
+  rubric?: string;
+  paths?: string[];
+}
+
 export type VerificationCheck =
+  | CriticVerificationCheck
   | CommandVerificationCheck
   | FileExistsVerificationCheck
   | FileContainsVerificationCheck

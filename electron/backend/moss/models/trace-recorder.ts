@@ -10,9 +10,9 @@ import { randomUUID } from "node:crypto";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
-import type { AgentMessage, ProviderKind, ToolDefinition, TraceCall, TurnTrace, TurnTraceSummary } from "../../../../common/types";
+import type { AgentMessage, HarnessDecision, ProviderKind, ToolDefinition, TraceCall, TurnTrace, TurnTraceSummary } from "../../../../common/types";
 import { writeFileAtomic } from "../persistence/atomic-file";
 import type { ChatProvider, ChatRequest, ProviderStreamEvent } from "../providers/types";
 import { endpointLabel } from "./capability-profile";
@@ -47,6 +47,14 @@ export class TraceRecorder {
 
   get id(): string {
     return this.trace.id;
+  }
+
+  setOutcomeContext(context: NonNullable<TurnTrace["outcomeContext"]>): void {
+    this.trace.outcomeContext = context;
+  }
+
+  noteDecision(decision: HarnessDecision): void {
+    (this.trace.decisions ??= []).push(decision);
   }
 
   record(call: Omit<TraceCall, "index">, tools: readonly ToolDefinition[] = []): void {
@@ -148,7 +156,7 @@ export class TraceStore {
   constructor(private readonly baseDir?: string, private readonly now: () => number = Date.now) {}
 
   dir(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "turn-traces");
+    return join(this.baseDir ?? userDataDir(), "turn-traces");
   }
 
   private file(id: string): string {

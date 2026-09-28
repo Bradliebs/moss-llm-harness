@@ -10,7 +10,7 @@ import type { Dirent } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, join, relative, resolve, sep } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import { createLogger } from "../../../../common/logger";
 import type { Skill, SkillImportResult } from "../../../../common/types";
@@ -24,7 +24,7 @@ export class SkillsStore {
   constructor(private readonly baseDir?: string) {}
 
   private dir(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "m-skills");
+    return join(this.baseDir ?? userDataDir(), "m-skills");
   }
 
   private disabledFile(): string {

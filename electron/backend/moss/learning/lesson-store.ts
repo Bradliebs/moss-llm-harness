@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import { updateLessonConfidence, type CandidateLesson } from "./retrospective";
 
@@ -176,7 +176,7 @@ export class LessonStore {
   }
 
   private file(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "learning", "lessons.json");
+    return join(this.baseDir ?? userDataDir(), "learning", "lessons.json");
   }
 
   private async readValidLessons(): Promise<StoredLesson[]> {

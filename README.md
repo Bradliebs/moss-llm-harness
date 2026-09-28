@@ -27,7 +27,9 @@ persistent memory, and Model Context Protocol (MCP) integrations.
 Moss can connect to a local Ollama server, the Anthropic Messages API, or an
 OpenAI-compatible endpoint such as OpenAI, LM Studio, vLLM, Groq, or OpenRouter.
 The selected model must support the behavior required by the task. Models vary
-substantially in tool use, instruction following, and context capacity.
+substantially in tool use, instruction following, and context capacity, so Moss
+measures each model, adapts its tools and guidance to it, and can route hard work
+to a stronger model on another provider.
 
 > [!IMPORTANT]
 > Moss can execute commands and modify files. Select a dedicated workspace,
@@ -44,9 +46,12 @@ substantially in tool use, instruction following, and context capacity.
 * Previews file diffs and command context before you approve changes
 * Notifies you when background work needs attention, with per-turn undo
 * Offers a command palette, keyboard shortcuts, larger text, and high contrast
-* Profiles each model's tool, JSON, context, and planning reliability before you rely on it
+* Sets itself up for your PC in one click: best local models that fit your GPU, escalation, embeddings, profiling, and the context window
+* Profiles each model's tool, JSON, context, and planning reliability before you rely on it, then keeps score of how it does on your own verified work
 * Adapts tools and guidance to the measured model, constrains small local models to schema-valid tool calls, escalates rejected work to a stronger model on any provider, and replays recorded turns against alternatives
 * Keeps protected paths, invariants, and decisions in governed working state, stops unproductive loops, lets skills earn trust, and never lets untrusted content authorize a side effect
+* Can read web and MCP content through a quarantine model with no tools, so planted instructions never reach the model that acts
+* Practices on your recorded work while the PC is idle, learns procedures from repeated verified work, and shows why it made each decision in a turn
 * Reads, writes, searches, and checkpoints files inside the selected workspace
 * Runs shell commands with risk classification and approval controls
 * Uses isolated, domain-allow-listed Playwright browser sessions
@@ -87,7 +92,10 @@ rebuilds the application, and starts Moss:
 .\start.bat
 ```
 
-After the application opens:
+After the application opens, the quickest path on a PC with Ollama is **Set up
+for this PC** in the first-run guide or at the top of **Settings > Models**. It
+proposes a complete setup and applies only the lines you keep ticked. To
+configure by hand:
 
 1. Open **Settings**.
 2. Select Ollama, OpenAI, Anthropic, or Custom.
@@ -168,6 +176,8 @@ from Moss's chat-model cost display and budget cap. Requests have a 15-second
 timeout and no automatic retries; cancellation cannot undo data already sent.
 Results are advisory and never replace tool permissions or host verification.
 Durable missions do not expose Jev because their budgets do not account for it.
+For an independent review inside a mission, bind a critic check to a criterion
+instead (see [Mission contract preflight](#mission-contract-preflight)).
 
 See the [TypeSafe introduction](https://docs.typesafe.ai/introduction) for the
 question types. After building, `node scripts/smoke-jev.mjs` checks settings,
@@ -283,6 +293,28 @@ disposable Electron profile without model calls.
 Custom OpenAI-compatible servers must expose model listing and chat completion
 endpoints compatible with `/models` and `/chat/completions`.
 
+### Set up for this PC
+
+**Set up for this PC** (in the first-run guide and at the top of **Settings >
+Models**) checks your local Ollama server and models, your GPU, and any cloud
+provider with a saved API key, then proposes a complete setup:
+
+* **Chat model:** the strongest installed local model whose weights leave room
+  in free GPU memory for an 8K-token context. Measured and live tiers come
+  first; unprofiled models are ranked by size.
+* **Fast model:** a smaller local model for summaries and read-only subagents.
+  If your chat model stays on a cloud provider, it is set up as an Ollama route.
+* **Escalation:** a strong model on a cloud provider you have a key for, or an
+  Ollama cloud model, with a note that escalated turns leave this PC.
+* **Ranking by meaning:** `nomic-embed-text` on this PC, downloaded if missing.
+* **Profiling** of the chosen models, and a **context-window check** that
+  creates a correctly sized variant when needed.
+
+Each line can be unticked, and nothing changes until you select **Apply**. If
+you already use a cloud provider, switching the chat model to a local one starts
+unticked. Approval and authority settings are never part of the proposal. A
+progress list shows each download, probe, and check as it runs.
+
 ### Model capability profiles
 
 Models differ sharply in how reliably they call tools, return JSON, and stay on
@@ -336,14 +368,44 @@ variable named by `--api-key-env` (default `MOSS_PROBE_API_KEY`), accepts
 It exits with status 1 when a model is unavailable. Cloud providers charge for
 the tokens used; the profile records the total.
 
+#### Live results on your work
+
+A probe is a starting point; how a model does on your own work is the real
+measure. After each turn Moss records host evidence for the model that ran it,
+by task kind (coding, research, automation, missions, chat): verified passes and
+failures, completed or blocked tasks, harness rejections, stalls, round caps,
+and escalations away. The model's own claims never count, and turns with nothing
+to grade, such as plain chat or a provider outage, are not scored.
+
+**Capability profile** shows these results with a 95% confidence interval. Once
+a model has at least 10 graded runs, clear evidence moves the tier that adaptation
+uses by one step: up when even the pessimistic success rate is at least 75
+percent, down when even the optimistic one is at most 45 percent. The probe tier
+itself is unchanged, the Why timeline notes the adjustment, and **Forget
+results** clears the evidence. Route pickers show each model's success rate on
+your work next to its tier.
+
+#### Context window
+
+Ollama serves each model with a context window that may truncate long prompts,
+or may be larger than your GPU can hold, which moves part of the model onto the
+CPU and slows it several times. **Check context window** loads the selected
+Ollama model and compares what the server actually serves with what the model
+was trained for and what fits in free GPU memory (read with `nvidia-smi` when
+available). When the window is too small, or the model spilled to the CPU, Moss
+offers **Create variant and switch**: it creates a named copy such as
+`qwen2.5:7b-ctx16k` with the right `num_ctx`, copies the capability profile to
+it, and selects it. Your original model is never changed.
+
 ### Adaptive scaffolding
 
 Once a model has a capability profile, Moss adjusts the structure of each tool
-turn to it. Strong models keep every tool and no extra guidance. Capable models
+turn to it, using the tier as adjusted by live results on your work. Strong
+models keep every tool and no extra guidance. Capable models
 get guidance to work in small verified steps and at most 24 task-relevant tools.
 Limited and unreliable models get a numbered-plan, one-step-per-response
-instruction, at most 8 task-relevant tools, and only the first tool call of each
-response runs; the model is told to issue the next call on its own. Models that
+instruction, at most 8 task-relevant tools (plus `find_tool` and any learned
+procedures), and only the first tool call of each response runs; the model is told to issue the next call on its own. Models that
 ignored a system-prompt rule during probing also get a short reminder in the
 latest user turn. A notice describes each adaptation.
 
@@ -407,6 +469,16 @@ Each repair appears as a notice. The first schema error per tool is treated as a
 correction rather than a rejection, so one fixable mistake does not trigger
 escalation.
 
+**Voting** makes constrained steps more reliable on local models. Moss samples
+each step three times at a moderate temperature and runs the most common one
+(the same tool with the same arguments). On the three-step lookup task above,
+`qwen2.5:1.5b` went from 7 of 12 to 10 of 12 with voting, at about 2.5 times
+the time per turn. Choose **Vote on each step** per model: **Automatic** votes
+for limited and unreliable local models whose median reply takes under 4
+seconds, **Always** votes whenever constrained output is on, and **Never** turns
+it off. Cloud models never vote. The Why timeline notes steps where the samples
+disagreed.
+
 ### Routing and escalation
 
 **Settings > Models > Routing and adaptation** can route work across models and
@@ -416,6 +488,11 @@ providers:
   started with the `delegate` tool
 * An escalation model takes over a turn after Moss rejects the chat model's
   work a set number of times (default 2)
+* A critic reviews mission outputs bound to a critic check, and judges replays.
+  It must come from a different model family than the chat, escalation, and
+  fast models, so the model that did the work never grades it. Moss refuses the
+  check when a family is unknown or shared, and warns when the critic's measured
+  tier is weak
 
 Each route picks a provider and a model. **This connection** uses a model on the
 current provider, including Ollama cloud models. Any other provider you have
@@ -461,11 +538,68 @@ Settings, or from a terminal:
 ```powershell
 npm run replay -- --dir "$env:APPDATA\moss\turn-traces" --last 5 --model qwen2.5:7b --model ministral-3:8b
 npm run replay -- --trace path\to\trace.json --model llama3.1:8b --output replay.json
+npm run replay -- --dir "$env:APPDATA\moss\turn-traces" --model qwen2.5:7b --judge glm-5.3-flash:cloud
 ```
 
 The folder name follows the application's user data directory; **Open folder**
 in Settings shows the exact location. The command reuses each trace's provider
 endpoint unless you pass `--base-url` and `--kind`.
+
+Agreement with the first model is not the same as doing well, so a replay can
+also be judged. With a judge (the critic route in Settings, or `--judge` with
+optional `--judge-base-url`, `--judge-kind`, and `--judge-api-key-env`), each
+step where the candidate chose differently is graded on its own: does it serve
+the request, does it rely on facts nobody has seen yet, and is it irrelevant or
+premature? The baseline step gets the same questions, so the report shows how
+many divergent steps were reasonable and how many were better than the
+original. The judge must be from a different model family than the models it
+grades.
+
+### Practice runs
+
+Your own work history becomes the benchmark. **Settings > Models > Practice
+runs** compares local candidate models on your recorded turns:
+
+* **Decisions.** Each candidate replays recent traces as above, and Moss
+  compares tool choices, argument validity, and latency.
+* **Outcomes.** When a trace was recorded in a clean git workspace with
+  verification commands, Moss notes the commit. A practice run checks out that
+  exact commit into a disposable `git worktree`. If verification already passes
+  there, the trace cannot tell models apart and is skipped. Otherwise the
+  candidate works the task forward in the copy, and your original verification
+  commands grade the result.
+
+Candidates get file tools inside the copy only: no shell commands, network,
+browser, email, or anything that would ask for approval. Dependency folders such
+as `node_modules` are linked into the copy so tests can run, and writes to them
+are blocked. So are files that decide what verification runs, such as
+`package.json`, lockfiles, `*.config.*`, `pyproject.toml`, `Makefile`,
+`scripts/`, and `.github/`. Your verification commands still execute the
+candidate's edits to source and test files inside the copy, as they do after
+any turn. A trace whose recorded context includes web, MCP, browser, or other
+untrusted content is used for decision replay only and never run forward
+unattended. The copy is removed afterwards without following the dependency
+links, and your workspace is never touched. Only models on this PC take part.
+
+Turn on **Practice while this PC is idle** to run at most once a day after 20
+idle minutes on mains power; starting a turn stops a run immediately. **Practice
+now** runs on demand. The report shows each candidate's decision agreement,
+valid arguments, median reply time, and verified tasks, and practice outcomes
+feed the live scores at half weight. Moss recommends a change only with clear
+evidence (a candidate passed more verified tasks than the models that ran them,
+or matched at least 85 percent of decisions at no more than 0.6 times the
+latency), and nothing changes until you select the recommendation. In a test
+repository with a failing test, `qwen3.5:4b` fixed the bug in its practice copy
+while `qwen2.5:1.5b` did not, and the original repository stayed unchanged.
+
+### Why each decision was made
+
+Every reply that the harness adapted has a **Why?** disclosure listing, in
+order, what it decided and why: scaffolding and live-score adjustments,
+constrained output and voting, tool-call repairs, `find_tool`, escalation,
+approvals required by untrusted content, stalls, quarantined content, and
+learned procedures. Each entry links to the setting that controls it. Recorded
+traces keep the same list.
 
 ### Optional endpoints
 
@@ -491,9 +625,22 @@ Settings, such as tests, type checks, or builds.
 
 Before launch, every mandatory acceptance criterion needs a measurable outcome
 and an explicit verification method. The mission review supports configured
-commands, file existence, file content, and HTTP status checks. File and command
-checks also require a selected workspace. Commands must exactly match entries
-enabled under **Settings > Verification**.
+commands, file existence, file content, HTTP status, and critic review checks.
+File and command checks also require a selected workspace. Commands must exactly
+match entries enabled under **Settings > Verification**.
+
+A critic check is for work a command cannot grade, such as a research report or
+a summary. The critic from **Settings > Models > Routing and adaptation** reads
+the step's artifacts and up to five bound workspace files, then answers a
+checklist: each requirement in the criterion and optional rubric, whether it is
+met, and a quote as evidence. Moss decides the verdict, not the critic: every
+requirement must be met, and quoted evidence must actually appear in the
+materials. A review with invented quotes fails, and so does one where fewer than
+half the checks quote verified evidence. Materials flagged for prompt injection,
+or no materials at all, are refused rather than reviewed. Critic calls are
+charged to the mission budget. In testing, small local critics that approved a
+flawed report when asked for a single verdict caught it every time with the
+checklist.
 
 Launch remains disabled until the contract passes preflight. Constraints and
 assumptions are optional, but become part of the reviewed mission specification
@@ -556,6 +703,8 @@ the owning conversation, route paused or blocked work to its recovery controls,
 cancel an active durable task through the main-process task controller, or
 pause active work, or export a sanitized per-run diagnostic summary. Pausing
 aborts the current attempt before the durable task enters its resumable state.
+**Why?** on a run lists the harness decisions made during its attempts, such as
+scaffolding, constrained output, escalation, and critic reviews.
 
 ### Harness layers
 
@@ -565,15 +714,17 @@ about the task in the harness:
 | Layer | How Moss implements it |
 |-------|------------------------|
 | Event record | Durable task journal, checkpoints, and opt-in replayable turn traces |
-| Model profiles | Capability probe suite with stored per-model profiles |
+| Model profiles | Capability probe suite, live scores from your verified work, and context-window fit |
 | Model adapter | Constrained step protocol for weak tool callers and tool-call repair for every model |
 | Adjustable scaffolding | Meaning-ranked tool narrowing with `find_tool`, step guidance, and per-round call limits |
 | Routing | Fast and escalation routes on any configured provider, with per-model mission pricing |
 | Governed state | Per-conversation working state, rendered every round and never summarized away |
-| Independent verification | Host-run checks bound to mission criteria; the model never grades itself |
-| Earned memory | Skill trust ledger with versions, plus recalled lessons from verified runs |
+| Independent verification | Host-run checks bound to mission criteria, and a checklist critic from another model family; the model never grades itself |
+| Earned memory | Skill trust ledger with versions, recalled lessons, and learned procedures that run without planning |
 | Supervisor | No-progress detection, loop reminders, budgets, and a stop that asks you |
-| Provenance security | Untrusted content can inform decisions but never authorize a side effect |
+| Provenance security | Untrusted content can inform decisions but never authorize a side effect; an optional quarantine reader keeps raw content away from the acting model |
+| Evaluation | Replay and practice runs against your own recorded work, graded by your verification or an independent judge |
+| Front ends | The same kernel runs headless through `npm run moss`, for CI jobs and other hosts |
 
 ### Agent execution design
 
@@ -646,6 +797,26 @@ tools run without a prompt, also after untrusted content, unless their
 arguments derive from that content. The setting is stored as
 `trustAnnotations` in `mcp-servers.json`.
 
+Some servers flag every tool that is not a pure read as destructive. The
+Playwright MCP server does this, which would mean a prompt before every
+navigation or click on every site. Moss recognizes Playwright MCP and handles it
+without any setup: it ignores the blanket flags and hides `browser_evaluate` and
+`browser_run_code` from the model, which reads pages with `browser_snapshot`
+instead. Its other tools then follow the ordinary rules for changes, so with
+auto-approve on under **Settings > Tools** they run without asking on any site.
+Uploads and installs still ask, and so does any call whose arguments name an
+irreversible action such as delete, submit, pay, send, or confirm. Page code
+runs with your signed-in session, and Moss cannot tell a script that only reads
+text from one that clicks or sends data, which is why the code tools are hidden
+rather than auto-approved.
+
+For other servers that flag everything, check **ignore destructive flags** next
+to the server under **Settings > Knowledge**; the count shows how many tools it
+flags. In `mcp-servers.json`, `ignoreDestructiveHints` and `hiddenTools` (raw
+tool names) override these defaults for any server, including Playwright; for
+example `"hiddenTools": []` offers Playwright's code tools again, and they ask
+every time they run.
+
 Server configuration may include commands, arguments, working directories,
 environment variables, URLs, and headers. Treat third-party MCP servers as code
 with the same access as the account running Moss.
@@ -689,6 +860,24 @@ with **Rank tools and lessons by meaning** on, up to three are added to the
 system prompt as guidance, not instructions. Lessons about failures are recalled
 whenever failures back them; lessons about successes need a success rate of at
 least 50 percent.
+
+#### Learned procedures
+
+When the same sequence of tools passes verification in three turns, Moss learns
+it as a procedure. Argument values that never changed stay fixed, values that
+varied become slots, and positions that always shared a value share one slot.
+The model can then call `run_procedure` with just the slots. Moss expands it
+into the procedure's ordinary tool calls, and each one goes through the normal
+permission, provenance, and approval checks. The run stops at the first failed
+step so the model can continue by hand.
+
+Procedures matter most when they carry a step a model would otherwise forget.
+Given a procedure learned from earlier version bumps that also updated
+`CHANGELOG.md`, `qwen3.5:4b` updated both files in 3 of 3 runs, against 0 of 3
+without it. A new procedure starts as a candidate, becomes trusted after three
+verified uses, and is demoted after two failures in a row. Review, trust,
+demote, restore, or delete procedures in the Library. Turn learning off under
+**Settings > Knowledge > Learned procedures**; missions never use them.
 
 ### Working state
 
@@ -764,6 +953,22 @@ for their arguments.
 The approval card names the untrusted sources, warns when the arguments reuse a
 URL, email address, long token, or eight-word passage from that content, and
 states the rule that required approval.
+
+**Quarantine reader.** Turn on **Read web, MCP, and browser content through a
+quarantine reader** under **Settings > Safety** to keep raw untrusted text away
+from the model that can act. Each untrusted result goes to a separate model
+call with no tools (the fast model when one is set), which must return a fixed
+JSON shape: a summary, facts, up to five quotes, links, and whether the content
+contained instructions. The acting model sees only that extract. Quotes are kept
+only when they appear verbatim in the content, and links only when they are real
+URLs the content contains; link text must also appear in the content. Facts and summary
+sentences that read like instructions or name tools are dropped, even if the
+reader passed them on. If the reader fails, the content is withheld and only its
+links are passed on. The reader asks reasoning models to answer without a
+thinking phase, and retries without that request on servers that reject it. Provenance still tracks the raw text, so approvals work as
+before. In a test with a release-notes page containing a planted instruction to
+write a file, `qwen3.5:4b` attempted the write in 3 of 4 runs without the reader
+and 0 of 4 with it, and still summarized the notes correctly every time.
 
 If you rely on browser or MCP automation and accept the risk, turn off **Ask
 before changes that follow web, MCP, or browser content** under **Settings >
@@ -856,6 +1061,7 @@ and image attachment handling in a disposable Electron profile.
 | `npm run eval:health` | Validate corpus, reference solution, and grader publication health |
 | `npm run probe -- --model NAME` | Profile one or more models' tool, JSON, instruction, context, and planning reliability |
 | `npm run replay -- --trace FILE --model NAME` | Replay recorded turn traces against other models without running tools |
+| `npm run moss -- --model NAME --prompt TEXT` | Run one agent turn headless, without Electron; see [Headless runs](#headless-runs) |
 | `npm run build` | Build the Electron main process and Vite renderer |
 | `npm run check:bundle` | Enforce initial renderer JavaScript and CSS budgets |
 | `npm run pack` | Create an unpacked application directory |
@@ -868,12 +1074,61 @@ The renderer alone expects APIs injected by `electron/preload.cjs`. Running
 `npm run dev:renderer` in a normal browser is useful for targeted UI work only
 when those APIs are mocked.
 
+## Headless runs
+
+`npm run moss` runs one agent turn with the desktop app's kernel in plain
+Node.js, with no Electron: the same tools, permission policy, provenance gate,
+no-progress supervisor, verification, adaptive scaffolding, and constrained
+output. Use it in CI jobs, scripts, or another front end.
+
+```powershell
+npm run moss -- --model llama3.1:8b --prompt "What does scripts/build.mjs do?"
+npm run moss -- --model qwen2.5:7b --approve safe --verify "npm test" --prompt "Fix the failing test"
+Get-Content task.md | npm run moss -- --model ministral-3:8b --json > run.jsonl
+```
+
+* **Endpoint.** It defaults to Ollama at `http://localhost:11434/v1`. Use
+  `--base-url`, `--kind openai-compatible|anthropic`, and `--api-key-env VAR`
+  for other providers (default variable `MOSS_API_KEY`). Keys come from the
+  environment, never from the desktop app's secure storage.
+* **Approvals.** `--approve deny` (the default) refuses every call that needs
+  approval and tells the model why. `safe` runs ordinary file changes and
+  commands, but still refuses destructive calls and calls after untrusted
+  content. `ask` prompts on the terminal. No mode approves those gated calls
+  unseen.
+* **Done means verified.** With `--verify CMD` (repeatable), the run cannot
+  finish until the checks pass. A final answer that never ran them, or ran them
+  and failed, is sent back to the model with the failure. After three failed
+  attempts the run fails with exit code 1.
+* **Scaffolding.** The model's measured profile from the desktop app, or from
+  `--profile FILE` written by `npm run probe -- --output FILE`, decides the tool
+  narrowing, step guidance, and constrained output (`--constrained
+  auto|always|never`). Without a profile, the model gets every tool and no extra
+  structure.
+* **Output.** Plain mode streams the answer to stdout and tool activity to
+  stderr. `--json` writes one JSON event per line, ending with a `run-summary`
+  event; `--events-out FILE` saves the same events alongside plain output.
+* **Exit codes.** `0` done (and verified, when checks are set), `1` failed or
+  unverified, `2` bad arguments, `130` cancelled with Ctrl+C.
+* **Data folder.** Runs share the desktop app's data folder, so profiles,
+  lessons, and tool-output artifacts carry over. Override it with `--data-dir`
+  or `MOSS_USER_DATA`.
+* **Other flags.** `--workspace DIR` (default: current folder), `--prompt-file
+  FILE` or stdin instead of `--prompt`, `--max-rounds N`, `--no-tools`, and
+  `--instructions FILE` for project instructions.
+
+Backend modules resolve their data folder through
+`electron/backend/moss/runtime/user-data.ts`, so the kernel imports cleanly
+outside Electron; only secure credential storage stays desktop-only.
+
 ## Project structure
 
 ```text
 common/                  Shared IPC contracts, types, logging, and personalities
 electron/
   backend/moss/          Agent runtime, tools, tasks, providers, and persistence
+    cli/                 Headless agent runner (npm run moss)
+    runtime/             Data-folder resolution that works with or without Electron
   ipc/                   Main-process IPC handlers
   main.ts                Electron composition root
   preload.cjs            Restricted renderer bridge
@@ -907,10 +1162,16 @@ Before a release, also run `npm run pack:ci`, `npm run smoke:packaged`, and
 Tests cover renderer behavior, IPC, providers, tool execution, permissions,
 approvals, checkpoints, capability acquisition, browser and desktop boundaries,
 task recovery, verification, memory, skills, learning, and the evaluation harness.
+Model-harness tests cover capability probes, live scores, context-window fit,
+constrained output, voting, tool-call repair, cross-provider routing and
+escalation, provenance and the quarantine reader, practice runs in disposable
+git worktrees, learned procedures, one-click setup, the mission critic and model
+family independence, judged replay, and headless runs through `npm run moss`.
 The bundle gate follows the renderer assets referenced by `dist/index.html` and
-limits initial JavaScript and CSS independently. Settings, Library, Run center,
-the command palette, artifact preview, PDF extraction, DOCX extraction, and
-syntax languages load only when their workflows need them.
+limits initial JavaScript to 600 KiB and CSS to 80 KiB. Settings, Library, Run
+center, the command palette, artifact preview, PDF extraction, DOCX extraction,
+the syntax highlighter, and its languages load only when their workflows need
+them.
 
 The evaluation harness runs production-loop tasks in isolated workspaces and
 grades their end state with independent validators. It supports governed corpus
@@ -1006,6 +1267,15 @@ for the command palette and verified the getting-started guide; supervised
 mission smokes passed. Windows notifications and approval diffs still need the
 interactive checks in the [GUI smoke checklist](docs/e42-gui-smoke-checklist.md).
 
+The September 27 harness round (mission critic, judged replay, Run center
+decisions, and headless runs) passed 1,796 deterministic tests with four gated
+live tests skipped, the expanded focused lint, and coverage of 94.83% statements
+and 84.36% branches. The initial renderer bundle measured 516.4 KiB of JavaScript
+and 69.2 KiB of CSS. The unsigned package passed the packaged smoke and the
+supervised mission smokes, and `eval:health` passed. Live runs with local
+Ollama models checked the checklist critic against good and flawed reports, the
+replay judge, and headless fix-and-verify runs in `safe` and `deny` modes.
+
 See the [harness feedback loop guide](docs/harness-feedback-loop.md) for corpus
 selection, provider runs, report inspection, resume behavior, and CI tiers.
 
@@ -1095,6 +1365,15 @@ changes that follow web, MCP, or browser content** under **Settings > Safety**
 and keep auto-approve on under **Settings > Tools**. Destructive commands, email,
 and irreversible actions still ask.
 
+If the approval card says **Why approval is needed: The tool's server declares
+it destructive**, neither setting applies: the server itself flagged the tool,
+and Moss always asks before those. Moss already ignores Playwright MCP's
+blanket flags; for another server, check **ignore destructive flags** next to it
+under **Settings > Knowledge** (see [Model Context Protocol](#model-context-protocol)).
+The setting is per server, so it covers every site that server visits.
+The card can still show the untrusted-content warning for information after
+you turn the gate off.
+
 ### A small local model writes tool calls as text
 
 Moss repairs calls written as text automatically. If the model still misuses
@@ -1104,6 +1383,14 @@ set **Constrained tool output** to **Always** for the current model under
 **Routing and adaptation**. Constrained output needs an OpenAI-compatible
 endpoint whose server supports JSON-schema `response_format`, which current
 Ollama versions do.
+
+### A local model is slow or cuts off long prompts
+
+Open **Settings > Models > Capability profile** and select **Check context
+window**. If Ollama serves more context than fits in GPU memory, part of the
+model runs on the CPU; if it serves too little, long prompts are cut off. Create
+the suggested variant to fix either. If even a small context does not fit, the
+check says so; choose a smaller model or quantization.
 
 ### An approval shows no diff
 

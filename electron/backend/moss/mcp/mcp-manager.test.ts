@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { loadMcpServers } from "./mcp-config";
-import { adaptMcpTool, mcpManager, mcpToolRisk } from "./mcp-manager";
+import { adaptMcpTool, effectiveServerOptions, mcpManager, mcpToolRisk } from "./mcp-manager";
+import { resolvePermission } from "../permission";
 
 // reconnect() reloads a server's current config from disk; mock only the config
 // loader so reconnect is deterministic while the SDK stays real.
@@ -53,6 +54,12 @@ describe("mcpManager stdio integration", () => {
     await mcpManager.init([{ type: "stdio", id: "echo", command: process.execPath, args: [fixture], trustAnnotations: true }]);
     expect(mcpManager.getStatus()[0]).toMatchObject({ trustAnnotations: true, readOnlyTools: ["echo"] });
     expect(mcpManager.getTools()[0].readOnly).toBe(true);
+  }, 20_000);
+
+  it("hides configured tools from the model and reports them", async () => {
+    await mcpManager.init([{ type: "stdio", id: "echo", command: process.execPath, args: [fixture], hiddenTools: ["echo"] }]);
+    expect(mcpManager.getTools()).toHaveLength(0);
+    expect(mcpManager.getStatus()[0]).toMatchObject({ connected: true, toolCount: 0, hiddenTools: ["echo"] });
   }, 20_000);
 
   it("isolates a failed server without throwing", async () => {
@@ -102,6 +109,20 @@ describe("mcpManager stdio integration", () => {
 });
 
 
+describe("recognized server defaults", () => {
+  const playwright = { type: "stdio" as const, id: "playwright", command: "npx", args: ["-y", "@playwright/mcp@latest"] };
+
+  it("quiets Playwright MCP with no configuration", () => {
+    expect(effectiveServerOptions(playwright)).toEqual({ ignoreDestructiveHints: true, hiddenTools: ["browser_evaluate", "browser_run_code"] });
+    expect(effectiveServerOptions({ type: "http", id: "pw", url: "http://localhost:8931/@playwright/mcp" }).ignoreDestructiveHints).toBe(true);
+  });
+
+  it("lets explicit settings override the defaults, and leaves other servers alone", () => {
+    expect(effectiveServerOptions({ ...playwright, ignoreDestructiveHints: false, hiddenTools: [] })).toEqual({ ignoreDestructiveHints: false, hiddenTools: [] });
+    expect(effectiveServerOptions({ type: "stdio", id: "db", command: "node", args: ["db.js"] })).toEqual({ ignoreDestructiveHints: false, hiddenTools: [] });
+  });
+});
+
 describe("MCP tool annotations", () => {
   it("trusts read-only claims only when asked, and destructive claims always", () => {
     expect(mcpToolRisk({ annotations: { readOnlyHint: true } }, false)).toEqual({});
@@ -112,5 +133,23 @@ describe("MCP tool annotations", () => {
     const client = { callTool: vi.fn() };
     const tool = adaptMcpTool("db", client as never, { name: "drop", inputSchema: {}, annotations: { destructiveHint: true } });
     expect(tool).toMatchObject({ name: "mcp__db__drop", destructive: true });
+  });
+
+  it("can ignore a server's blanket destructive flags, except for code, uploads, and installs", () => {
+    const flagged = { annotations: { destructiveHint: true } };
+    expect(mcpToolRisk({ ...flagged, name: "browser_navigate" }, false, true)).toEqual({ checkIrreversible: true });
+    expect(mcpToolRisk({ ...flagged, name: "browser_click" }, false, true)).toEqual({ checkIrreversible: true });
+    for (const name of ["browser_evaluate", "browser_run_code", "browser_file_upload", "browser_install"]) {
+      expect(mcpToolRisk({ ...flagged, name }, false, true)).toMatchObject({ destructive: true, destructiveReason: expect.stringContaining("Moss always asks") });
+      // Moss's reason replaces the server's even when its flags are honored.
+      expect(mcpToolRisk({ ...flagged, name }, false, false).destructiveReason).toBeDefined();
+    }
+    const evaluate = adaptMcpTool("playwright", { callTool: vi.fn() } as never, { name: "browser_evaluate", description: "Evaluate JavaScript.", inputSchema: {}, ...flagged }, { ignoreDestructiveHints: true });
+    expect(evaluate.description).toContain("prefer the server's snapshot or text tool");
+    expect(resolvePermission({ name: evaluate.name, autoApprove: true, destructive: evaluate.destructive, destructiveReason: evaluate.destructiveReason }))
+      .toMatchObject({ action: "prompt", rule: expect.stringContaining("runs code inside the page") });
+    const tool = adaptMcpTool("playwright", { callTool: vi.fn() } as never, { name: "browser_navigate", inputSchema: {}, ...flagged }, { ignoreDestructiveHints: true });
+    expect(tool.destructive).toBeUndefined();
+    expect(tool.checkIrreversible).toBe(true);
   });
 });

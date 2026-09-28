@@ -13,7 +13,7 @@ import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import { createLogger } from "../../../../common/logger";
 import type { CheckpointFile, CheckpointRevertResult } from "../../../../common/types";
@@ -60,7 +60,7 @@ export class CheckpointStore {
   constructor(private readonly baseDir?: string) {}
 
   private dir(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "checkpoints");
+    return join(this.baseDir ?? userDataDir(), "checkpoints");
   }
 
   private file(turnId: string): string {

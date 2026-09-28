@@ -1,4 +1,18 @@
+import { checkCriticIndependence, workerModels } from "@common/model-family";
 import type { TaskAcceptanceCriterion, TaskCriterionVerification } from "@common/types";
+
+import type { MossSettings } from "../lib/settings";
+
+export interface CriticSetup {
+  model?: string;
+  workers: string[];
+}
+
+/** The configured critic and the models it must be independent of. */
+export function criticSetup(settings: Pick<MossSettings, "model" | "fastModel" | "fastRoute" | "escalationModel" | "escalationRoute" | "criticModel" | "criticRoute">): CriticSetup {
+  const model = settings.criticRoute?.model ?? settings.criticModel;
+  return { ...(model ? { model } : {}), workers: workerModels(settings) };
+}
 
 export interface MissionContract {
   criteria: TaskAcceptanceCriterion[];
@@ -24,7 +38,9 @@ function updateVerification(
         ? { kind, path: "" }
         : kind === "file-contains"
           ? { kind, path: "", substring: "" }
-          : { kind, url: "", expectedStatus: 200 };
+          : kind === "critic"
+            ? { kind, rubric: "", paths: [] }
+            : { kind, url: "", expectedStatus: 200 };
   return { ...criterion, verification };
 }
 
@@ -32,6 +48,7 @@ export function missionContractIssues(
   contract: MissionContract,
   configuredCommands: string[],
   workspaceRoot?: string | null,
+  critic?: CriticSetup,
 ): string[] {
   const issues: string[] = [];
   const mandatory = contract.criteria.filter((criterion) => criterion.mandatory);
@@ -60,6 +77,11 @@ export function missionContractIssues(
       issues.push(`${label} needs a workspace-relative path.`);
     } else if (verification.kind === "file-contains" && (!verification.path.trim() || !verification.substring.trim())) {
       issues.push(`${label} needs a path and expected text.`);
+    } else if (verification.kind === "critic") {
+      const independence = checkCriticIndependence(critic?.model, critic?.workers ?? []);
+      if (!independence.ok) issues.push(`${label}: ${independence.reason}`);
+      if ((verification.paths ?? []).some((path) => path.trim()) && !workspaceRoot) issues.push(`${label} needs a selected workspace for the files the critic reviews.`);
+      if ((verification.paths ?? []).filter((path) => path.trim()).length > 5) issues.push(`${label} can name at most five files for the critic.`);
     } else if (verification.kind === "http") {
       try {
         const url = new URL(verification.url);
@@ -100,7 +122,7 @@ export function MissionContractEditor({
           Outcome contract
         </h3>
         <p className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
-          Every mandatory outcome needs a host-run verification method before launch.
+          Every mandatory outcome needs a host-run verification method, or an independent critic, before launch.
         </p>
       </div>
       <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
@@ -140,6 +162,7 @@ export function MissionContractEditor({
                     <option value="file-exists">File or folder exists</option>
                     <option value="file-contains">File contains text</option>
                     <option value="http">HTTP response</option>
+                    <option value="critic">Independent critic review</option>
                   </select>
                 </label>
                 {contract.criteria.length > 1 ? (
@@ -228,6 +251,44 @@ export function MissionContractEditor({
                       }))}
                     />
                   </label>
+                </div>
+              ) : verification?.kind === "critic" ? (
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] text-neutral-500 dark:text-neutral-300">
+                    How the critic should judge it (optional)
+                    <textarea
+                      aria-label={`Critic rubric ${index + 1}`}
+                      className="mt-0.5 h-12 w-full resize-y rounded border border-neutral-300 bg-neutral-100 px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
+                      value={verification.rubric ?? ""}
+                      onChange={(event) => updateCriterion(index, (current) => ({
+                        ...current,
+                        verification: { kind: "critic", rubric: event.target.value, paths: current.verification?.kind === "critic" ? current.verification.paths ?? [] : [] },
+                      }))}
+                      placeholder="For example: names at least three vendors with prices and a source for each"
+                    />
+                  </label>
+                  <label className="block text-[11px] text-neutral-500 dark:text-neutral-300">
+                    Workspace files to review, comma-separated (optional)
+                    <input
+                      aria-label={`Critic files ${index + 1}`}
+                      className="mt-0.5 w-full rounded border border-neutral-300 bg-neutral-100 px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
+                      value={(verification.paths ?? []).join(",")}
+                      onChange={(event) => updateCriterion(index, (current) => ({
+                        ...current,
+                        verification: {
+                          kind: "critic",
+                          rubric: current.verification?.kind === "critic" ? current.verification.rubric ?? "" : "",
+                          // Untrimmed so typing a space inside a name survives; the verifier trims.
+                          paths: event.target.value.split(","),
+                        },
+                      }))}
+                      placeholder="reports/vendors.md"
+                    />
+                  </label>
+                  <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                    A model from a different family than the ones doing the work reads the step&apos;s artifacts and these files, with no
+                    tools, and must quote them to pass. This is a judgement, not a deterministic check.
+                  </p>
                 </div>
               ) : verification?.kind === "http" ? (
                 <div className="grid gap-2 sm:grid-cols-[1fr_7rem]">

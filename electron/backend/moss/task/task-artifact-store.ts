@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { app } from "electron";
+import { userDataDir } from "../runtime/user-data";
 
 import type { TaskArtifactReference } from "../../../../common/types";
 import { writeFileAtomic } from "../persistence/atomic-file";
@@ -68,7 +68,7 @@ export class TaskArtifactStore {
   }
 
   private root(): string {
-    return join(this.baseDir ?? app.getPath("userData"), "task-artifacts");
+    return join(this.baseDir ?? userDataDir(), "task-artifacts");
   }
 
   private file(taskId: string, id: string): string {
