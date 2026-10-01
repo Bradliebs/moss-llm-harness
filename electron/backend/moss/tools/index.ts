@@ -47,4 +47,4 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = TOOLS.map((t) => ({
   parameters: t.parameters,
 }));
 
-export type { Tool, ToolContext, ToolResult } from "./types";
+export type { DelegateReport, Tool, ToolContext, ToolResult } from "./types";

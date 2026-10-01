@@ -60,6 +60,46 @@ describe("classifyCommand", () => {
   it("treats an empty command as mutating", () => {
     expect(classifyCommand("   ")).toBe("mutating");
   });
+
+  it("splits on a single & so a chained mutation cannot hide behind a read", () => {
+    expect(classifyCommand("ls & rm foo")).toBe("mutating");
+    expect(classifyCommand("dir & del important.txt")).toBe("mutating");
+    expect(classifyCommand("dir\rdel important.txt")).toBe("mutating");
+    expect(classifyCommand("git status && git diff")).toBe("readonly");
+  });
+
+  it("never auto-runs commands that run other commands or print secrets", () => {
+    for (const c of ["env rm foo", "env", "printenv OPENAI_API_KEY", "echo %OPENAI_API_KEY%", "echo $ANTHROPIC_API_KEY", "echo ${HOME}", "echo $env:MOSS_API_KEY"]) {
+      expect(classifyCommand(c)).toBe("mutating");
+    }
+  });
+
+  it("flags rm -r or -f in any argument position as destructive", () => {
+    expect(classifyCommand("rm foo -rf")).toBe("destructive");
+    expect(classifyCommand("rm build --force")).toBe("destructive");
+  });
+
+  it("catches paths hidden behind redirection, options, and root-relative forms", () => {
+    for (const c of ["cat \"\"/etc/passwd", "cat ''/etc/passwd", "cat \"C\":/x", "cat \"..\\\"/x", "cat ^..\\x", "cat </etc/passwd", "type <C:\\x", "type \\Users\\me\\.ssh\\id_rsa", "dir \\Windows", "cat --file=/etc/passwd", "grep -f/etc/passwd x", "cat $'/etc/passwd'", "grep '^a$' notes.txt"]) {
+      expect(classifyCommand(c)).toBe("mutating");
+    }
+  });
+
+  it("treats read-only commands with writing or program-running options as mutating", () => {
+    for (const c of ["git diff --output=x.txt", "git log --output=f", "rg --pre=./run.sh foo", "git diff --ext-diff"]) {
+      expect(classifyCommand(c)).toBe("mutating");
+    }
+    expect(classifyCommand("git log --oneline -5")).toBe("readonly");
+  });
+
+  it("asks before reading outside the workspace", () => {
+    for (const c of ["cat /etc/passwd", "type C:\\Users\\me\\.ssh\\id_rsa", "cat ../secrets.txt", "cat ~/.aws/credentials", "dir \\\\server\\share", "ls /"]) {
+      expect(classifyCommand(c)).toBe("mutating");
+    }
+    for (const c of ["dir /s", "dir /b src", "ls src/lib", "cat ./notes.txt", "grep -r todo src"]) {
+      expect(classifyCommand(c)).toBe("readonly");
+    }
+  });
 });
 
 describe("resolvePermission", () => {

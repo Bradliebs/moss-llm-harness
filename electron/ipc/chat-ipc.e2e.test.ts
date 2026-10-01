@@ -400,9 +400,9 @@ describe("chat IPC turn (e2e)", () => {
           async *streamChat(input) {
             criticRequests.push({ model: input.model, tools: input.tools, content: input.messages.map((message) => message.content).join("\n") });
             yield { type: "text-delta", text: JSON.stringify({ checks: [
-              { requirement: "Three vendors", item: "report", met: true, evidence: "" },
-              { requirement: "Each vendor has a price", item: "Acme", met: true, evidence: "Acme | $10" },
-              { requirement: "Each vendor has a price", item: "Cedar", met: true, evidence: "Cedar | $9" },
+              { requirement_number: 1, requirement: "Three vendors", item: "report", met: true, evidence: "" },
+              { requirement_number: 1, requirement: "Each vendor has a price", item: "Acme", met: true, evidence: "Acme | $10" },
+              { requirement_number: 1, requirement: "Each vendor has a price", item: "Cedar", met: true, evidence: "Cedar | $9" },
             ] }) };
             yield { type: "usage", usage: { inputTokens: 50, outputTokens: 30 } };
           },

@@ -67,6 +67,7 @@ vi.mock("../lib/settings", () => ({
   readinessProfilePatch: vi.fn((profile: string) => ({ readinessProfile: profile })),
   applyPreset: vi.fn(),
   saveProviderCredential: vi.fn(() => Promise.resolve()),
+  storedUnencrypted: vi.fn(() => false),
   updateSettings: vi.fn(),
   toProviderConfig: vi.fn(() => ({})),
   toEmbedConfig: vi.fn(() => ({ baseUrl: "http://x", model: "nomic-embed-text" })),
@@ -249,6 +250,21 @@ describe("SettingsPanel", () => {
     fireEvent.change(input, { target: { value: "provider-secret" } });
     fireEvent.blur(input, { target: { value: "provider-secret" } });
     await waitFor(() => expect(settings.saveProviderCredential).toHaveBeenCalledWith("provider-secret"));
+  });
+
+  it("asks GitHub Copilot users for an optional GitHub token instead of a base URL", async () => {
+    const previous = { kind: settingsValue.kind, baseUrl: settingsValue.baseUrl };
+    Object.assign(settingsValue, { kind: "github-copilot", baseUrl: "https://api.githubcopilot.com" });
+    try {
+      render(<SettingsPanel onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByText("No MCP servers configured or connected.")).toBeDefined());
+      expect(screen.queryByPlaceholderText("Base URL")).toBeNull();
+      expect(screen.getByLabelText("GitHub token")).toBeDefined();
+      expect(screen.getByPlaceholderText("Empty: use the GitHub CLI sign-in")).toBeDefined();
+      expect(screen.getByText(/each\s+prompt counts toward your Copilot usage/)).toBeDefined();
+    } finally {
+      Object.assign(settingsValue, previous);
+    }
   });
 
   it("stores a selected Moss avatar", async () => {

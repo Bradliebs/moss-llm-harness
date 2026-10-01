@@ -23,6 +23,9 @@ export interface Session {
   pinned?: boolean;
   /** governed working state: invariants, protected paths, decisions, facts, questions */
   workingState?: WorkingState;
+  /** leading messages the user reviewed; untrusted content in them no longer
+   *  makes later changes ask for approval */
+  trustedThrough?: number;
 }
 
 interface SessionsState {
@@ -144,6 +147,21 @@ export function setSessionPinned(id: string, pinned: boolean): void {
   sessionsState.update((prev) => ({
     ...prev,
     sessions: prev.sessions.map((s) => (s.id === id ? { ...s, pinned } : s)),
+  }));
+}
+
+export function getSessionTrustedThrough(id: string): number | undefined {
+  return sessionsState.get().sessions.find((s) => s.id === id)?.trustedThrough;
+}
+
+export function setSessionTrustedThrough(id: string, count: number | undefined): void {
+  sessionsState.update((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((s) => {
+      if (s.id !== id) return s;
+      const { trustedThrough: _previous, ...rest } = s;
+      return count && count > 0 ? { ...rest, trustedThrough: count } : rest;
+    }),
   }));
 }
 

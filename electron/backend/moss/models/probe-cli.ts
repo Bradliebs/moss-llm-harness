@@ -13,6 +13,7 @@ import { dirname, resolve } from "node:path";
 
 import type { CapabilityDimension, ModelCapabilityProfile, ProviderConfig, ProviderKind } from "../../../../common/types";
 import { createProvider } from "../providers";
+import { stopCopilotClients } from "../providers/copilot";
 import type { ChatProvider } from "../providers/types";
 import { ALL_DIMENSIONS, CONTEXT_LEVELS, DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_TIMEOUT_SECONDS, DIMENSION_LABELS, ProbeUnavailableError, runCapabilityProbes } from "./capability-probes";
 import { buildCapabilityProfile } from "./capability-profile";
@@ -36,7 +37,7 @@ export interface ProbeCliDependencies {
   writeOutput?: (path: string, text: string) => void;
 }
 
-export const PROBE_USAGE = "Usage: probe --model NAME [--model NAME ...] [--base-url URL] [--kind openai-compatible|anthropic] [--api-key-env VAR] [--max-context TOKENS] [--timeout SECONDS] [--only DIMENSION,...] [--output FILE]";
+export const PROBE_USAGE = "Usage: probe --model NAME [--model NAME ...] [--base-url URL] [--kind openai-compatible|anthropic|github-copilot] [--api-key-env VAR] [--max-context TOKENS] [--timeout SECONDS] [--only DIMENSION,...] [--output FILE]";
 
 export function parseProbeArgs(args: readonly string[], env: NodeJS.ProcessEnv = process.env): ProbeCliOptions {
   const options: ProbeCliOptions = {
@@ -59,7 +60,7 @@ export function parseProbeArgs(args: readonly string[], env: NodeJS.ProcessEnv =
     else if (flag === "--base-url") options.baseUrl = need();
     else if (flag === "--kind") {
       const kind = need();
-      if (kind !== "openai-compatible" && kind !== "anthropic") throw new Error(`Unsupported provider kind: ${kind}`);
+      if (kind !== "openai-compatible" && kind !== "anthropic" && kind !== "github-copilot") throw new Error(`Unsupported provider kind: ${kind}`);
       options.kind = kind;
     } else if (flag === "--api-key-env") apiKeyEnv = need();
     else if (flag === "--max-context") {
@@ -171,7 +172,8 @@ export async function runProbeCli(args: readonly string[], dependencies: ProbeCl
 
 if (require.main === module) {
   void runProbeCli(process.argv.slice(2))
-    .then((exitCode) => { process.exitCode = exitCode; })
+    // A Copilot runtime would otherwise keep the process alive.
+    .then(async (exitCode) => { process.exitCode = exitCode; await stopCopilotClients(); })
     .catch((error: unknown) => {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;

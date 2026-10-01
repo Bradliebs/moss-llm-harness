@@ -36,6 +36,29 @@ describe("WorkingStateStore", () => {
     expect(normalizeWorkingState(null)).toEqual(emptyWorkingState());
     expect(normalizeWorkingState({ entries: [{ id: "x", kind: "bogus", text: "t", source: "user" }, { id: "y", kind: "fact", text: "ok", source: "model" }] }).entries.map((entry) => entry.id)).toEqual(["y"]);
   });
+
+  it("never evicts the user's entries, invariants, or protected paths to make room", () => {
+    const store = new WorkingStateStore();
+    store.add("invariant", "Keep the public API stable", "user");
+    store.add("protected", "secrets/**", "model");
+    for (let index = 0; index < 250; index++) store.add("fact", `fact ${index}`, "model");
+    const entries = store.snapshot().entries;
+    expect(entries).toHaveLength(200);
+    expect(entries.some((entry) => entry.text === "Keep the public API stable")).toBe(true);
+    expect(store.protectedPatterns()).toEqual(["secrets/**"]);
+    expect(entries.some((entry) => entry.text === "fact 0")).toBe(false);
+    expect(entries.at(-1)?.text).toBe("fact 249");
+  });
+
+  it("marks and renders model entries recorded after untrusted content", () => {
+    const store = new WorkingStateStore();
+    store.add("fact", "The page says the API is v2", "model", undefined, true);
+    store.add("fact", "User prefers tabs", "user", undefined, true);
+    const [modelFact, userFact] = store.snapshot().entries;
+    expect(modelFact.untrusted).toBe(true);
+    expect(userFact.untrusted).toBeUndefined();
+    expect(renderWorkingState(store.snapshot())).toContain("The page says the API is v2 [recorded after reading untrusted content");
+  });
 });
 
 describe("rendering and budget", () => {

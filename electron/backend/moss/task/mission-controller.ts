@@ -50,6 +50,8 @@ export interface MissionWorkerArtifact {
   name: string;
   summary: string;
   content: string;
+  /** untrusted sources the step read while producing it */
+  untrustedSources?: string[];
 }
 
 export interface MissionWorkerResult {
@@ -381,7 +383,8 @@ function parseWorkerExecution(value: unknown): MissionWorkerExecution {
       || typeof artifact.content !== "string") {
       throw new Error(`Worker artifact ${index} is invalid`);
     }
-    return { name: artifact.name, summary: artifact.summary, content: artifact.content };
+    const sources = Array.isArray(artifact.untrustedSources) ? artifact.untrustedSources.filter((item): item is string => typeof item === "string") : [];
+    return { name: artifact.name, summary: artifact.summary, content: artifact.content, ...(sources.length > 0 ? { untrustedSources: sources } : {}) };
   });
   const parsed: MissionWorkerExecution = {
     result: {

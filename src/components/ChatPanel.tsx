@@ -22,6 +22,7 @@ import {
   getSessionMessages,
   getSessionPersonality,
   getSessionTitle,
+  getSessionTrustedThrough,
   getSessionWorkingState,
   selectSession,
   sessionTokenUsage,
@@ -31,6 +32,7 @@ import {
   setSessionPersonality,
   setSessionTaskId,
   setSessionTitle,
+  setSessionTrustedThrough,
   setSessionWorkingState,
   useSessions,
 } from "../lib/sessions";
@@ -86,6 +88,8 @@ interface ToolView {
   risk?: "readonly" | "mutating" | "destructive";
   /** set when untrusted content entered the turn before this approval */
   provenance?: ApprovalProvenance;
+  /** why the policy asked, when there is no untrusted-content warning to say it */
+  approvalReason?: string;
 }
 
 interface MessageView {
@@ -124,12 +128,16 @@ function ToolCard({
   onApprove,
   workspaceRoot,
   onOpenSettings,
+  onTrustEarlier,
 }: {
   tool: ToolView;
   onApprove: (callId: string, approved: boolean, comment?: string) => void;
   workspaceRoot?: string | null;
   onOpenSettings?: (category?: SettingsCategoryId) => void;
+  /** vouch for the conversation so far, so its content stops gating later turns */
+  onTrustEarlier?: () => void;
 }): React.ReactElement {
+  const [trustedEarlier, setTrustedEarlier] = useState(false);
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const [approvalComment, setApprovalComment] = useState("");
   const active = tool.status === "running" || tool.status === "approval";
@@ -173,7 +181,22 @@ function ToolCard({
                 <span className="font-semibold">Untrusted content is in play.</span> This action follows content from {tool.provenance.untrustedSources.join(", ")}, which can contain instructions written by someone else. Approve only if it serves your request.
                 {tool.provenance.copiedFromUntrusted ? <span className="mt-1 block font-semibold">Its arguments include text or links copied from that content.</span> : null}
                 {tool.provenance.rule ? <span className="mt-1 block">Why approval is needed: {tool.provenance.rule}</span> : null}
+                {onTrustEarlier ? (
+                  trustedEarlier ? (
+                    <span className="mt-1 block">Earlier messages are trusted from your next message on. This request still needs your decision.</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="mt-1 block underline hover:no-underline"
+                      onClick={() => { onTrustEarlier(); setTrustedEarlier(true); }}
+                    >
+                      I have reviewed the earlier content: stop asking because of it
+                    </button>
+                  )
+                ) : null}
               </div>
+            ) : tool.approvalReason ? (
+              <p className="mb-2 text-xs text-neutral-700 dark:text-neutral-200">Why approval is needed: {tool.approvalReason}</p>
             ) : null}
             <div className="text-[10px] font-medium uppercase text-neutral-600 dark:text-neutral-300">Review</div>
             <div className="mt-1">
@@ -702,7 +725,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     } else if (ev.type === "tool-approval-request") {
       setActivity((prev) =>
         prev.map((it) =>
-          it.kind === "tool" && it.callId === ev.callId ? { ...it, status: "approval", risk: ev.risk, ...(ev.provenance ? { provenance: ev.provenance } : {}) } : it,
+          it.kind === "tool" && it.callId === ev.callId ? { ...it, status: "approval", risk: ev.risk, ...(ev.provenance ? { provenance: ev.provenance } : {}), ...(ev.reason ? { approvalReason: ev.reason } : {}) } : it,
         ),
       );
       setAnnouncement(`Approval required for ${ev.name}.`);
@@ -811,8 +834,12 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     setStatus("");
     setErrorGuidance(null);
     setConfidence(null);
+    // Trust the user gave earlier holds only while that history is unchanged in length.
+    const trustedThrough = getSessionTrustedThrough(sessionId);
+    if (trustedThrough && trustedThrough > base.length) setSessionTrustedThrough(sessionId, undefined);
     window.moss.chat.send({
       turnId,
+      ...(trustedThrough && trustedThrough <= base.length ? { trustedHistoryLength: trustedThrough } : {}),
       ...(durableTask ? { taskId: durableTask.id } : {}),
       config: toProviderConfig(activeSettings),
       messages: [...base, userMsg],
@@ -1256,6 +1283,12 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     }
   }
 
+  /** Vouch for everything before the running turn, for the turns after it. */
+  function trustEarlierContent(): void {
+    const sessionId = turnSessionRef.current;
+    if (sessionId) setSessionTrustedThrough(sessionId, turnBaseRef.current.length);
+  }
+
   function approve(callId: string, approved: boolean, comment?: string): void {
     if (!turnIdRef.current) return;
     const normalizedComment = comment?.trim();
@@ -1605,7 +1638,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
               {it.role === "assistant" && it.turnId ? <TurnDecisions turnId={it.turnId} onOpenSettings={onOpenSettings} /> : null}
               {it.role === "assistant" && it.turnId ? <TurnUndo turnId={it.turnId} /> : null}
             </div>
-          ) : <ToolCard key={i} tool={it} onApprove={approve} workspaceRoot={settings.workspaceRoot} onOpenSettings={onOpenSettings} />
+          ) : <ToolCard key={i} tool={it} onApprove={approve} workspaceRoot={settings.workspaceRoot} onOpenSettings={onOpenSettings} onTrustEarlier={activeTurnSessionId ? trustEarlierContent : undefined} />
           );
         }))}
       </div>

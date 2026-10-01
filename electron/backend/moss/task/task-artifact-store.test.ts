@@ -34,6 +34,15 @@ describe("TaskArtifactStore", () => {
     expect(await store.get("task-1", reference.id)).toMatchObject({ ...reference, content: "full private handoff" });
   });
 
+  it("keeps the untrusted sources a step read with its artifact", async () => {
+    const reference = await store.save({
+      taskId: "task-1", planRevision: 1, stepId: "research", attemptId: "attempt-1",
+      name: "findings", summary: "From the web", content: "Acme $10", untrustedSources: ["fetch_url", "fetch_url", ""],
+    });
+    expect(reference.untrustedSources).toEqual(["fetch_url"]);
+    expect((await store.get("task-1", reference.id))?.untrustedSources).toEqual(["fetch_url"]);
+  });
+
   it("rejects unsafe keys and oversized content", async () => {
     await expect(store.save({
       taskId: "../task",

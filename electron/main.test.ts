@@ -14,6 +14,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 const env = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   webContentsHandlers: new Map<string, (...args: any[]) => unknown>(),
+  windowOpenHandler: undefined as ((details: { url: string }) => unknown) | undefined,
+  openExternal: vi.fn(),
   quit: vi.fn(),
   windows: 0,
   menuTemplate: [] as any[],
@@ -38,6 +40,9 @@ vi.mock("electron", () => {
         env.webContentsHandlers.set(event, handler);
       },
       replaceMisspelling: env.replaceMisspelling,
+      setWindowOpenHandler: (handler: (details: { url: string }) => unknown) => {
+        env.windowOpenHandler = handler;
+      },
     };
     constructor() {
       env.windows += 1;
@@ -60,6 +65,7 @@ vi.mock("electron", () => {
       quit: env.quit,
     },
     BrowserWindow,
+    shell: { openExternal: env.openExternal },
     Menu: {
       buildFromTemplate: (template: any[]) => {
         env.menuTemplate = template;
@@ -142,4 +148,12 @@ describe("main composition root", () => {
     env.handlers.get("before-quit")?.();
     expect(env.mcpClose).toHaveBeenCalled();
   });
-});
+  it("refuses new windows and sends web links to the system browser", async () => {
+    await import("./main");
+    await vi.waitFor(() => expect(env.windowOpenHandler).toBeDefined());
+    expect(env.windowOpenHandler!({ url: "https://example.com/" })).toEqual({ action: "deny" });
+    expect(env.openExternal).toHaveBeenCalledWith("https://example.com/");
+    const event = { preventDefault: vi.fn() };
+    env.webContentsHandlers.get("will-navigate")?.(event, "https://evil.example/");
+    expect(event.preventDefault).toHaveBeenCalled();
+  });});

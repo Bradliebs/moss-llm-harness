@@ -5,12 +5,13 @@
 // best-effort: a missing directory or unparsable file yields no skill rather than
 // throwing.
 
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import type { Dirent } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
 
 import { userDataDir } from "../runtime/user-data";
+import { resolveInWorkspace } from "../tools/path-guard";
 
 import { createLogger } from "../../../../common/logger";
 import type { Skill, SkillImportResult } from "../../../../common/types";
@@ -114,12 +115,17 @@ export class SkillsStore {
     const skill = this.get(nameOrId);
     if (!skill) return null;
     const root = join(this.dir(), basename(skill.id));
-    const target = resolve(root, resourcePath);
-    const rel = relative(root, target);
-    if (!rel || rel.startsWith(`..${sep}`) || rel === ".." || rel.includes(`..${sep}`)) return null;
     try {
-      if (!statSync(target).isFile() || statSync(target).size > 256_000) return null;
-      return readFileSync(target, "utf8");
+      // Lexical containment first (an absolute or other-drive path fails it),
+      // then the real path, so a link inside the skill cannot point outside.
+      const target = resolveInWorkspace(root, resourcePath);
+      const real = realpathSync(target);
+      const realRoot = realpathSync(root);
+      const rel = relative(realRoot, real);
+      if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
+      const info = statSync(real);
+      if (!info.isFile() || info.size > 256_000) return null;
+      return readFileSync(real, "utf8");
     } catch {
       return null;
     }

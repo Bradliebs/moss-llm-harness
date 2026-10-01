@@ -14,6 +14,7 @@
 // approval, because its host and path can carry data to wherever the content
 // pointed, and so does a read that reuses untrusted text.
 
+import type { AgentMessage } from "../../../../common/types";
 import { isExternalContentTool } from "./untrusted-wrap";
 
 const SHINGLE_WORDS = 8;
@@ -80,6 +81,23 @@ function argumentText(raw: string): string {
   }
 }
 
+/** Tool results from earlier turns that came from untrusted sources. Their text
+ *  is still in the conversation, so it still cannot authorize a side effect. */
+export function priorUntrustedResults(messages: readonly AgentMessage[], trustedPrefix = 0): Array<{ name: string; content: string; sources: string[] }> {
+  const names = new Map<string, string>();
+  const results: Array<{ name: string; content: string; sources: string[] }> = [];
+  messages.forEach((message, index) => {
+    for (const call of message.toolCalls ?? []) names.set(call.id, call.name);
+    // The user reviewed everything before this point and vouched for it.
+    if (index < trustedPrefix || message.role !== "tool" || !message.toolCallId) return;
+    const name = names.get(message.toolCallId) ?? "tool";
+    const sources = [...(isUntrustedSource(name) ? [name] : []), ...(message.untrustedSources ?? [])];
+    if (sources.length === 0 && /^<external_content source="/.test(message.content.trimStart())) sources.push("external_content");
+    if (sources.length > 0) results.push({ name, content: message.content, sources });
+  });
+  return results;
+}
+
 export class ProvenanceTracker {
   private readonly sources = new Set<string>();
   private readonly shingleSet = new Set<string>();
@@ -95,10 +113,12 @@ export class ProvenanceTracker {
     return [...this.sources];
   }
 
-  /** Record a tool result; only untrusted sources taint the turn. */
-  observe(toolName: string, content: string): void {
-    if (!isUntrustedSource(toolName)) return;
-    this.sources.add(toolName.startsWith("mcp__") ? toolName.split("__").slice(0, 2).join("__") : toolName);
+  /** Record a tool result; only untrusted sources taint the turn. A result can
+   *  name the sources it carries when its tool name does not reveal them. */
+  observe(toolName: string, content: string, carriedSources: readonly string[] = []): void {
+    const sources = [...(isUntrustedSource(toolName) ? [toolName] : []), ...carriedSources];
+    if (sources.length === 0) return;
+    for (const source of sources) this.sources.add(source.startsWith("mcp__") ? source.split("__").slice(0, 2).join("__") : source);
     const remaining = MAX_TRACKED_CHARS - this.trackedChars;
     if (remaining <= 0) return;
     const text = content.slice(0, remaining);

@@ -288,10 +288,45 @@ disposable Electron profile without model calls.
 | Ollama | OpenAI-compatible | `http://localhost:11434/v1` | Not normally required |
 | OpenAI | OpenAI-compatible | `https://api.openai.com/v1` | Required |
 | Anthropic | Anthropic | `https://api.anthropic.com` | Required |
+| GitHub Copilot | GitHub Copilot | Not needed | Optional GitHub token; otherwise your GitHub CLI sign-in |
 | Custom | OpenAI-compatible | User supplied | Provider dependent |
 
 Custom OpenAI-compatible servers must expose model listing and chat completion
 endpoints compatible with `/models` and `/chat/completions`.
+
+### GitHub Copilot
+
+Choose **GitHub Copilot** under **Settings > Models > Provider** to use the
+models in your Copilot subscription, such as Claude, GPT, and Grok models. Moss
+connects through GitHub's official Copilot SDK; GitHub retired the separate
+GitHub Models API in July 2026.
+
+* **Sign-in.** Moss uses your GitHub CLI sign-in (`gh auth login`), reading the
+  token from `gh auth token` each time it connects and never storing it. To use
+  another account, enter a GitHub token in **GitHub token**; it is kept in the
+  OS-backed credential store. Select **Load** to check the sign-in and list the
+  models your plan allows.
+* **Usage.** You need a Copilot subscription, and prompts count toward your
+  Copilot allowance. A turn that runs several tool rounds stays on one Copilot
+  session, so the model's tool calls do not each start a new prompt.
+* **Who runs the tools.** Copilot only decides which of Moss's tools to call.
+  Copilot's own tools (shell, file edits, web) are never enabled; Moss runs every
+  call itself, with its approvals, untrusted-content gate, protected paths, and
+  verification. Tool names are sent to Copilot with a `moss_` prefix so they
+  cannot be confused with its built-in tools.
+* **Routing.** Copilot works as the chat model, the escalation or fast model, or
+  the mission critic. It counts as a remote route, so escalating to it shows the
+  usual notice. Pick a critic from a different model family than the worker.
+* **Cost caps.** Copilot is billed by subscription, so Moss does not know a
+  per-token price. A mission with a cost cap refuses a model without a known
+  rate; set a rate for the model under pricing (0 if only your allowance
+  matters) to use it there.
+* **Headless.** `npm run moss -- --kind github-copilot --model claude-sonnet-5`
+  works the same way, with `--api-key-env` naming a variable that holds a GitHub
+  token when the GitHub CLI is not signed in.
+* **Size.** The SDK includes the Copilot runtime, which adds about 130 MB to the
+  installed app. Responses that must match a JSON schema are requested in the
+  system message, because Copilot has no constrained-output option.
 
 ### Set up for this PC
 
@@ -581,8 +616,8 @@ untrusted content is used for decision replay only and never run forward
 unattended. The copy is removed afterwards without following the dependency
 links, and your workspace is never touched. Only models on this PC take part.
 
-Turn on **Practice while this PC is idle** to run at most once a day after 20
-idle minutes on mains power; starting a turn stops a run immediately. **Practice
+Turn on **Practice while this PC is idle** to run after 20 idle minutes on mains
+power, at most once every 20 hours; starting a turn stops a run immediately. **Practice
 now** runs on demand. The report shows each candidate's decision agreement,
 valid arguments, median reply time, and verified tasks, and practice outcomes
 feed the live scores at half weight. Moss recommends a change only with clear
@@ -610,7 +645,13 @@ you can configure dedicated endpoints in Settings:
 * Codebase embeddings through an OpenAI-compatible `/embeddings` endpoint
 * Email delivery through Resend with a verified sender address, or through
   Gmail or another SMTP account over TLS. Gmail needs an app password (Google
-  Account > Security > App passwords), not your normal password.
+  Account > Security > App passwords), not your normal password. A bare name in
+  **From name** sends as that name at the account address. The Resend key and
+  the SMTP password are kept in the OS-backed credential store, not in
+  localStorage; values saved by earlier versions move there on the next start.
+  On a PC without secure credential storage they stay in Moss's settings
+  instead, and the field says they are stored unencrypted.
+  Every send asks for approval.
 
 ## Task execution
 
@@ -634,10 +675,13 @@ match entries enabled under **Settings > Verification**.
 A critic check is for work a command cannot grade, such as a research report or
 a summary. The critic from **Settings > Models > Routing and adaptation** reads
 the step's artifacts and up to five bound workspace files, then answers a
-checklist: each requirement in the criterion and optional rubric, whether it is
-met, and a quote as evidence. Moss decides the verdict, not the critic: every
-requirement must be met, and quoted evidence must actually appear in the
-materials. A review with invented quotes fails, and so does one where fewer than
+numbered checklist. Moss numbers the requirements itself: each line or sentence
+of the rubric, or the criterion when there is no rubric. The critic reports, per
+requirement and item, whether it is met, with a quote as evidence. Moss decides
+the verdict, not the critic: every numbered requirement must be checked and met,
+and quoted evidence must actually appear in the materials. A checklist that
+skips a requirement is sent back once, naming what it missed. A review with
+invented quotes fails, and so does one where fewer than
 half the checks quote verified evidence. Materials flagged for prompt injection,
 or no materials at all, are refused rather than reviewed. Critic calls are
 charged to the mission budget. In testing, small local critics that approved a
@@ -802,22 +846,40 @@ arguments derive from that content. The setting is stored as
 Some servers flag every tool that is not a pure read as destructive. The
 Playwright MCP server does this, which would mean a prompt before every
 navigation or click on every site. Moss recognizes Playwright MCP and handles it
-without any setup: it ignores the blanket flags and hides `browser_evaluate` and
-`browser_run_code` from the model, which reads pages with `browser_snapshot`
-instead. Its other tools then follow the ordinary rules for changes, so with
-auto-approve on under **Settings > Tools** they run without asking on any site.
-Uploads and installs still ask, and so does any call whose arguments name an
-irreversible action such as delete, submit, pay, send, or confirm. Page code
-runs with your signed-in session, and Moss cannot tell a script that only reads
-text from one that clicks or sends data, which is why the code tools are hidden
-rather than auto-approved.
+without any setup:
+
+* Its blanket destructive flags are ignored, and its read-only flags (snapshot,
+  screenshot, console) are trusted.
+* `browser_evaluate` and `browser_run_code` are hidden from the model, which
+  reads pages with `browser_snapshot` instead.
+* Opening a page counts as a read, like the built-in browser: after untrusted
+  content it asks only when the URL derives from that content rather than being
+  a link followed exactly as written. Only public `http` and `https` pages count;
+  `file:`, `javascript:`, and `data:` URLs, and addresses on this computer or a
+  private network, always ask.
+
+With auto-approve on under **Settings > Tools**, navigation, snapshots, clicks,
+and typing then run without asking on any site. While **Ask before changes that
+follow web, MCP, or browser content** is on (the default), clicks and typing
+after a page has loaded still ask, as every change after untrusted content does;
+reads and plain navigation do not. Uploads and installs always ask, and so does
+any click or entry on a control named for an irreversible action such as buy,
+order, pay, send, submit, or delete. Page code runs with your signed-in session, and Moss
+cannot tell a script that only reads text from one that clicks or sends data,
+which is why the code tools are hidden rather than auto-approved.
 
 For other servers that flag everything, check **ignore destructive flags** next
 to the server under **Settings > Knowledge**; the count shows how many tools it
-flags. In `mcp-servers.json`, `ignoreDestructiveHints` and `hiddenTools` (raw
-tool names) override these defaults for any server, including Playwright; for
-example `"hiddenTools": []` offers Playwright's code tools again, and they ask
-every time they run.
+flags. In `mcp-servers.json`, `trustAnnotations`, `ignoreDestructiveHints`, and
+`hiddenTools` (raw tool names) override these defaults for any server, including
+Playwright; for example `"hiddenTools": []` offers Playwright's code tools
+again, and they ask every time they run.
+
+A stdio server without a configured working directory runs in its own folder
+under the Moss data folder (`mcp-servers/<id>`), so files it saves, such as
+Playwright snapshots and screenshots, land there rather than in the folder Moss
+was started from. A server launched with a relative path, such as
+`node ./server.js`, needs `cwd` set in its configuration.
 
 Server configuration may include commands, arguments, working directories,
 environment variables, URLs, and headers. Treat third-party MCP servers as code
@@ -892,6 +954,12 @@ questions, and established facts. Open it with **State** in the chat header.
 * The model records decisions, facts, and questions with the `working_state`
   tool. It can retire its own facts and answered questions, but it cannot remove
   invariants, protected paths, decisions, or anything you wrote.
+* After untrusted content has entered the conversation, an invariant,
+  decision, or protected path the model records needs your approval while the untrusted-content
+  gate is on, because it would steer every later round. Facts and questions it
+  records then are marked as coming after untrusted content.
+* At 200 entries the oldest model facts, questions, and decisions make room
+  first; your entries, invariants, and protected paths are never evicted.
 * The state is rendered into the system message on every model round and sized
   to the context window: invariants and protected paths are always included,
   and older facts are dropped first when space runs short.
@@ -918,11 +986,32 @@ irreversible effects.
 
 * Retrieved files, command output, web pages, and tool results are treated as
   untrusted data rather than instructions
-* File paths are resolved inside the configured workspace
+* File paths are resolved inside the configured workspace, including through
+  symbolic links and junctions, which may not point outside it
+* Commands run without a prompt only when every part is a known read-only
+  command that stays in the workspace: no `&` or `;` chains to other commands,
+  input or output redirection, `$` or `%VAR%` expansion (which could print API
+  keys), `env`, options that write files or run programs such as
+  `--output` or `--pre`, or paths outside the workspace, including ones after an
+  option such as `--file=/etc/passwd`
+* While verification has commands to run, changes to the files that define
+  the checks need approval even under auto-approve, so a model cannot make the
+  checks pass without a fix. That covers `package.json`, lockfiles,
+  `tsconfig*.json`, `*.config.*`, Python, Rust, Go, Maven, Gradle, .NET, and Ruby
+  build files, `scripts/`, and CI workflows, whether a file tool or a command
+  such as `npm pkg set` or `sed -i` changes them, and moving a folder that holds
+  them
 * Browser destinations are checked against a domain allowlist
 * Desktop sessions require process and window allowlists
 * Tool approvals are tied to runtime call identity instead of model-authored text
-* Destructive commands and final browser or desktop actions require approval
+* The app window only ever shows Moss's own interface: links open in your
+  browser, new windows are refused, and requests to add MCP servers, read or
+  store keys, or authorize missions are answered only for the app's own page
+* Destructive commands and final browser or desktop actions require approval.
+  Final actions are recognized by the label of the control: buy, order,
+  checkout, pay, transfer, book, send, submit, publish, confirm, delete, and
+  similar words. A button labelled only with an icon or an unusual word is not
+  recognized
 * Untrusted content can inform a decision but never authorize a side effect
 * Working-state protected paths are enforced by the host
 * Verification failures prevent successful task completion
@@ -931,12 +1020,18 @@ irreversible effects.
 Auto-approval can reduce prompts for eligible reversible actions. It does not
 bypass controls for irreversible operations.
 
-Once content from outside your request enters a turn, every later change needs
-your explicit approval, even with auto-approve on or under a policy-scoped
-mission grant. Untrusted sources are web search, fetched URLs, MCP servers,
-browser and desktop inspection, and audio transcription. Memory writes and
-deletions are included, so a web page cannot plant or erase durable memories.
-Read-only actions still run without a prompt.
+Once content from outside your request enters a conversation, every later change
+needs your explicit approval, even with auto-approve on or under a
+policy-scoped mission grant. This lasts beyond the turn that read the content,
+because its text stays in the conversation. Untrusted sources are web search,
+fetched URLs, MCP servers, browser and desktop inspection, and audio
+transcription, plus a subagent report, a stored tool-output artifact, or a
+mission step's artifact built from them, so a later mission step that acts on
+a research step's findings asks too. When you have read what came in, select
+**I have reviewed the earlier content** on the approval card's warning: from
+your next message on, content from before that point no longer makes changes
+ask. Editing or regenerating an earlier message withdraws that trust. Memory writes and deletions are included, so a web page cannot plant
+or erase durable memories. Read-only actions still run without a prompt.
 
 Reads that reach the network are tracked at the data level, so research does not
 drown in prompts. Under auto-approve, `web_search`, `fetch_url`, and
@@ -980,7 +1075,8 @@ email, and irreversible browser or desktop actions still always ask.
 Approval prompts describe the effect instead of showing only raw arguments.
 File writes show a line diff against the file's current workspace content, or
 mark the file as new. Edits show the replaced snippet, moves show both paths,
-and commands show the working folder and time limit. The raw arguments remain
+commands show the working folder and time limit, and emails show the sending
+account, recipients, subject, and message. The raw arguments remain
 available beneath the preview. When a tool is blocked, the tool card names the
 rule that applied, such as the workspace sandbox, a browser or desktop
 allow-list, mission authority, or your denial, and links to the Settings
@@ -1079,9 +1175,12 @@ when those APIs are mocked.
 ## Headless runs
 
 `npm run moss` runs one agent turn with the desktop app's kernel in plain
-Node.js, with no Electron: the same tools, permission policy, provenance gate,
+Node.js, with no Electron: the same permission policy, provenance gate,
 no-progress supervisor, verification, adaptive scaffolding, and constrained
-output. Use it in CI jobs, scripts, or another front end.
+output. Use it in CI jobs, scripts, or another front end. It offers the
+built-in workspace, git, command, web, and delegate tools. MCP servers, skills,
+memory, working state, email, transcription, and the quarantine reader are not
+available headless, so a run never writes the desktop app's memory.
 
 ```powershell
 npm run moss -- --model llama3.1:8b --prompt "What does scripts/build.mjs do?"
@@ -1090,14 +1189,17 @@ Get-Content task.md | npm run moss -- --model ministral-3:8b --json > run.jsonl
 ```
 
 * **Endpoint.** It defaults to Ollama at `http://localhost:11434/v1`. Use
-  `--base-url`, `--kind openai-compatible|anthropic`, and `--api-key-env VAR`
+  `--base-url`, `--kind openai-compatible|anthropic|github-copilot`, and `--api-key-env VAR`
   for other providers (default variable `MOSS_API_KEY`). Keys come from the
-  environment, never from the desktop app's secure storage.
+  environment, never from the desktop app's secure storage, and are removed
+  from it before any command runs, so the model cannot print them.
 * **Approvals.** `--approve deny` (the default) refuses every call that needs
   approval and tells the model why. `safe` runs ordinary file changes and
   commands, but still refuses destructive calls and calls after untrusted
-  content. `ask` prompts on the terminal. No mode approves those gated calls
-  unseen.
+  content. Ordinary commands include network and publishing commands such as
+  `git push` or `npm publish`, so use `safe` only in a disposable checkout or
+  a CI job whose credentials you are willing to let the model use. `ask`
+  prompts on the terminal. No mode approves those gated calls unseen.
 * **Done means verified.** With `--verify CMD` (repeatable), the run cannot
   finish until the checks pass. A final answer that never ran them, or ran them
   and failed, is sent back to the model with the failure. After three failed
@@ -1254,7 +1356,8 @@ acceptance and baseline promotion remain subject to the evidence and review gate
 The September 22 harness and UX audit verification passed 1,483 deterministic
 tests with four gated live tests skipped, 18 mission IPC end-to-end tests, focused
 lint, and coverage of 92.1% statements and 82.51% branches. The production build
-measured 625.2 KiB of initial JavaScript and 62.9 KiB of CSS. The unsigned package
+measured 625.2 KiB of initial JavaScript (the budget was higher then; it is now
+600 KiB) and 62.9 KiB of CSS. The unsigned package
 passed axe serious and critical checks on Welcome, Settings, Run center, mission
 review, and the compact layout, plus supervised mission smokes. Production
 dependencies reported no npm audit vulnerabilities. Remaining advisories affect
@@ -1264,7 +1367,7 @@ upgrades.
 The September 23 UX follow-up passed 1,531 deterministic tests with four gated
 live tests skipped, 18 mission IPC end-to-end tests, focused lint, and coverage
 of 94.04% statements and 85.57% branches. The initial renderer bundle measured
-656.1 KiB of JavaScript and 66.5 KiB of CSS. The packaged smoke added axe checks
+656.1 KiB of JavaScript (before the syntax highlighter was split out) and 66.5 KiB of CSS. The packaged smoke added axe checks
 for the command palette and verified the getting-started guide; supervised
 mission smokes passed. Windows notifications and approval diffs still need the
 interactive checks in the [GUI smoke checklist](docs/e42-gui-smoke-checklist.md).

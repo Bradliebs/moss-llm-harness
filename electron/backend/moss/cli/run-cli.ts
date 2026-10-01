@@ -22,11 +22,18 @@ import { StepProtocolProvider } from "../models/step-protocol";
 import { findToolTool, semanticIndex } from "../models/tool-index";
 import { classifyTool } from "../permission";
 import { createProvider } from "../providers";
+import { stopCopilotClients } from "../providers/copilot";
 import type { ChatProvider } from "../providers/types";
 import { setUserDataDir } from "../runtime/user-data";
 import { buildSystemMessage } from "../system-prompt";
-import { TOOL_DEFINITIONS, TOOL_REGISTRY, type Tool } from "../tools";
+import { TOOL_DEFINITIONS as ALL_TOOL_DEFINITIONS, TOOL_REGISTRY as ALL_TOOLS, type Tool } from "../tools";
 import { formatVerifyReport, runVerify } from "../verify/verifier";
+
+/** Memory and skill tools write the desktop app's shared data, and email and
+ *  transcription need settings a headless run does not have. */
+const HEADLESS_EXCLUDED = (name: string): boolean => name.startsWith("m_") || name === "send_email" || name === "transcribe_audio";
+const TOOL_REGISTRY = new Map([...ALL_TOOLS].filter(([name]) => !HEADLESS_EXCLUDED(name)));
+const TOOL_DEFINITIONS = ALL_TOOL_DEFINITIONS.filter((tool) => !HEADLESS_EXCLUDED(tool.name));
 
 /** Failed-verification answers sent back before the run gives up and fails. */
 const MAX_COMPLETION_REJECTIONS = 3;
@@ -56,6 +63,8 @@ export interface RunCliOptions {
   instructions?: string;
   tools: boolean;
   profileFile?: string;
+  /** environment variable the API key was read from */
+  apiKeyEnv?: string;
 }
 
 export interface RunCliDependencies {
@@ -72,7 +81,7 @@ export interface RunCliDependencies {
   signal?: AbortSignal;
 }
 
-export const RUN_USAGE = "Usage: moss --model NAME [--prompt TEXT | --prompt-file FILE | stdin] [--base-url URL] [--kind openai-compatible|anthropic] [--api-key-env VAR] [--workspace DIR] [--approve deny|safe|ask] [--verify CMD ...] [--max-rounds N] [--constrained auto|always|never] [--no-tools] [--profile FILE] [--instructions FILE] [--json] [--events-out FILE] [--data-dir DIR]";
+export const RUN_USAGE = "Usage: moss --model NAME [--prompt TEXT | --prompt-file FILE | stdin] [--base-url URL] [--kind openai-compatible|anthropic|github-copilot] [--api-key-env VAR] [--workspace DIR] [--approve deny|safe|ask] [--verify CMD ...] [--max-rounds N] [--constrained auto|always|never] [--no-tools] [--profile FILE] [--instructions FILE] [--json] [--events-out FILE] [--data-dir DIR]";
 
 /** The desktop app's data folder, so headless runs share its profiles and lessons. */
 export function defaultDataDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
@@ -112,7 +121,7 @@ export function parseRunArgs(args: readonly string[], env: NodeJS.ProcessEnv = p
     else if (flag === "--base-url") options.baseUrl = need();
     else if (flag === "--kind") {
       const kind = need();
-      if (kind !== "openai-compatible" && kind !== "anthropic") throw new Error(`Unsupported provider kind: ${kind}`);
+      if (kind !== "openai-compatible" && kind !== "anthropic" && kind !== "github-copilot") throw new Error(`Unsupported provider kind: ${kind}`);
       options.kind = kind;
     } else if (flag === "--api-key-env") apiKeyEnv = need();
     else if (flag === "--workspace") options.workspace = resolve(cwd, need());
@@ -143,6 +152,7 @@ export function parseRunArgs(args: readonly string[], env: NodeJS.ProcessEnv = p
   if (options.constrained === "always" && options.kind !== "openai-compatible") throw new Error("--constrained always needs an openai-compatible endpoint");
   const apiKey = env[apiKeyEnv]?.trim();
   if (apiKey) options.apiKey = apiKey;
+  options.apiKeyEnv = apiKeyEnv;
   return options;
 }
 
@@ -189,6 +199,8 @@ export async function runMossCli(args: readonly string[], dependencies: RunCliDe
     return 2;
   }
   setUserDataDir(options.dataDir);
+  // Commands the model runs inherit this environment; the key is not theirs.
+  if (options.apiKeyEnv) delete env[options.apiKeyEnv];
 
   const promptFromStdin = options.prompt === undefined;
   const prompt = (options.prompt ?? await (dependencies.readStdin ?? readAllStdin)()).trim();
@@ -223,7 +235,7 @@ export async function runMossCli(args: readonly string[], dependencies: RunCliDe
   const provider = constrained ? new StepProtocolProvider(base) : base;
 
   emit({ type: "run-start", model: options.model, endpoint: options.baseUrl, workspace: options.workspace, approve: options.approve, constrained, ...(tier ? { tier } : {}), verify: options.verify });
-  info(`moss: ${options.model} at ${options.baseUrl} in ${options.workspace}${tier ? ` (${tier})` : ""}${constrained ? ", constrained output" : ""}, approvals: ${options.approve}`);
+  info(`moss: ${options.model} ${options.kind === "github-copilot" ? "on GitHub Copilot" : `at ${options.baseUrl}`} in ${options.workspace}${tier ? ` (${tier})` : ""}${constrained ? ", constrained output" : ""}, approvals: ${options.approve}`);
 
   // The same adaptive scaffolding as the desktop app: a measured weak model
   // gets fewer, relevant tools, step guidance and find_tool to recover others.
@@ -384,7 +396,8 @@ export async function runMossCli(args: readonly string[], dependencies: RunCliDe
 
 if (require.main === module) {
   void runMossCli(process.argv.slice(2))
-    .then((exitCode) => { process.exitCode = exitCode; })
+    // A Copilot runtime would otherwise keep the process alive.
+    .then(async (exitCode) => { process.exitCode = exitCode; await stopCopilotClients(); })
     .catch((error: unknown) => {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;

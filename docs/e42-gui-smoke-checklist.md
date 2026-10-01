@@ -486,6 +486,37 @@ still required before closing end-to-end dictation acceptance.
       the test passes, 1 otherwise, and that `--approve deny` leaves the
       workspace unchanged.
 
+25. **Email accounts and Playwright MCP defaults**
+    - Under **Settings > Services > Email**, choose **Gmail or other SMTP
+      account**, enter an address and an app password, and set **From name**
+      to a plain name. Ask Moss to email yourself. Confirm the approval card
+      appears, the message arrives from `Name <you@gmail.com>`, and that
+      `moss.settings` in the renderer's localStorage (devtools > Application)
+      shows empty `smtpPass` and `emailApiKey` values. Restart and confirm the
+      password field is still filled.
+    - Enter a wrong app password and confirm the reply explains that Gmail
+      needs an app password.
+    - With the Playwright MCP server enabled and no extra settings, confirm
+      **Settings > Knowledge** shows it with 24 tools and both **trust
+      read-only** and **ignore destructive flags** checked. With auto-approve
+      on, ask Moss to open a review site and summarize a page. Confirm
+      navigation and snapshots run without asking with the untrusted-content
+      gate on, that a click asks while the gate is on and runs when it is off,
+      and that clicking a button named "Submit order" always asks.
+    - Middle-click and shift-click a link in a reply: it opens in your
+      browser, not in a new Moss window. Drop an `.html` file onto the Moss
+      window: nothing happens. Navigating Playwright to `file:///C:/` or
+      `http://localhost:3000` asks for approval.
+    - Choose **GitHub Copilot** under **Settings > Models > Provider** with the
+      GitHub CLI signed in and **GitHub token** empty. Select **Load** and
+      confirm your Copilot models appear. Ask a question that needs a file read
+      and an edit: confirm the edit asks for approval as usual and the answer
+      streams in. Enter a wrong token and confirm **Load** explains the sign-in
+      problem.
+    - Read a web page, then select **I have reviewed the earlier content** on
+      the next approval card. Confirm that card still asks, and that changes in
+      your next message no longer do.
+
 ## Pass criteria
 
 - No uncaught errors in the main-process console or the renderer devtools.
@@ -494,7 +525,9 @@ still required before closing end-to-end dictation acceptance.
   previews, undo, shortcuts, conversation organisation, mission authority,
   constrained output, cross-provider escalation, data-level provenance, setup,
   live scores, context fit, voting, Why, practice runs, quarantine, learned
-  procedures, the mission critic, judged replay, and headless runs behave as
+  procedures, the mission critic, judged replay, headless runs, SMTP email with
+  secure credential storage, the Playwright MCP defaults, and the GitHub Copilot
+  provider behave as
   described above.
 - Reload preserves session history, titles, task state, and the "auto" provenance
   tag without replaying an interrupted action.

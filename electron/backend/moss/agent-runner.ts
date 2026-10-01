@@ -18,7 +18,7 @@ import { classifyConfidenceMode, describeConfidence } from "./governed/confidenc
 import { RepeatToolReminder } from "./governed/repeat-tool-reminder";
 import { DEFAULT_STALL_LIMIT, DEFAULT_STALL_WARN, ProgressSupervisor, supervisorStopMessage, supervisorWarning, type RoundObservation } from "./governed/progress-supervisor";
 import { protectedPathViolation, renderWorkingState, withWorkingState, workingStateBudget, type WorkingStateStore } from "./governed/working-state";
-import { isUntrustedSource, ProvenanceTracker } from "./safety/provenance";
+import { isUntrustedSource, priorUntrustedResults, ProvenanceTracker } from "./safety/provenance";
 import { parseTextToolCalls, repairToolCall } from "./models/tool-repair";
 import { semanticIndex } from "./models/tool-index";
 import { resolvePermission } from "./permission";
@@ -34,10 +34,11 @@ import type { Quarantine } from "./safety/quarantine";
 
 const RUN_PROCEDURE_TOOL = "run_procedure";
 export const PROCEDURE_SKIPPED = "Skipped";
-import type { Tool, ToolResult } from "./tools";
+import type { DelegateReport, Tool, ToolResult } from "./tools";
 import { PlanStore } from "./task/plan-store";
 import { RecoveryPolicy } from "./task/recovery-policy";
 import { formatVerifyReport, runVerify } from "./verify/verifier";
+import { verificationFileTouched } from "./verify/verification-files";
 import { JsonArtifactGuard } from "./verify/json-artifact-guard";
 import type { VerifyResult } from "./verify/verifier";
 
@@ -153,6 +154,14 @@ export interface RunTurnOptions {
   rankingEmbed?: EmbedConfig;
   /** isolated reader for untrusted tool output; the model sees only its extract */
   quarantine?: Quarantine;
+  /** Leading messages the user has reviewed and vouched for; untrusted tool
+   *  results among them do not taint this turn. */
+  trustedHistoryLength?: number;
+  /** Untrusted content that reached this turn outside its tool results, such as
+   *  a mission artifact an earlier step built from a web page. */
+  initialUntrusted?: ReadonlyArray<{ sources: readonly string[]; content: string }>;
+  /** Reports the untrusted sources that entered the turn, when it ends. */
+  onUntrustedSources?: (sources: string[]) => void;
   /** expands a run_procedure call into the procedure's concrete tool calls */
   expandProcedure?: (rawArguments: string) => { calls: ToolCall[]; procedureId: string; name: string } | { error: string };
 }
@@ -275,6 +284,9 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
   const plan = opts.plan ?? new PlanStore();
   const delegate = makeDelegate(opts);
   const guards: TurnGuards = { provenance: new ProvenanceTracker(), ...(opts.workingState ? { workingState: opts.workingState } : {}), ...(findTools ? { findTools } : {}) };
+  // Untrusted text from earlier turns is still in the conversation.
+  for (const prior of priorUntrustedResults(opts.messages, opts.trustedHistoryLength ?? 0)) guards.provenance.observe(prior.name, prior.content, prior.sources);
+  for (const carried of opts.initialUntrusted ?? []) guards.provenance.observe("artifact", carried.content, carried.sources);
   const supervisor = new ProgressSupervisor(DEFAULT_STALL_WARN, opts.stallLimit ?? DEFAULT_STALL_LIMIT);
   let failureSource: Extract<MossEvent, { type: "turn-error" }>["source"] = "harness-orchestration";
 
@@ -523,7 +535,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         if (procedure && !result.ok) failedProcedures.add(procedure);
         // Record provenance after the call: the content a tool returns can shape
         // later calls, but never the call that fetched it.
-        guards.provenance.observe(call.name, result.content);
+        guards.provenance.observe(call.name, result.content, result.untrustedSources);
         if (opts.workingState && opts.workingState.version !== emittedWorkingStateVersion) {
           emittedWorkingStateVersion = opts.workingState.version;
           onEvent({ type: "working-state", state: opts.workingState.snapshot() });
@@ -540,6 +552,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
           ...(autoApproved ? { autoApproved: true } : {}),
           ...(risk ? { risk } : {}),
           durationMs,
+          ...(result.untrustedSources?.length ? { untrustedSources: result.untrustedSources } : {}),
         };
         newMessages.push(toolMsg);
         sawToolRun = true;
@@ -575,6 +588,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         const convToolMsg = {
           role: "tool" as const,
           content: await prepareModelToolContent(call.name, quarantined?.content ?? result.content, injectionMode, onEvent, {
+            carriesUntrusted: call.name !== "read_tool_output" && (result.untrustedSources?.length ?? 0) > 0,
             store: opts.toolOutputStore,
             callId: call.id,
             turnId: opts.turnId,
@@ -601,6 +615,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
           autoApproved,
           ...(risk ? { risk } : {}),
           durationMs,
+          ...(result.untrustedSources?.length ? { untrustedSources: result.untrustedSources } : {}),
         });
       }
 
@@ -702,6 +717,8 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
       messages: newMessages,
       source: failureSource,
     });
+  } finally {
+    opts.onUntrustedSources?.(guards.provenance.untrustedSources);
   }
 }
 
@@ -711,7 +728,7 @@ function droppedMessages(messages: readonly AgentMessage[], droppedCount: number
 }
 
 /** Runs a self-contained task in its own conversation and reports back. */
-type DelegateFn = (task: string, signal: AbortSignal) => Promise<string>;
+type DelegateFn = (task: string, signal: AbortSignal) => Promise<DelegateReport>;
 
 /** How many delegate hops are allowed. One means the main turn may spawn a
  *  subagent, and that subagent may not spawn another. */
@@ -727,7 +744,7 @@ function makeDelegate(opts: RunTurnOptions): DelegateFn | undefined {
   const depth = opts.delegateDepth ?? 0;
   if (depth >= MAX_DELEGATE_DEPTH) return undefined;
 
-  return async (task: string, signal: AbortSignal): Promise<string> => {
+  return async (task: string, signal: AbortSignal): Promise<DelegateReport> => {
     const readOnly = new Map<string, Tool>();
     for (const [name, tool] of opts.toolRegistry) {
       if (name !== "delegate" && classifyTool(name) === "allow") readOnly.set(name, tool);
@@ -736,6 +753,8 @@ function makeDelegate(opts: RunTurnOptions): DelegateFn | undefined {
 
     let report = "";
     let failure = "";
+    // What the subagent read shapes its report, so the parent inherits its taint.
+    const untrustedSources = new Set<string>();
     await runTurn({
       ...opts,
       model: opts.auxiliaryModel ?? opts.model,
@@ -758,6 +777,10 @@ function makeDelegate(opts: RunTurnOptions): DelegateFn | undefined {
       // The subagent's own rounds stay out of the parent's transcript; the
       // parent already shows the delegate call and the report it returned.
       onEvent: (event: MossEvent) => {
+        if (event.type === "tool-result" && event.ok) {
+          if (isUntrustedSource(event.name)) untrustedSources.add(event.name);
+          for (const source of event.untrustedSources ?? []) untrustedSources.add(source);
+        }
         if (event.type === "turn-complete") {
           const last = [...event.messages].reverse().find((m) => m.role === "assistant" && m.content.trim());
           if (last) report = last.content;
@@ -768,7 +791,7 @@ function makeDelegate(opts: RunTurnOptions): DelegateFn | undefined {
     });
 
     if (!report && failure) throw new Error(failure);
-    return report;
+    return { report, untrustedSources: [...untrustedSources] };
   };
 }
 
@@ -882,7 +905,7 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
 
   const gated = guards?.provenance.tainted === true && opts.provenanceGate !== false;
   const derivation = guards?.provenance.tainted ? guards.provenance.derivation(call.arguments) : undefined;
-  const decision = resolvePermission({
+  let decision = resolvePermission({
     name: call.name,
     command: call.name === "run_command" ? String(args.command ?? "") : undefined,
     args,
@@ -894,9 +917,20 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
     ...(tool.destructive ? { destructive: true } : {}),
     ...(tool.destructiveReason ? { destructiveReason: tool.destructiveReason } : {}),
     ...(tool.checkIrreversible ? { checkIrreversible: true } : {}),
+    ...(tool.networkRead ? { networkRead: true } : {}),
   });
   if (decision.action === "deny") {
     return { result: { ok: false, content: `Denied by policy: ${call.name}` }, autoApproved: false };
+  }
+  // While verification decides "done", the files that define it are not the
+  // model's to change unasked, or it could make the checks pass without a fix.
+  const verifying = opts.verify?.enabled === true && (opts.verify.commands ?? []).some((command) => command.trim());
+  const verifierFile = decision.action === "run" && verifying
+    ? verificationFileTouched(call.name, args, opts.workspaceRoot)
+    : undefined;
+  if (verifierFile) {
+    decision = { action: "prompt", autoApproved: false, risk: "mutating", rule: `It changes ${verifierFile}, which decides what the verification checks run.` };
+    opts.onEvent({ type: "harness-decision", decision: { kind: "gate", summary: `Asked before ${call.name} because ${verifierFile} defines the verification checks.`, settings: "verification" } });
   }
 
   let approvalGranted = false;
@@ -913,6 +947,7 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
       name: call.name,
       arguments: call.arguments,
       risk: decision.risk,
+      ...(decision.rule ? { reason: decision.rule } : {}),
       ...(guards?.provenance.tainted
         ? {
             provenance: {
@@ -939,7 +974,7 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
 
   try {
     opts.signal.throwIfAborted();
-    const execute = (signal: AbortSignal) => tool.execute(args, { workspaceRoot: opts.workspaceRoot, signal, stt: opts.stt, email: opts.email, embed: opts.embed, checkpoint: opts.checkpoint, approvalGranted, gatedMemory: opts.gatedMemory, plan, delegate, ...(guards?.workingState ? { workingState: guards.workingState } : {}), ...(guards?.findTools ? { findTools: guards.findTools } : {}) });
+    const execute = (signal: AbortSignal) => tool.execute(args, { workspaceRoot: opts.workspaceRoot, signal, stt: opts.stt, email: opts.email, embed: opts.embed, checkpoint: opts.checkpoint, approvalGranted, gatedMemory: opts.gatedMemory, plan, delegate, ...(guards?.workingState ? { workingState: guards.workingState } : {}), ...(guards?.findTools ? { findTools: guards.findTools } : {}), ...(guards?.provenance.tainted ? { untrustedContext: true } : {}) });
     const timeoutMs = tool.timeoutMs === undefined ? undefined : opts.toolTimeoutMs ?? tool.timeoutMs;
     const result = timeoutMs === undefined
       ? await execute(opts.signal)
@@ -964,9 +999,9 @@ async function prepareModelToolContent(
   content: string,
   mode: InjectionMode,
   onEvent: (event: MossEvent) => void,
-  artifact: { store?: ToolOutputStore; callId: string; turnId?: string },
+  artifact: { store?: ToolOutputStore; callId: string; turnId?: string; carriesUntrusted?: boolean },
 ): Promise<string> {
-  const external = isExternalContentTool(name);
+  const external = isExternalContentTool(name) || isUntrustedSource(name) || artifact.carriesUntrusted === true;
   let prefix = "";
   if (external && mode !== "off") {
     // Scan the full result, not the capped copy, so a payload beyond the head/
@@ -1032,12 +1067,11 @@ function isRetryableStreamError(err: unknown): boolean {
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => {
-    let timer: ReturnType<typeof setTimeout>;
     const onAbort = (): void => {
       clearTimeout(timer);
       resolve();
     };
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       signal.removeEventListener("abort", onAbort);
       resolve();
     }, ms);

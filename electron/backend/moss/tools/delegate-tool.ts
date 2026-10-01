@@ -45,10 +45,10 @@ export const delegateTool: Tool = {
     }
 
     try {
-      const answer = await ctx.delegate(task, ctx.signal);
-      const trimmed = answer.trim();
+      const { report, untrustedSources } = await ctx.delegate(task, ctx.signal);
+      const trimmed = report.trim();
       return trimmed
-        ? { ok: true, content: trimmed }
+        ? { ok: true, content: trimmed, ...(untrustedSources.length > 0 ? { untrustedSources } : {}) }
         : { ok: false, content: "The subagent finished without reporting anything" };
     } catch (err) {
       return { ok: false, content: `Subagent failed: ${(err as Error).message}` };

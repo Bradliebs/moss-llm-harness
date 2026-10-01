@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 
-import { BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, shell } from "electron";
+import { BrowserWindow, clipboard, dialog, ipcMain as electronIpcMain, powerMonitor, shell } from "electron";
 
 import { IPC } from "../../common/ipc-contract";
 import type {
@@ -144,6 +144,7 @@ export function resolveMaxToolRounds(requested: number | undefined, verifyEnable
   return Math.min(MAX_TOOL_ROUNDS, Math.max(1, withVerificationRoom));
 }
 import { taskStore } from "../backend/moss/task/task-store";
+import { guardedIpc, requireTrustedSender } from "../window-guard";
 import { TOOL_REGISTRY } from "../backend/moss/tools";
 import { createJevTool } from "../backend/moss/tools/jev-tool";
 import { detectWorkspaceVerificationChecks, VerificationRegistry } from "../backend/moss/verify/verification-registry";
@@ -173,6 +174,8 @@ let bundledCapabilityTools: ReturnType<typeof createBundledCapabilityTools> | un
 let capabilityHistoryCache = new Map<string, { successCount: number; failureCount: number }>();
 
 export function registerChatIpc(): void {
+  // Every channel below answers only the app's own page.
+  const ipcMain = guardedIpc(electronIpcMain);
   void refreshCapabilityHistory();
   ipcMain.on(IPC.chatStart, (event, req: ChatStartRequest) => {
     // Your work takes the GPU back from a practice run.
@@ -189,7 +192,8 @@ export function registerChatIpc(): void {
     }
   });
 
-  ipcMain.handle(IPC.missionAuthorize, async (_event, request: MissionAuthorizationRequest) => {
+  ipcMain.handle(IPC.missionAuthorize, async (event, request: MissionAuthorizationRequest) => {
+    requireTrustedSender(event, "mission authorization");
     validateMissionAuthorizationRequest(request);
     const budget = request.policy.budget;
     const detail = [
@@ -293,8 +297,12 @@ export function registerChatIpc(): void {
     const provider = createProvider(config);
     return provider.listModels();
   });
-  ipcMain.handle(IPC.providerCredentialGet, (_event, providerId: string) => providerCredentials.get(providerId));
-  ipcMain.handle(IPC.providerCredentialSet, (_event, providerId: string, apiKey: string) => {
+  ipcMain.handle(IPC.providerCredentialGet, (event, providerId: string) => {
+    requireTrustedSender(event, "reading a stored key");
+    return providerCredentials.get(providerId);
+  });
+  ipcMain.handle(IPC.providerCredentialSet, (event, providerId: string, apiKey: string) => {
+    requireTrustedSender(event, "storing a key");
     providerCredentials.set(providerId, apiKey);
   });
 
@@ -576,11 +584,13 @@ export function registerChatIpc(): void {
     const error = await shell.openPath(path);
     return error === "" ? path : null;
   });
-  ipcMain.handle(IPC.mcpAddServer, async (_event, config: McpServerConfig) => {
+  ipcMain.handle(IPC.mcpAddServer, async (event, config: McpServerConfig) => {
+    requireTrustedSender(event, "adding an MCP server");
     if (addMcpServer(config)) await mcpManager.reconnect(config.id);
     return mcpManager.getStatus();
   });
-  ipcMain.handle(IPC.mcpUpdateServer, async (_event, config: McpServerConfig) => {
+  ipcMain.handle(IPC.mcpUpdateServer, async (event, config: McpServerConfig) => {
+    requireTrustedSender(event, "changing an MCP server");
     if (updateMcpServer(config)) await mcpManager.reconnect(config.id);
     return mcpManager.getStatus();
   });
@@ -1128,6 +1138,8 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       workingState,
       ...(stallLimit !== undefined ? { stallLimit } : {}),
       ...(req.untrustedContentGate === false ? { provenanceGate: false } : {}),
+      // The renderer counts its own history; a system message added here shifts it.
+      ...(req.trustedHistoryLength ? { trustedHistoryLength: req.trustedHistoryLength + (hasSystem ? 0 : 1) } : {}),
       ...(routedProvider.route("fast") ? { auxiliaryModel: routeToken("fast") } : {}),
       workspaceRoot,
       signal: controller.signal,

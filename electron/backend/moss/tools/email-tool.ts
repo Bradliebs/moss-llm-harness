@@ -16,6 +16,7 @@ const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const SEND_TIMEOUT_MS = 20_000;
 const MAX_RECIPIENTS = 50;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const UNKNOWN_OUTCOME = "The send timed out or was stopped after it started, so Moss cannot tell whether the email went out. Check the Sent folder before sending it again.";
 
 interface Message {
   from: string;
@@ -42,7 +43,11 @@ function senderFor(email: EmailConfig | undefined): { from: string } | { error: 
     if (!smtp?.host.trim() || !smtp.user.trim() || !smtp.pass.trim()) {
       return { error: "No SMTP account configured (set server, username, and app password in Settings)." };
     }
-    const from = email.from.trim() || smtp.user.trim();
+    // A bare display name ("Moss") sends from the account itself.
+    const configured = email.from.trim();
+    const from = !configured
+      ? smtp.user.trim()
+      : configured.includes("@") ? configured : `${configured.replace(/[<>"]/g, "")} <${smtp.user.trim()}>`;
     if (!EMAIL_RE.test(addressOf(from))) {
       return { error: "Invalid from address (use your account address, e.g. Name <you@gmail.com>)." };
     }
@@ -89,6 +94,13 @@ async function sendViaResend(apiKey: string, message: Message, signal: AbortSign
   return { ok: true, content: `Email sent to ${message.to.join(", ")}${id ? ` (id ${id})` : ""}` };
 }
 
+/** Google shows app passwords as four spaced groups of four letters; the
+ *  spaces are not part of it. Any other password is used exactly as typed. */
+export function normalizeSmtpPassword(pass: string): string {
+  const trimmed = pass.trim();
+  return /^[a-z]{4}(?:\s+[a-z]{4}){3}$/i.test(trimmed) ? trimmed.replace(/\s+/g, "") : pass;
+}
+
 async function sendViaSmtp(smtp: SmtpConfig, message: Message, signal: AbortSignal): Promise<ToolResult> {
   const port = Number.isInteger(smtp.port) && smtp.port > 0 ? smtp.port : 465;
   const transport = createTransport({
@@ -97,8 +109,7 @@ async function sendViaSmtp(smtp: SmtpConfig, message: Message, signal: AbortSign
     // Implicit TLS on 465; any other port must upgrade with STARTTLS.
     secure: port === 465,
     requireTLS: port !== 465,
-    // Google shows app passwords in spaced groups; the spaces are not part of it.
-    auth: { user: smtp.user.trim(), pass: smtp.pass.replace(/\s+/g, "") },
+    auth: { user: smtp.user.trim(), pass: normalizeSmtpPassword(smtp.pass) },
     connectionTimeout: SEND_TIMEOUT_MS,
     greetingTimeout: SEND_TIMEOUT_MS,
     socketTimeout: SEND_TIMEOUT_MS,
@@ -179,7 +190,8 @@ export const sendEmailTool: Tool = {
         ? await sendViaSmtp(email.smtp!, message, controller.signal)
         : await sendViaResend(email.apiKey, message, controller.signal);
     } catch (e) {
-      if (controller.signal.aborted) return { ok: false, content: "Send timed out or aborted" };
+      // The request may already have reached the server, so a retry could send twice.
+      if (controller.signal.aborted) return { ok: false, content: UNKNOWN_OUTCOME };
       return { ok: false, content: `Send failed: ${(e as Error).message}` };
     } finally {
       clearTimeout(timer);

@@ -26,6 +26,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: "mistral", label: "Mistral", kind: "openai-compatible", baseUrl: "https://api.mistral.ai/v1" },
   { id: "xai", label: "xAI (Grok)", kind: "openai-compatible", baseUrl: "https://api.x.ai/v1" },
   { id: "custom", label: "Custom", kind: "openai-compatible", baseUrl: "" },
+  // Appended: settings store the preset by index, so existing choices must not shift.
+  { id: "github-copilot", label: "GitHub Copilot", kind: "github-copilot", baseUrl: "https://api.githubcopilot.com" },
 ];
 
 export type ReadinessProfileId = "chat" | "coding" | "research" | "desktop" | "custom";
@@ -339,11 +341,78 @@ export function readinessProfilePatch(
   return { readinessProfile: "custom" };
 }
 
+/** Email secrets live in the OS-backed credential store, like provider keys,
+ *  under these ids; localStorage never keeps them. */
+const EMAIL_SECRETS = { emailApiKey: "email-resend", smtpPass: "email-smtp" } as const;
+type EmailSecretField = keyof typeof EMAIL_SECRETS;
+
+/** Secrets whose secure write failed (no OS keyring). They stay in
+ *  localStorage as before, rather than being silently lost on restart. */
+const insecureSecrets = new Set<EmailSecretField>();
+
 export const settingsStore = createPersistentStore<MossSettings>(
   "moss.settings",
   DEFAULT_SETTINGS,
-  (settings) => ({ ...settings, apiKey: "" }),
+  (settings) => ({
+    ...settings,
+    apiKey: "",
+    emailApiKey: insecureSecrets.has("emailApiKey") ? settings.emailApiKey : "",
+    smtpPass: insecureSecrets.has("smtpPass") ? settings.smtpPass : "",
+  }),
 );
+
+/** True when this secret is kept in local storage because the OS store refused it. */
+export function storedUnencrypted(field: EmailSecretField): boolean {
+  return insecureSecrets.has(field);
+}
+
+function keepInsecurely(field: EmailSecretField): void {
+  if (insecureSecrets.has(field)) return;
+  insecureSecrets.add(field);
+  settingsStore.set(settingsStore.get());
+}
+
+// Writes run one at a time so the last value typed is the one stored.
+let secretWrites: Promise<void> = Promise.resolve();
+const storedSecrets = new Map<EmailSecretField, string>();
+
+function persistEmailSecrets(patch: Partial<MossSettings>): void {
+  if (typeof window === "undefined" || !window.moss?.provider) return;
+  for (const field of Object.keys(EMAIL_SECRETS) as EmailSecretField[]) {
+    const value = patch[field];
+    if (typeof value !== "string" || storedSecrets.get(field) === value) continue;
+    storedSecrets.set(field, value);
+    secretWrites = secretWrites
+      .then(() => window.moss.provider.setCredential(EMAIL_SECRETS[field], value))
+      .then(() => {
+        if (insecureSecrets.delete(field)) settingsStore.set(settingsStore.get());
+      })
+      .catch(() => keepInsecurely(field));
+  }
+}
+
+/** Load email secrets from secure storage, first moving any saved in
+ *  localStorage by an older version into it. */
+export async function initializeEmailCredentials(): Promise<void> {
+  if (typeof window === "undefined" || !window.moss?.provider) return;
+  const before = settingsStore.get();
+  const loaded: Partial<MossSettings> = {};
+  for (const field of Object.keys(EMAIL_SECRETS) as EmailSecretField[]) {
+    try {
+      const legacy = before[field];
+      if (legacy) await window.moss.provider.setCredential(EMAIL_SECRETS[field], legacy);
+      const value = await window.moss.provider.getCredential(EMAIL_SECRETS[field]);
+      storedSecrets.set(field, value);
+      // Something typed while the store was loading wins over the stored value.
+      if (settingsStore.get()[field] === before[field]) loaded[field] = value;
+    } catch {
+      // Without secure storage the value stays where it was.
+      if (before[field]) keepInsecurely(field);
+    }
+  }
+  // Saving rewrites localStorage without the legacy plain-text values.
+  updateSettings(loaded);
+}
 
 /** Last-fetched model ids, kept so the header model dropdown is populated on
  *  reload without re-querying the provider. */
@@ -361,6 +430,7 @@ export function useSettings(): MossSettings {
 }
 
 export function updateSettings(patch: Partial<MossSettings>): void {
+  persistEmailSecrets(patch);
   settingsStore.update((prev) => {
     const next = { ...prev, ...patch };
     const providerId = PROVIDER_PRESETS[prev.presetIndex]?.id;

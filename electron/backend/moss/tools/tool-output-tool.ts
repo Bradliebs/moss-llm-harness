@@ -1,6 +1,6 @@
 import { wrapExternalContent } from "../safety/untrusted-wrap";
 import { ToolOutputStore, toolOutputStore } from "../context/tool-output-store";
-import type { Tool } from "./types";
+import type { Tool, ToolResult } from "./types";
 
 const MAX_READ_CHARS = 12_000;
 const MAX_MATCHES = 20;
@@ -25,7 +25,7 @@ export function createReadToolOutputTool(store: ToolOutputStore): Tool {
       },
       required: ["id"],
     },
-    async execute(args): Promise<{ ok: boolean; content: string }> {
+    async execute(args): Promise<ToolResult> {
       let record;
       try {
         record = await store.get(String(args.id ?? ""));
@@ -54,6 +54,7 @@ export function createReadToolOutputTool(store: ToolOutputStore): Tool {
       return {
         ok: true,
         content: record.external ? wrapExternalContent(record.toolName, content) : content,
+        ...(record.external ? { untrustedSources: [record.toolName] } : {}),
       };
     },
   };

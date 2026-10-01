@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 
 import type { WorkspaceFilePreview } from "@common/types";
 
+import { useSettings } from "../lib/settings";
 import { compactDiff, describeToolCall, diffStats, lineDiff, type DiffLine } from "../lib/toolPreview";
 
 const RISK_EXPLANATION: Record<"readonly" | "mutating" | "destructive", string> = {
@@ -77,6 +78,28 @@ function WritePreview({ path, content, workspaceRoot }: { path: string; content:
   );
 }
 
+function EmailPreview({ to, subject, body, html }: { to: string[]; subject: string; body: string; html?: string }): React.ReactElement {
+  const settings = useSettings();
+  const account = settings.emailProvider === "smtp" ? (settings.smtpUser ?? "").trim() : (settings.emailFrom ?? "").trim();
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-xs text-neutral-800 dark:text-neutral-200">
+      <dt className="font-medium">From</dt>
+      <dd className="break-all">{account || "Not configured"} ({settings.emailProvider === "smtp" ? "SMTP" : "Resend"})</dd>
+      <dt className="font-medium">To</dt>
+      <dd className="break-all">{to.length > 0 ? to.join(", ") : "No recipient"}</dd>
+      <dt className="font-medium">Subject</dt>
+      <dd className="break-words">{subject || "(none)"}</dd>
+      <dt className="font-medium">Message</dt>
+      <dd><pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-neutral-50 px-1.5 py-1 dark:bg-neutral-950">{body}</pre>{html ? (
+        <details className="mt-1 text-[11px]">
+          <summary className="cursor-pointer text-neutral-600 dark:text-neutral-300">HTML version, sent too (it can differ from the text above)</summary>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-neutral-50 px-1.5 py-1 dark:bg-neutral-950">{html}</pre>
+        </details>
+      ) : null}</dd>
+    </dl>
+  );
+}
+
 export function ToolPreview({
   name,
   args,
@@ -117,6 +140,7 @@ export function ToolPreview({
           <dd>60 seconds</dd>
         </dl>
       ) : null}
+      {model.kind === "email" ? <EmailPreview to={model.to} subject={model.subject} body={model.body} {...(model.html ? { html: model.html } : {})} /> : null}
       {model.kind === "generic" ? (
         <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">{model.formatted}</pre>
       ) : null}

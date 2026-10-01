@@ -11,12 +11,13 @@ import { join, resolve } from "node:path";
 
 import type { ProviderConfig, ProviderKind, ReplayReport, TurnTrace } from "../../../../common/types";
 import { createProvider } from "../providers";
+import { stopCopilotClients } from "../providers/copilot";
 import type { ChatProvider } from "../providers/types";
 import { DEFAULT_TIMEOUT_SECONDS } from "./capability-probes";
 import { createReplayJudge } from "./replay-judge";
 import { replayTrace } from "./trace-replay";
 
-export const REPLAY_USAGE = "Usage: replay (--trace FILE ... | --dir DIR [--last N]) --model NAME [--model NAME ...] [--base-url URL] [--kind openai-compatible|anthropic] [--api-key-env VAR] [--timeout SECONDS] [--judge NAME [--judge-base-url URL] [--judge-kind KIND] [--judge-api-key-env VAR]] [--output FILE]";
+export const REPLAY_USAGE = "Usage: replay (--trace FILE ... | --dir DIR [--last N]) --model NAME [--model NAME ...] [--base-url URL] [--kind openai-compatible|anthropic|github-copilot] [--api-key-env VAR] [--timeout SECONDS] [--judge NAME [--judge-base-url URL] [--judge-kind KIND] [--judge-api-key-env VAR]] [--output FILE]";
 
 export interface ReplayCliOptions {
   traces: string[];
@@ -56,7 +57,7 @@ export function parseReplayArgs(args: readonly string[], env: NodeJS.ProcessEnv 
     else if (flag === "--base-url") options.baseUrl = need();
     else if (flag === "--kind") {
       const kind = need();
-      if (kind !== "openai-compatible" && kind !== "anthropic") throw new Error(`Unsupported provider kind: ${kind}`);
+      if (kind !== "openai-compatible" && kind !== "anthropic" && kind !== "github-copilot") throw new Error(`Unsupported provider kind: ${kind}`);
       options.kind = kind;
     } else if (flag === "--api-key-env") apiKeyEnv = need();
     else if (flag === "--timeout") {
@@ -69,7 +70,7 @@ export function parseReplayArgs(args: readonly string[], env: NodeJS.ProcessEnv 
     else if (flag === "--judge-api-key-env") judgeKeyEnv = need();
     else if (flag === "--judge-kind") {
       const kind = need();
-      if (kind !== "openai-compatible" && kind !== "anthropic") throw new Error(`Unsupported provider kind: ${kind}`);
+      if (kind !== "openai-compatible" && kind !== "anthropic" && kind !== "github-copilot") throw new Error(`Unsupported provider kind: ${kind}`);
       judgeKind = kind;
     }
     else throw new Error(`Unknown argument: ${flag}`);
@@ -195,7 +196,8 @@ export async function runReplayCli(args: readonly string[], dependencies: Replay
 
 if (require.main === module) {
   void runReplayCli(process.argv.slice(2))
-    .then((exitCode) => { process.exitCode = exitCode; })
+    // A Copilot runtime would otherwise keep the process alive.
+    .then(async (exitCode) => { process.exitCode = exitCode; await stopCopilotClients(); })
     .catch((error: unknown) => {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;

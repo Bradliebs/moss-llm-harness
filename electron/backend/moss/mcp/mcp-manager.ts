@@ -15,11 +15,16 @@ import {
   getDefaultEnvironment,
   StdioClientTransport,
 } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import { createLogger } from "../../../../common/logger";
 import type { McpServerStatus } from "../../../../common/types";
 import { loadMcpServers, type McpServerConfig } from "./mcp-config";
+import { userDataDir } from "../runtime/user-data";
 import type { Tool, ToolContext, ToolResult } from "../tools/types";
 
 const log = createLogger("MCP");
@@ -53,12 +58,30 @@ function serializeResult(result: McpCallToolResult): ToolResult {
   return { ok: result.isError !== true, content };
 }
 
+/** Where a stdio server runs when its config names no folder. Servers write
+ *  snapshots and screenshots into their working folder, so it is a folder of
+ *  their own under Moss's data rather than wherever Moss was started. */
+export function serverWorkingDir(config: McpServerConfig): string | undefined {
+  if (config.type !== "stdio") return undefined;
+  if (config.cwd) return config.cwd;
+  try {
+    const safe = config.id.replace(/[^a-z0-9._-]/gi, "_");
+    // Ids that differ only in punctuation must not share a folder.
+    const name = safe === config.id ? safe : `${safe}-${createHash("sha256").update(config.id).digest("hex").slice(0, 8)}`;
+    const dir = join(userDataDir(), "mcp-servers", name);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  } catch {
+    return undefined;
+  }
+}
+
 function createTransport(config: McpServerConfig): { close(): Promise<void> } {
   if (config.type === "stdio") {
     return new StdioClientTransport({
       command: config.command,
       args: config.args,
-      cwd: config.cwd,
+      cwd: serverWorkingDir(config),
       env: { ...getDefaultEnvironment(), ...(config.env ?? {}) },
     });
   }
@@ -108,17 +131,30 @@ export function mcpToolRisk(
  *  Playwright MCP flags every non-read tool destructive, which would ask
  *  before every navigation, and its snapshot tool reads pages without running
  *  code, so its code tools are hidden. Explicit config values win. */
-export function serverDefaults(config: McpServerConfig): { ignoreDestructiveHints?: boolean; hiddenTools?: string[] } {
+export function serverDefaults(config: McpServerConfig): { trustAnnotations?: boolean; ignoreDestructiveHints?: boolean; hiddenTools?: string[]; networkReadTools?: string[] } {
   const launch = config.type === "stdio" ? [config.command, ...(config.args ?? [])].join(" ") : config.url;
-  if (/@playwright\/mcp\b/.test(launch)) return { ignoreDestructiveHints: true, hiddenTools: ["browser_evaluate", "browser_run_code"] };
+  if (/@playwright\/mcp\b/.test(launch)) {
+    return {
+      // Its read-only flags (snapshot, screenshot, console) are accurate.
+      trustAnnotations: true,
+      ignoreDestructiveHints: true,
+      hiddenTools: ["browser_evaluate", "browser_run_code"],
+      // Opening a page is a read, like the built-in browser_navigate: after
+      // untrusted content it asks only when the URL derives from that content.
+      networkReadTools: ["browser_navigate", "browser_navigate_back"],
+    };
+  }
   return {};
 }
 
 /** The options a server actually runs with: explicit config, then recognized defaults. */
-export function effectiveServerOptions(config: McpServerConfig): { ignoreDestructiveHints: boolean; hiddenTools: string[] } {
+export function effectiveServerOptions(config: McpServerConfig): { trustAnnotations: boolean; ignoreDestructiveHints: boolean; hiddenTools: string[]; networkReadTools: string[] } {
   const defaults = serverDefaults(config);
   return {
+    trustAnnotations: config.trustAnnotations ?? defaults.trustAnnotations ?? false,
     ignoreDestructiveHints: config.ignoreDestructiveHints ?? defaults.ignoreDestructiveHints ?? false,
+    // Only a recognized server's defaults can mark tools as network reads.
+    networkReadTools: config.ignoreDestructiveHints === false ? [] : defaults.networkReadTools ?? [],
     hiddenTools: (config.hiddenTools ?? defaults.hiddenTools ?? []).filter((name): name is string => typeof name === "string"),
   };
 }
@@ -127,7 +163,7 @@ export function adaptMcpTool(
   serverId: string,
   client: Pick<Client, "callTool">,
   info: Pick<McpToolInfo, "name" | "description" | "inputSchema" | "annotations">,
-  options: { trustAnnotations?: boolean; ignoreDestructiveHints?: boolean } = {},
+  options: { trustAnnotations?: boolean; ignoreDestructiveHints?: boolean; networkRead?: boolean } = {},
 ): Tool {
   const name = adaptToolName(serverId, info.name);
   const parameters = info.inputSchema && typeof info.inputSchema === "object"
@@ -141,6 +177,7 @@ export function adaptMcpTool(
     parameters,
     timeoutMs: 180_000,
     ...risk,
+    ...(options.networkRead && !risk.destructive ? { networkRead: true } : {}),
     async execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
       try {
         const result = await client.callTool({ name: info.name, arguments: args }, undefined, { signal: ctx.signal });
@@ -205,7 +242,11 @@ class McpManager {
       const effective = effectiveServerOptions(config);
       const hidden = new Set(effective.hiddenTools);
       const tools = listed.filter((t) => !hidden.has(t.name));
-      const adapted = tools.map((t) => adaptMcpTool(config.id, client, t, { trustAnnotations: config.trustAnnotations === true, ignoreDestructiveHints: effective.ignoreDestructiveHints }));
+      const adapted = tools.map((t) => adaptMcpTool(config.id, client, t, {
+        trustAnnotations: effective.trustAnnotations,
+        ignoreDestructiveHints: effective.ignoreDestructiveHints,
+        networkRead: effective.networkReadTools.includes(t.name),
+      }));
       for (const tool of adapted) {
         if (this.tools.some((existing) => existing.name === tool.name)) {
           log.warn(`duplicate tool name ${tool.name} from server ${config.id} skipped`);
@@ -220,7 +261,7 @@ class McpManager {
         connected: true,
         toolCount: adapted.length,
         tools: tools.map((t) => t.name),
-        ...(config.trustAnnotations === true ? { trustAnnotations: true } : {}),
+        ...(effective.trustAnnotations ? { trustAnnotations: true } : {}),
         ...(effective.ignoreDestructiveHints ? { ignoreDestructiveHints: true } : {}),
         ...(hidden.size > 0 ? { hiddenTools: listed.filter((t) => hidden.has(t.name)).map((t) => t.name) } : {}),
         destructiveTools: tools.filter((t) => t.annotations?.destructiveHint === true && t.annotations.readOnlyHint !== true).map((t) => t.name),

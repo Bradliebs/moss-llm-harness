@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import { compactDiff, describeToolCall, diffStats, lineDiff } from "./toolPreview";
 
 describe("describeToolCall", () => {
+  it("shows an email's recipients, subject, and body", () => {
+    expect(describeToolCall("send_email", JSON.stringify({ to: "a@b.com, c@d.com", subject: "Hi", body: "Hello", html: "<b>Hello</b>" })))
+      .toEqual({ kind: "email", to: ["a@b.com", "c@d.com"], subject: "Hi", body: "Hello", html: "<b>Hello</b>" });
+  });
+
   it("recognizes file writes, edits, moves, and commands", () => {
     expect(describeToolCall("write_file", JSON.stringify({ path: "a.ts", content: "x" }))).toEqual({ kind: "write", path: "a.ts", content: "x" });
     expect(describeToolCall("edit_file", JSON.stringify({ path: "a.ts", oldText: "a", newText: "b", replaceAll: true })))

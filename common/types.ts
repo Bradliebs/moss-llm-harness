@@ -4,7 +4,7 @@
 // React renderer (ESM via Vite). Type-only / pure data — no runtime imports that
 // differ across the two module systems.
 
-export type ProviderKind = "openai-compatible" | "anthropic";
+export type ProviderKind = "openai-compatible" | "anthropic" | "github-copilot";
 
 import type { ModelRate } from "./pricing";
 
@@ -196,6 +196,9 @@ export interface TaskArtifactReference {
   sha256: string;
   byteLength: number;
   createdAt: string;
+  /** untrusted sources the producing step read; a step that builds on this
+   *  artifact starts with them, so the web cannot act through a mission */
+  untrustedSources?: string[];
 }
 
 export interface TaskArtifactContent extends TaskArtifactReference {
@@ -426,6 +429,9 @@ export interface AgentMessage {
   toolCalls?: ToolCall[];
   /** present on tool-result turns; references the ToolCall.id it answers */
   toolCallId?: string;
+  /** on tool results that carry third-party content their tool name does not
+   *  reveal (a subagent report); never sent to a provider */
+  untrustedSources?: string[];
   /** present on tool-result turns that ran under auto-approve without a prompt;
    *  persisted so reloaded history stays truthful about what ran unattended */
   autoApproved?: boolean;
@@ -505,8 +511,8 @@ export type MossEvent =
   | { type: "round-start"; round: number; toolsEnabled: boolean }
   | { type: "round-end"; round: number; toolCallCount: number; finish: "tools" | "complete" | "rejected" | "error" }
   | { type: "tool-call"; callId: string; name: string; arguments: string }
-  | { type: "tool-approval-request"; callId: string; name: string; arguments: string; risk?: ToolRisk; provenance?: ApprovalProvenance }
-  | { type: "tool-result"; callId: string; name: string; ok: boolean; content: string; autoApproved: boolean; risk?: ToolRisk; durationMs?: number }
+  | { type: "tool-approval-request"; callId: string; name: string; arguments: string; risk?: ToolRisk; provenance?: ApprovalProvenance; reason?: string }
+  | { type: "tool-result"; callId: string; name: string; ok: boolean; content: string; autoApproved: boolean; risk?: ToolRisk; durationMs?: number; untrustedSources?: string[] }
   | { type: "notice"; level: "info" | "warn"; message: string }
   | { type: "context-compaction"; reason: "proactive" | "overflow"; droppedCount: number }
   | { type: "verification"; ok: boolean; checkCount: number; failedCheckHash?: string }
@@ -527,6 +533,9 @@ export type MossEvent =
 
 export interface ChatStartRequest {
   turnId: string;
+  /** Leading history messages the user has reviewed; their untrusted tool
+   *  results no longer gate this turn's changes. */
+  trustedHistoryLength?: number;
   /** Existing durable task to continue. Distinct from the ephemeral turn ID
    *  used for streaming, approvals, cancellation, and checkpoints. */
   taskId?: string;
@@ -1112,6 +1121,8 @@ export interface WorkingStateEntry {
   text: string;
   rationale?: string;
   source: "user" | "model";
+  /** recorded by the model after untrusted content entered the conversation */
+  untrusted?: boolean;
   createdAt: string;
 }
 

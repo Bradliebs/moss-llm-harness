@@ -35,6 +35,8 @@ const mockMissionCapabilities = vi.fn();
 const mockSetSessionTaskId = vi.fn();
 const mockSelectSession = vi.fn();
 const mockSetSessionWorkingState = vi.fn();
+const mockSetSessionTrustedThrough = vi.fn();
+const mockTrustedThrough = vi.hoisted(() => ({ value: undefined as number | undefined }));
 const mockWorkingState = vi.hoisted(() => ({ value: undefined as import("@common/types").WorkingState | undefined }));
 
 // Holds the session ChatPanel renders; tests override `value.messages` to drive
@@ -113,6 +115,8 @@ vi.mock("../lib/sessions", () => ({
   getSessionTitle: () => "Test chat",
   getSessionWorkingState: () => mockWorkingState.value,
   setSessionWorkingState: (...args: unknown[]) => mockSetSessionWorkingState(...args),
+  getSessionTrustedThrough: () => mockTrustedThrough.value,
+  setSessionTrustedThrough: (...args: unknown[]) => mockSetSessionTrustedThrough(...args),
   selectSession: (...args: unknown[]) => mockSelectSession(...args),
   setSessionPersonality: vi.fn(),
   setSessionMessages: (...args: unknown[]) => mockSetSessionMessages(...args),
@@ -1620,6 +1624,37 @@ describe("ChatPanel", () => {
     expect(warning.textContent).toContain("follows content from fetch_url");
     expect(warning.textContent).toContain("copied from that content");
     expect(warning.textContent).toContain("Why approval is needed: Changes after untrusted content always need approval.");
+  });
+
+  it("lets the user vouch for earlier content from the untrusted warning", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "tool-call", callId: "c11", name: "run_command", arguments: "{\"command\":\"npm test\"}" });
+    emit(turnId, { type: "tool-approval-request", callId: "c11", name: "run_command", arguments: "{\"command\":\"npm test\"}", risk: "mutating", provenance: { untrustedSources: ["fetch_url"], copiedFromUntrusted: false } });
+    fireEvent.click(screen.getByRole("button", { name: /I have reviewed the earlier content/ }));
+    expect(mockSetSessionTrustedThrough).toHaveBeenCalledWith("s1", expect.any(Number));
+    expect(screen.getByText(/Earlier messages are trusted from your next message on/)).toBeTruthy();
+  });
+
+  it("sends the trusted history length with the next turn", () => {
+    mockTrustedThrough.value = 0;
+    try {
+      render(<Harness />);
+      startTurn();
+      const req = (window.moss.chat.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(req.trustedHistoryLength).toBeUndefined();
+    } finally {
+      mockTrustedThrough.value = undefined;
+    }
+  });
+
+  it("says why an approval is needed when no untrusted content is involved", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "tool-call", callId: "c10", name: "edit_file", arguments: "{\"path\":\"package.json\"}" });
+    emit(turnId, { type: "tool-approval-request", callId: "c10", name: "edit_file", arguments: "{\"path\":\"package.json\"}", risk: "mutating", reason: "It changes package.json, which decides what the verification checks run." });
+    expect(screen.queryByLabelText("Untrusted content warning")).toBeNull();
+    expect(screen.getByText(/Why approval is needed: It changes package.json/)).toBeTruthy();
   });
 
   it("stops the running turn with Escape", () => {

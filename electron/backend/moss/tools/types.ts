@@ -34,7 +34,16 @@ export interface ToolContext {
   /** runs a read-only subagent in its own conversation and resolves its report.
    *  Absent when the host has not wired delegation, or inside a subagent, where
    *  the depth cap withholds it to stop unbounded recursion. */
-  delegate?: (task: string, signal: AbortSignal) => Promise<string>;
+  delegate?: (task: string, signal: AbortSignal) => Promise<DelegateReport>;
+  /** untrusted content has entered this conversation; entries the tool records
+   *  are marked so they are never presented as the user's own */
+  untrustedContext?: boolean;
+}
+
+export interface DelegateReport {
+  report: string;
+  /** untrusted sources the subagent read, so the parent treats the report as untrusted */
+  untrustedSources: string[];
 }
 
 export interface ToolResult {
@@ -44,6 +53,9 @@ export interface ToolResult {
    *  (data:<mime>;base64,...). Provider adapters attach these alongside the
    *  tool result; models without vision simply receive the text. */
   images?: string[];
+  /** third-party sources whose content this result carries, when the tool name
+   *  alone does not say so (a subagent report, a stored external artifact) */
+  untrustedSources?: string[];
 }
 
 export interface Tool {
@@ -59,6 +71,9 @@ export interface Tool {
   readOnly?: boolean;
   /** Declared destructive; always prompts, even under auto-approve. */
   destructive?: boolean;
+  /** Only reads from the network, like web_search: after untrusted content it
+   *  keeps auto-approval unless its arguments derive from that content. */
+  networkRead?: boolean;
   /** Why Moss treats the tool as destructive, when it is Moss's own rule. */
   destructiveReason?: string;
   /** Prompt when the arguments name an irreversible action (delete, submit,

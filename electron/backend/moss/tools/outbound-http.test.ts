@@ -1,7 +1,10 @@
 import * as https from "node:https";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchPublicUrl, type OutboundHttpDependencies } from "./outbound-http";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+
+import { fetchPublicUrl, requestPinned, type OutboundHttpDependencies } from "./outbound-http";
 
 vi.mock("node:https", () => ({ request: vi.fn() }));
 
@@ -104,5 +107,32 @@ describe("fetchPublicUrl", () => {
       /embedded credentials/,
     );
     expect(request).not.toHaveBeenCalled();
+  });
+});
+
+describe("requestPinned", () => {
+  it("stops reading a huge body instead of holding it all in memory", async () => {
+    const chunk = "x".repeat(1_048_576);
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      let sent = 0;
+      const write = (): void => {
+        while (sent < 20 && res.write(chunk)) sent += 1;
+        if (sent < 20) res.once("drain", () => { sent += 1; write(); });
+        else res.end();
+      };
+      write();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const result = await requestPinned(new URL(`http://example.test:${port}/big`), { address: "127.0.0.1", family: 4 }, new AbortController().signal);
+      expect(result.status).toBe(200);
+      expect(result.body.length).toBeLessThan(5 * 1_048_576 + 200);
+      expect(result.body).toContain("[Moss stopped reading after 5 MB.]");
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

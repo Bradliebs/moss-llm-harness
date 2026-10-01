@@ -7,7 +7,7 @@ import type { PaletteCommand } from "./components/CommandPalette";
 import { Sidebar } from "./components/Sidebar";
 import type { SettingsCategoryId } from "./lib/guidance";
 import { createSession, selectSession, sortSessionsForDisplay, useSessions } from "./lib/sessions";
-import { initializeProviderCredential, settingsStore, updateSettings } from "./lib/settings";
+import { initializeEmailCredentials, initializeProviderCredential, settingsStore, updateSettings } from "./lib/settings";
 import { matchShortcut, shortcutFor } from "./lib/shortcuts";
 
 const LibraryPanel = lazy(() =>
@@ -48,6 +48,7 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     void initializeProviderCredential();
+    void initializeEmailCredentials();
   }, []);
 
   useEffect(() => {

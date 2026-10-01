@@ -25,6 +25,11 @@ export interface SaveTaskArtifact {
   name: string;
   summary: string;
   content: string;
+  untrustedSources?: string[];
+}
+
+function cleanSources(value: unknown): string[] {
+  return Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === "string" && item.length > 0 && item.length <= 120))].slice(0, 20) : [];
 }
 
 export class TaskArtifactStore {
@@ -47,6 +52,7 @@ export class TaskArtifactStore {
       sha256: digest(input.content),
       byteLength,
       createdAt: new Date().toISOString(),
+      ...(cleanSources(input.untrustedSources).length > 0 ? { untrustedSources: cleanSources(input.untrustedSources) } : {}),
       content: input.content,
     };
     await writeFileAtomic(this.file(record.taskId, record.id), `${JSON.stringify(record)}\n`);
@@ -96,6 +102,7 @@ function validRecord(value: unknown): value is TaskArtifactRecord {
     && typeof record.sha256 === "string" && /^[0-9a-f]{64}$/.test(record.sha256)
     && Number.isInteger(record.byteLength) && (record.byteLength as number) >= 0
     && typeof record.createdAt === "string"
+    && (record.untrustedSources === undefined || (Array.isArray(record.untrustedSources) && record.untrustedSources.every((item) => typeof item === "string")))
     && typeof record.content === "string";
 }
 

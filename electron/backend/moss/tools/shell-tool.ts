@@ -1,7 +1,9 @@
 // electron/backend/moss/tools/shell-tool.ts
 //
-// Runs a shell command inside the workspace. This is the highest-risk tool and
-// is always permission-gated (see permission.ts) — it is never auto-approved.
+// Runs a shell command inside the workspace. This is the highest-risk tool. The
+// permission policy (see permission.ts) classifies each command: provably
+// read-only ones run unprompted, destructive ones always ask, and the rest
+// follow auto-approve and the untrusted-content gate.
 
 import { spawn } from "node:child_process";
 

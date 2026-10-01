@@ -4,6 +4,8 @@ import * as https from "node:https";
 import { BlockList, isIP } from "node:net";
 
 const MAX_REDIRECTS = 5;
+/** Largest response body read into memory; tools show far less than this. */
+const MAX_BODY_BYTES = 5 * 1_048_576;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 const blockedIpv4 = new BlockList();
@@ -153,7 +155,7 @@ function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new Error("Request aborted");
 }
 
-function requestPinned(url: URL, address: ResolvedAddress, signal: AbortSignal): Promise<RawHttpResponse> {
+export function requestPinned(url: URL, address: ResolvedAddress, signal: AbortSignal): Promise<RawHttpResponse> {
   const transport = url.protocol === "https:" ? https : http;
   return new Promise((resolve, reject) => {
     const request = transport.request(url, {
@@ -171,14 +173,32 @@ function requestPinned(url: URL, address: ResolvedAddress, signal: AbortSignal):
       },
     }, (response) => {
       const chunks: Buffer[] = [];
-      response.on("data", (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-      response.on("end", () => {
+      let received = 0;
+      let truncated = false;
+      const finish = (): void => {
         const headers: Record<string, string> = {};
         for (const [name, value] of Object.entries(response.headers)) {
           if (typeof value === "string") headers[name.toLowerCase()] = value;
           else if (Array.isArray(value)) headers[name.toLowerCase()] = value.join(", ");
         }
-        resolve({ status: response.statusCode ?? 0, headers, body: Buffer.concat(chunks).toString("utf8") });
+        const body = Buffer.concat(chunks).toString("utf8");
+        resolve({ status: response.statusCode ?? 0, headers, body: truncated ? `${body}\n\n[Moss stopped reading after ${MAX_BODY_BYTES / 1_048_576} MB.]` : body });
+      };
+      // A page larger than any tool could show is cut off rather than held in memory.
+      response.on("data", (chunk: Buffer | string) => {
+        if (truncated) return;
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        const room = MAX_BODY_BYTES - received;
+        chunks.push(buffer.length > room ? buffer.subarray(0, room) : buffer);
+        received += Math.min(buffer.length, room);
+        if (received >= MAX_BODY_BYTES) {
+          truncated = true;
+          response.destroy();
+          finish();
+        }
+      });
+      response.on("end", () => {
+        if (!truncated) finish();
       });
       response.on("error", reject);
     });

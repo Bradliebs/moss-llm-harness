@@ -25,6 +25,7 @@ import {
   readinessProfilePatch,
   saveProviderCredential,
   setModelRate,
+  storedUnencrypted,
   toEmbedConfig,
   toProviderConfig,
   updateSettings,
@@ -62,6 +63,7 @@ function isSettingsCategory(value: string | undefined): value is SettingsCategor
 
 export function SettingsPanel({ onClose, initialCategory }: { onClose: () => void; initialCategory?: SettingsCategory }): React.ReactElement {
   const settings = useSettings();
+  const copilot = settings.kind === "github-copilot";
   const models = modelsStore.use();
   const [status, setStatus] = useState("");
   const [mcp, setMcp] = useState<McpServerStatus[]>([]);
@@ -610,21 +612,33 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 ))}
               </select>
             </label>
+            {copilot ? null : (
+              <label className="block">
+                <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Base URL</span>
+                <input
+                  className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                  placeholder="Base URL"
+                  value={settings.baseUrl}
+                  onChange={(e) => updateSettings({ baseUrl: e.target.value })}
+                />
+              </label>
+            )}
+            {copilot ? (
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                Uses your GitHub Copilot subscription through the official Copilot SDK, and each
+                prompt counts toward your Copilot usage. Moss signs in with the GitHub CLI
+                (<code>gh auth login</code>), or with a GitHub token entered below. Copilot only
+                chooses which of Moss&apos;s tools to call; Moss runs them, with its own approvals
+                and checks. Select <strong>Load</strong> to check the sign-in and list your models.
+              </p>
+            ) : null}
             <label className="block">
-              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Base URL</span>
-              <input
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
-                placeholder="Base URL"
-                value={settings.baseUrl}
-                onChange={(e) => updateSettings({ baseUrl: e.target.value })}
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">API key (optional)</span>
+              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">{copilot ? "GitHub token (optional)" : "API key (optional)"}</span>
               <input
                 className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
                 type="password"
-                placeholder="API key"
+                aria-label={copilot ? "GitHub token" : "API key"}
+                placeholder={copilot ? "Empty: use the GitHub CLI sign-in" : "API key"}
                 value={settings.apiKey}
                 onChange={(e) => updateSettings({ apiKey: e.target.value })}
                 onBlur={(e) => void persistApiKey(e.currentTarget.value)}
@@ -843,8 +857,10 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                       type="number"
                       min={1}
                       max={65535}
-                      value={settings.smtpPort ?? 465}
-                      onChange={(e) => updateSettings({ smtpPort: Number(e.target.value) || 465 })}
+                      placeholder="465"
+                      value={settings.smtpPort ? settings.smtpPort : ""}
+                      // Empty while typing; sending falls back to 465.
+                      onChange={(e) => updateSettings({ smtpPort: e.target.value === "" ? 0 : Math.min(65535, Math.max(0, Math.floor(Number(e.target.value) || 0))) })}
                     />
                   </label>
                 </div>
@@ -867,6 +883,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                     value={settings.smtpPass ?? ""}
                     onChange={(e) => updateSettings({ smtpPass: e.target.value })}
                   />
+                  {storedUnencrypted("smtpPass") ? <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">This PC has no secure credential storage, so the password is stored unencrypted in Moss's settings.</span> : null}
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-neutral-600 dark:text-neutral-400">From name (optional)</span>
@@ -894,6 +911,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                     value={settings.emailApiKey ?? ""}
                     onChange={(e) => updateSettings({ emailApiKey: e.target.value })}
                   />
+                  {storedUnencrypted("emailApiKey") ? <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">This PC has no secure credential storage, so the key is stored unencrypted in Moss's settings.</span> : null}
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-neutral-600 dark:text-neutral-400">From address</span>

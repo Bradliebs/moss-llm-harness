@@ -72,6 +72,9 @@ describe("SkillsStore", () => {
     expect(reopened.listResources("imported-skill")).toEqual(["REFERENCE.md"]);
     expect(reopened.readResource("imported-skill", "REFERENCE.md")).toBe("supporting detail");
     expect(reopened.readResource("imported-skill", "../existing/SKILL.md")).toBeNull();
+    // An absolute path, including one on another drive, never leaves the skill.
+    expect(reopened.readResource("imported-skill", join(tmpdir(), "outside.txt"))).toBeNull();
+    expect(reopened.readResource("imported-skill", "Z:\\secrets.txt")).toBeNull();
     expect(readFileSync(join(dir, "m-skills", "imported-skill", "REFERENCE.md"), "utf8")).toBe("supporting detail");
     expect(readFileSync(join(dir, "m-skills", "imported-skill", "LICENSE"), "utf8")).toBe("sample license");
   });

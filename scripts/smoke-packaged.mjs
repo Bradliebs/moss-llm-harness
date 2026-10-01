@@ -29,6 +29,18 @@ try {
     assert.deepEqual(serious, [], `${surface} has serious accessibility violations:\n${JSON.stringify(serious, null, 2)}`);
   }
   await assertAccessible("Welcome");
+  // The app's own page may use privileged IPC; secrets round-trip through secure storage.
+  const stored = await window.evaluate(async () => {
+    await window.moss.provider.setCredential("email-smtp", "smoke-secret");
+    const value = await window.moss.provider.getCredential("email-smtp");
+    await window.moss.provider.setCredential("email-smtp", "");
+    return value;
+  });
+  assert.equal(stored, "smoke-secret", "the app window must be allowed to store and read keys");
+  // No other page may open in a window that carries the bridge. A file URL is
+  // refused outright; a web link would open in the system browser instead.
+  assert.equal(await window.evaluate(() => window.open("file:///C:/Windows/win.ini") === null), true, "new windows must be refused");
+  assert.equal(application.windows().length, 1);
   await window.getByRole("heading", { name: "Get started in three steps" }).waitFor();
   await window.keyboard.press("Control+K");
   const palette = window.getByRole("dialog", { name: "Command palette" });
@@ -85,6 +97,12 @@ try {
   await window.setViewportSize({ width: 420, height: 740 });
   await window.getByRole("button", { name: "Open conversations" }).waitFor();
   await assertAccessible("Compact mission layout");
+  // Dropping a file or following a link must not navigate the window away. Last,
+  // because Playwright keeps waiting on the navigation the app cancels.
+  const appUrl = window.url();
+  await window.evaluate(() => { location.href = "file:///C:/Windows/win.ini"; });
+  await window.waitForTimeout(500);
+  assert.equal(window.url(), appUrl, "the window must stay on the app");
   console.log("Packaged setup, guide, command palette, Run center, diagnostics, templates, accessibility, and Mission preflight smoke passed.");
 } finally {
   await application?.close().catch(() => undefined);

@@ -11,6 +11,7 @@ export type ToolPreviewModel =
   | { kind: "edit"; path: string; oldText: string; newText: string; replaceAll: boolean }
   | { kind: "move"; from: string; to: string }
   | { kind: "command"; command: string }
+  | { kind: "email"; to: string[]; subject: string; body: string; html?: string }
   | { kind: "generic"; formatted: string };
 
 const MAX_DIFF_LINES = 1500;
@@ -37,6 +38,14 @@ export function describeToolCall(name: string, args: string): ToolPreviewModel {
     return { kind: "move", from: text("from")!, to: text("to")! };
   }
   if (name === "run_command" && text("command") !== null) return { kind: "command", command: text("command")! };
+  if (name === "send_email" && parsed) {
+    const rawTo = parsed.to;
+    const to = (Array.isArray(rawTo) ? rawTo.filter((item): item is string => typeof item === "string") : typeof rawTo === "string" ? rawTo.split(",") : [])
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const html = text("html")?.trim();
+    return { kind: "email", to, subject: text("subject") ?? "", body: text("body") ?? "", ...(html ? { html } : {}) };
+  }
   return { kind: "generic", formatted: parsed ? JSON.stringify(parsed, null, 2) : args };
 }
 

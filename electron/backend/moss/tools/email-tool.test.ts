@@ -19,7 +19,7 @@ vi.mock("nodemailer", () => ({
   },
 }));
 
-import { sendEmailTool } from "./email-tool";
+import { normalizeSmtpPassword, sendEmailTool } from "./email-tool";
 import type { ToolContext } from "./types";
 
 const EMAIL = { apiKey: "re_test", from: "Moss <noreply@moss.local>" };
@@ -137,6 +137,19 @@ describe("send_email over SMTP", () => {
     expect(smtp.sendMail).toHaveBeenCalledWith(expect.objectContaining({ from: "Moss <me@gmail.com>" }));
   });
 
+  it("turns a bare display name into a sender at the account address", async () => {
+    smtp.sendMail.mockResolvedValue({});
+    const res = await sendEmailTool.execute(args, smtpCtx("Moss Assistant"));
+    expect(res.ok).toBe(true);
+    expect(smtp.sendMail).toHaveBeenCalledWith(expect.objectContaining({ from: "Moss Assistant <me@gmail.com>" }));
+  });
+
+  it("keeps spaces in passwords that are not Google app passwords", () => {
+    expect(normalizeSmtpPassword("abcd efgh ijkl mnop")).toBe("abcdefghijklmnop");
+    expect(normalizeSmtpPassword(" ABCD EFGH IJKL MNOP ")).toBe("ABCDEFGHIJKLMNOP");
+    expect(normalizeSmtpPassword("my pass phrase 2")).toBe("my pass phrase 2");
+  });
+
   it("explains a rejected Gmail login", async () => {
     smtp.sendMail.mockRejectedValue(Object.assign(new Error("Invalid login"), { code: "EAUTH", responseCode: 535 }));
     const res = await sendEmailTool.execute(args, smtpCtx());
@@ -159,7 +172,7 @@ describe("send_email over SMTP", () => {
     const pending = sendEmailTool.execute(args, { ...smtpCtx(), signal: controller.signal });
     controller.abort();
 
-    expect(await pending).toEqual({ ok: false, content: "Send timed out or aborted" });
+    expect(await pending).toEqual({ ok: false, content: expect.stringContaining("Check the Sent folder before sending it again") });
     expect(smtp.close).toHaveBeenCalled();
   });
 });

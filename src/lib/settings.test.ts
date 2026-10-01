@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyPreset,
+  initializeEmailCredentials,
   modelsStore,
+  storedUnencrypted,
   PROVIDER_PRESETS,
   readinessItems,
   readinessProfilePatch,
@@ -225,6 +227,44 @@ describe("setModelRate", () => {
     expect(settingsStore.get().modelRates).toEqual({});
     setModelRate("  ", { inputPer1M: 5, outputPer1M: 5 });
     expect(settingsStore.get().modelRates).toEqual({});
+  });
+});
+
+describe("email secrets", () => {
+  function stubCredentials(initial: Record<string, string> = {}) {
+    const vault = new Map(Object.entries(initial));
+    const setCredential = vi.fn(async (id: string, value: string) => { vault.set(id, value); });
+    vi.stubGlobal("window", { moss: { provider: { setCredential, getCredential: async (id: string) => vault.get(id) ?? "" } } });
+    const saved = new Map<string, string>();
+    vi.stubGlobal("localStorage", { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value) });
+    return { vault, setCredential, saved };
+  }
+
+  it("keeps the Resend key and SMTP password out of localStorage and in secure storage", async () => {
+    const { vault, saved } = stubCredentials();
+    updateSettings({ emailApiKey: "re_secret", smtpPass: "abcd efgh ijkl mnop", smtpUser: "me@gmail.com" });
+    await vi.waitFor(() => expect(vault.get("email-smtp")).toBe("abcd efgh ijkl mnop"));
+    expect(vault.get("email-resend")).toBe("re_secret");
+    const persisted = JSON.parse(saved.get("moss.settings")!) as MossSettings;
+    expect(persisted).toMatchObject({ emailApiKey: "", smtpPass: "", smtpUser: "me@gmail.com" });
+    expect(settingsStore.get().smtpPass).toBe("abcd efgh ijkl mnop");
+  });
+
+  it("moves secrets saved by an older version into secure storage on start", async () => {
+    const { vault } = stubCredentials({ "email-resend": "" });
+    settingsStore.set({ ...baseline, smtpPass: "legacy-pass" });
+    await initializeEmailCredentials();
+    expect(vault.get("email-smtp")).toBe("legacy-pass");
+    expect(settingsStore.get().smtpPass).toBe("legacy-pass");
+  });
+
+  it("keeps a secret in local storage when the OS has no secure storage, rather than losing it", async () => {
+    const saved = new Map<string, string>();
+    vi.stubGlobal("localStorage", { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value) });
+    vi.stubGlobal("window", { moss: { provider: { setCredential: async () => { throw new Error("Secure credential storage is unavailable"); }, getCredential: async () => "" } } });
+    updateSettings({ emailApiKey: "re_no_keyring" });
+    await vi.waitFor(() => expect((JSON.parse(saved.get("moss.settings")!) as MossSettings).emailApiKey).toBe("re_no_keyring"));
+    expect(storedUnencrypted("emailApiKey")).toBe(true);
   });
 });
 

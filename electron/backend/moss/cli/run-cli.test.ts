@@ -201,4 +201,20 @@ describe("runMossCli", () => {
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("Usage: moss");
   });
+
+  it("removes the API key from the environment that commands inherit", async () => {
+    const env: NodeJS.ProcessEnv = { MOSS_API_KEY: "secret" };
+    let seen: string | undefined;
+    await runCli(["--prompt", "hi"], scripted([[text("ok")]]), { env, createProvider: (config) => { seen = config.apiKey; return scripted([[text("ok")]]); } });
+    expect(seen).toBe("secret");
+    expect(env.MOSS_API_KEY).toBeUndefined();
+  });
+
+  it("offers no tools that write the desktop app's memory or need desktop settings", async () => {
+    const requests: ChatRequest[] = [];
+    await runCli(["--prompt", "hi", "--constrained", "never"], scripted([[text("hello")]], requests));
+    const names = requests[0].tools?.map((tool) => tool.name) ?? [];
+    expect(names).toContain("read_file");
+    expect(names.filter((name) => name.startsWith("m_") || name === "send_email" || name === "transcribe_audio")).toEqual([]);
+  });
 });

@@ -7,6 +7,8 @@
 import type { TaskExecutionGrant, ToolRisk } from "../../../common/types";
 import type { UntrustedDerivation } from "./safety/provenance";
 
+import { labelsNameIrreversibleAction, namesIrreversibleAction } from "./safety/irreversible";
+
 export type Permission = "allow" | "ask" | "deny";
 
 const AUTO_ALLOW = new Set<string>([
@@ -66,8 +68,8 @@ export type CommandRisk = "readonly" | "mutating" | "destructive";
 // command substitution) forces a prompt. Patterns are matched case-insensitively
 // against the whole command string, so `echo hi && rm -rf x` is destructive.
 const DESTRUCTIVE_PATTERNS: RegExp[] = [
-  /\brm\s+(?:-\S*\s+)*-\S*[rf]/i, // rm with -r / -f / -rf (any flag order)
-  /\brm\s+--(?:recursive|force)\b/i, // rm --recursive / --force
+  /\brm\b[^|;&\n]*\s-[a-z]*[rf]/i, // rm with -r / -f / -rf anywhere in its arguments
+  /\brm\b[^|;&\n]*\s--(?:recursive|force)\b/i, // rm --recursive / --force
   /\brmdir\b/i,
   /\bdd\b[^|;&\n]*\bof=/i, // dd of=...
   /\bmkfs\b/i,
@@ -110,8 +112,6 @@ const READONLY_COMMANDS = new Set<string>([
   "hostname",
   "uname",
   "date",
-  "env",
-  "printenv",
   "tree",
   "stat",
   "file",
@@ -134,10 +134,32 @@ const GIT_READONLY_SUBCOMMANDS = new Set<string>([
   "cat-file",
 ]);
 
+/** An argument that points outside the workspace: an absolute or home path, a
+ *  UNC share, or a parent directory. Short Windows switches such as /s stay allowed. */
+function pathLeaves(arg: string): boolean {
+  if (/^[a-z]:/i.test(arg) || arg.startsWith("\\") || arg.startsWith("~")) return true;
+  if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(arg)) return true;
+  return arg.startsWith("/") && (arg.length > 4 || /^\/[^/]*\//.test(arg) || arg === "/");
+}
+
+function leavesWorkspace(token: string): boolean {
+  // Quotes, carets, and backticks only splice text together in a shell.
+  const arg = token.replace(/["'^`]/g, "");
+  // A path can also hide after an option: --file=/etc/passwd or -f/etc/passwd.
+  const candidates = [arg, ...arg.split("=").slice(1), /^-[a-z]./i.test(arg) && !arg.startsWith("--") ? arg.slice(2) : ""];
+  return candidates.some((candidate) => candidate !== "" && pathLeaves(candidate));
+}
+
+/** Options that make an otherwise read-only command write files or run programs. */
+const WRITING_OPTIONS = /^--(?:output|ext-diff|pre|exec|textconv)\b/i;
+
 function isReadonlySegment(segment: string): boolean {
   const tokens = segment.trim().split(/\s+/);
   const head = tokens[0]?.toLowerCase();
   if (!head) return false;
+  // Reading outside the workspace sends that content to the model unasked.
+  if (tokens.slice(1).some(leavesWorkspace)) return false;
+  if (tokens.slice(1).some((token) => WRITING_OPTIONS.test(token))) return false;
   if (head === "git") {
     const sub = tokens[1]?.toLowerCase();
     return sub !== undefined && GIT_READONLY_SUBCOMMANDS.has(sub);
@@ -153,11 +175,12 @@ export function classifyCommand(command: string): CommandRisk {
     if (pattern.test(cmd)) return "destructive";
   }
 
-  // Redirection or command substitution can hide a mutation behind an otherwise
-  // read-only-looking command; refuse to auto-run those.
-  if (/[>]|\$\(|`/.test(cmd)) return "mutating";
+  // Redirection, command substitution, or variable expansion (which can print
+  // secrets such as API keys) hide effects behind a read-only-looking command.
+  if (/[<>]|\$|`|%[a-z_][a-z0-9_]*%/i.test(cmd)) return "mutating";
 
-  const segments = cmd.split(/\s*(?:\|\||&&|\||;|\n)\s*/).filter(Boolean);
+  // A single & separates commands in cmd.exe and backgrounds one in POSIX shells.
+  const segments = cmd.split(/\s*(?:\|\||&&|&|\||;|\r?\n|\r)\s*/).filter(Boolean);
   if (segments.length === 0) return "mutating";
   return segments.every(isReadonlySegment) ? "readonly" : "mutating";
 }
@@ -202,6 +225,8 @@ export interface PolicyInput {
   destructiveReason?: string;
   /** prompt when the arguments name an irreversible action */
   checkIrreversible?: boolean;
+  /** the tool only reads from the network, such as opening a page */
+  networkRead?: boolean;
 }
 
 /** Tools that only read from the network. After untrusted content they keep
@@ -209,6 +234,30 @@ export interface PolicyInput {
 const NETWORK_READ_TOOLS = new Set(["web_search", "fetch_url", "browser_navigate"]);
 
 const GATE_RULE = "Changes after untrusted content always need approval.";
+
+/** An http(s) URL whose host is not this machine or a private network. File,
+ *  script, and data URLs, and local addresses, can read things a web page cannot. */
+export function isPublicWebUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  // A trailing dot names the same host ("localhost." is localhost).
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  // A single-label name ("intranet", "router") resolves on the local network.
+  if (!host.includes(".") && !host.includes(":")) return false;
+  if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return false;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return !(a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127));
+  }
+  if (host.includes(":")) return !(host === "::" || host === "::1" || /^f[cd]/.test(host) || /^fe[89a-f]/.test(host) || host.startsWith("::ffff:"));
+  return true;
+}
 
 function derivedReason(input: PolicyInput): string | undefined {
   const derivation = input.untrustedDerivation;
@@ -220,19 +269,14 @@ function derivedReason(input: PolicyInput): string | undefined {
  *  triggered by untrusted content without a human in the loop. */
 const DURABLE_STATE_TOOLS = new Set(["m_remember", "m_forget"]);
 
-const IRREVERSIBLE_ACTION_PATTERN = /\b(delete|destroy|remove|submit|publish|pay|send|confirm|purchase)\b/i;
+/** Working-state entries that act as standing instructions. Facts and questions
+ *  are marked as untrusted instead of prompting. */
+const AUTHORITATIVE_STATE_ACTIONS = new Set(["add_invariant", "record_decision", "protect_path"]);
+
+
 const ALWAYS_PROMPT_TOOLS = new Set(["send_email"]);
 
-function argumentsNameIrreversibleAction(args: Readonly<Record<string, unknown>> | undefined): boolean {
-  const values: string[] = [];
-  const collect = (value: unknown): void => {
-    if (typeof value === "string") values.push(value);
-    else if (Array.isArray(value)) value.forEach(collect);
-    else if (value && typeof value === "object") Object.values(value).forEach(collect);
-  };
-  collect(args);
-  return values.some((value) => IRREVERSIBLE_ACTION_PATTERN.test(value));
-}
+
 
 /** Resolve whether a tool call runs, prompts, or is denied. Centralizes the
  *  whole policy so the agent runner stays thin and the rules stay testable. */
@@ -246,8 +290,11 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
   if (input.destructive) {
     return { action: "prompt", autoApproved: false, risk: "destructive", rule: input.destructiveReason ?? "The tool's server declares it destructive." };
   }
-  if (input.checkIrreversible && argumentsNameIrreversibleAction(input.args)) {
-    return { action: "prompt", autoApproved: false, risk: "destructive", rule: "Its arguments name an irreversible action, such as delete, submit, or pay." };
+  if (input.networkRead && typeof input.args?.url === "string" && !isPublicWebUrl(input.args.url)) {
+    return { action: "prompt", autoApproved: false, risk: "mutating", rule: "It opens a local file, a script, or an address on this computer or network, not a public web page." };
+  }
+  if (input.checkIrreversible && labelsNameIrreversibleAction(input.args)) {
+    return { action: "prompt", autoApproved: false, risk: "destructive", rule: "It acts on a control named for an irreversible action, such as buy, pay, send, submit, or delete." };
   }
   if (input.readOnly) {
     const reason = input.untrusted ? derivedReason(input) : undefined;
@@ -258,9 +305,13 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
   const base = classifyTool(input.name);
   if (base === "deny") return { action: "deny", autoApproved: false };
   if (base === "allow") {
-    return input.untrusted && DURABLE_STATE_TOOLS.has(input.name)
-      ? { action: "prompt", autoApproved: false, risk: "mutating", provenanceGate: true, rule: "Saving memory after untrusted content always needs approval." }
-      : { action: "run", autoApproved: false };
+    if (input.untrusted && DURABLE_STATE_TOOLS.has(input.name)) {
+      return { action: "prompt", autoApproved: false, risk: "mutating", provenanceGate: true, rule: "Saving memory after untrusted content always needs approval." };
+    }
+    if (input.untrusted && input.name === "working_state" && AUTHORITATIVE_STATE_ACTIONS.has(String(input.args?.action ?? ""))) {
+      return { action: "prompt", autoApproved: false, risk: "mutating", provenanceGate: true, rule: "An invariant, decision, or protected path recorded after untrusted content steers every later round, so it needs approval." };
+    }
+    return { action: "run", autoApproved: false };
   }
 
   if (input.name === "jev_evaluate") return { action: "prompt", autoApproved: false, risk: "mutating" };
@@ -272,7 +323,7 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
   if (
     (input.name === "browser_click" || input.name === "desktop_invoke")
     && typeof input.args?.name === "string"
-    && IRREVERSIBLE_ACTION_PATTERN.test(input.args.name)
+    && namesIrreversibleAction(input.args.name)
   ) {
     return { action: "prompt", autoApproved: false, risk: "destructive" };
   }
@@ -296,7 +347,7 @@ export function resolvePermission(input: PolicyInput): PolicyDecision {
 function autoOrPrompt(input: PolicyInput, risk: Exclude<ToolRisk, "destructive">): PolicyDecision {
   if (!mayAutoApprove(input, risk)) return { action: "prompt", autoApproved: false, risk };
   if (input.untrusted) {
-    if (NETWORK_READ_TOOLS.has(input.name)) {
+    if (NETWORK_READ_TOOLS.has(input.name) || input.networkRead) {
       const reason = derivedReason(input);
       if (!reason) return { action: "run", autoApproved: true, risk };
       return { action: "prompt", autoApproved: false, risk, provenanceGate: true, rule: reason };

@@ -7,15 +7,17 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { app, BrowserWindow, Menu, session } from "electron";
+import { app, BrowserWindow, Menu, session, shell } from "electron";
 import type { MenuItemConstructorOptions } from "electron";
 
 import { createLogger } from "../common/logger";
 import { mcpManager } from "./backend/moss/mcp/mcp-manager";
+import { stopCopilotClients } from "./backend/moss/providers/copilot";
 import { memoryStore } from "./backend/moss/memory/memory-store";
 import { taskEngine } from "./backend/moss/task/task-engine";
 import { productDiagnostics } from "./backend/moss/product-diagnostics";
 import { registerChatIpc } from "./ipc/chat-ipc";
+import { guardWindow, setAppLocation } from "./window-guard";
 
 const log = createLogger("Main");
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -86,6 +88,9 @@ function createWindow(): void {
       spellcheck: true,
     },
   });
+
+  setAppLocation(devServerUrl ? { devServerUrl } : { distDir: join(app.getAppPath(), "dist") });
+  guardWindow(mainWindow.webContents, (url) => void shell.openExternal(url));
 
   mainWindow.webContents.on("context-menu", (_event, params) => {
     if (!mainWindow || !params.isEditable) return;
@@ -204,4 +209,5 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   void mcpManager.close();
+  void stopCopilotClients();
 });

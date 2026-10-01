@@ -1,10 +1,11 @@
 import type { Tool, ToolContext, ToolResult } from "../tools/types";
 import { resolveInWorkspace } from "../tools/path-guard";
 import { managedTools } from "../tools/managed-tools";
+import { namesIrreversibleAction } from "../safety/irreversible";
 
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_INPUT_CHARS = 10_000;
-const FINAL_ACTION_PATTERN = /\b(submit|publish|pay|send|confirm|purchase)\b/i;
+
 
 export interface BrowserTarget {
   role?: string;
@@ -221,7 +222,7 @@ export function createBrowserTools(options: BrowserToolsOptions): Tool[] {
         if (target.selector) throw new Error("Browser clicks require a semantic role and accessible name");
         if (!target.name) throw new Error("Browser clicks require an accessible name");
         await assertDriverUrlAllowed(driver, allowedDomains);
-        if (FINAL_ACTION_PATTERN.test(target.name) && ctx.approvalGranted !== true) {
+        if (namesIrreversibleAction(target.name) && ctx.approvalGranted !== true) {
           throw new Error("Explicit irreversible approval capability is required for this final action");
         }
         await driver.click(target);

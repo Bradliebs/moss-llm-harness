@@ -3,10 +3,11 @@ import { basename } from "node:path";
 import type { Tool, ToolContext, ToolResult } from "../tools/types";
 import { resolveInWorkspace } from "../tools/path-guard";
 import { managedTools } from "../tools/managed-tools";
+import { namesIrreversibleAction } from "../safety/irreversible";
 
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_INPUT_CHARS = 10_000;
-const IRREVERSIBLE_PATTERN = /\b(delete|destroy|remove|publish|pay|send|confirm|purchase)\b/i;
+
 
 export interface DesktopControlSelector {
   automationId?: string;
@@ -214,7 +215,7 @@ export function createDesktopTools(options: DesktopToolsOptions): Tool[] {
         const driver = manager.get(String(args.taskId ?? ""), String(args.sessionId ?? ""));
         const target = selectorFromArgs(args);
         if (!target.name) throw new Error("Desktop control invocation requires an exact accessible name");
-        if (IRREVERSIBLE_PATTERN.test(target.name) && ctx.approvalGranted !== true) {
+        if (namesIrreversibleAction(target.name) && ctx.approvalGranted !== true) {
           throw new Error("Explicit irreversible approval is required for this control invocation");
         }
         await driver.invoke(target);

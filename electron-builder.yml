@@ -17,12 +17,17 @@ files:
   - package.json
 
 asar: true
+# The Copilot SDK starts its runtime executable as a child process, which
+# cannot run from inside the archive.
+asarUnpack:
+  - "**/node_modules/@github/copilot-sdk-*/**"
+  - "node_modules/koffi/**"
 extraResources:
   - from: electron/backend/moss/capabilities/catalog-artifacts
     to: catalog-artifacts
     filter:
       - "**/*"
-# No native modules are compiled, so skip the rebuild step.
+# No native modules are compiled (the Copilot runtime ships prebuilt), so skip the rebuild step.
 npmRebuild: false
 
 win:

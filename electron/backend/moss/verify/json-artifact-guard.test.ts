@@ -79,9 +79,8 @@ describe("public JSON artifact guard", () => {
     roots.push(outside);
     writeFileSync(join(outside, "answer.json"), "1");
     symlinkSync(outside, join(root, "redirect"), "junction");
-    const guard = new JsonArtifactGuard([{ sourcePath: "source.json", outputPath: "redirect/answer.json", valuePath: ["payload"] }], root);
-    guard.observe("read_file", { path: "source.json" }, { ok: true, content: '{"payload":1}' });
-    expect((await guard.check(signal)).accept).toBe(false);
+    // The path guard follows the junction and refuses the output path up front.
+    expect(() => new JsonArtifactGuard([{ sourcePath: "source.json", outputPath: "redirect/answer.json", valuePath: ["payload"] }], root)).toThrow(/through a link/);
   });
 
   it("rejects escaping or identical source and output paths", () => {

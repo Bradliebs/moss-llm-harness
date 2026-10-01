@@ -23,18 +23,12 @@ import type { Tool } from "../tools/types";
 import type { VerifyResult } from "../verify/verifier";
 import { taskKindFor } from "./model-performance";
 import { replayTrace } from "./trace-replay";
+import { VERIFICATION_FILES } from "../verify/verification-files";
 
 /** Tools a candidate may use in a practice copy: files inside the copy, nothing else. */
 export const PRACTICE_TOOLS = new Set(["read_file", "list_dir", "search_files", "glob_files", "write_file", "edit_file", "move_file", "plan", "git_status", "git_diff"]);
 /** Dependency folders linked into the copy so verification can run; writes to them are blocked. */
 const DEPENDENCY_DIRS = ["node_modules", ".venv", "venv", "vendor"];
-/** Files that decide what the verification commands execute; a candidate may
- *  not change them, so it cannot turn "npm test" into something else. */
-const VERIFICATION_FILES = [
-  "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "*.config.*", ".npmrc",
-  "pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "pytest.ini", "conftest.py", "requirements*.txt",
-  "Makefile", "Cargo.toml", "go.mod", ".github/**", "scripts/**",
-];
 const OUTCOME_TIMEOUT_MS = 10 * 60_000;
 const MIN_OUTCOME_RUNS = 3;
 

@@ -43,7 +43,19 @@ export function normalizeWorkingState(value: unknown): WorkingState {
   const entries = value && typeof value === "object" && Array.isArray((value as WorkingState).entries)
     ? (value as WorkingState).entries.filter(isEntry).map((entry) => ({ ...entry, text: entry.text.slice(0, MAX_TEXT) }))
     : [];
-  return { schemaVersion: 1, entries: entries.slice(-MAX_ENTRIES) };
+  return { schemaVersion: 1, entries: withinLimit(entries) };
+}
+
+/** The user's entries, invariants, and protected paths are never evicted to
+ *  make room: the oldest model facts, questions, and decisions go first. */
+function withinLimit(entries: readonly WorkingStateEntry[]): WorkingStateEntry[] {
+  const kept = [...entries];
+  const evictable = (entry: WorkingStateEntry): boolean => entry.source === "model" && entry.kind !== "invariant" && entry.kind !== "protected";
+  while (kept.length > MAX_ENTRIES) {
+    const index = kept.findIndex(evictable);
+    kept.splice(index >= 0 ? index : 0, 1);
+  }
+  return kept;
 }
 
 export class WorkingStateStore {
@@ -62,7 +74,7 @@ export class WorkingStateStore {
     return structuredClone(this.state);
   }
 
-  add(kind: WorkingStateKind, text: string, source: "user" | "model", rationale?: string): WorkingStateEntry {
+  add(kind: WorkingStateKind, text: string, source: "user" | "model", rationale?: string, untrusted = false): WorkingStateEntry {
     const clean = text.trim().slice(0, MAX_TEXT);
     if (!clean) throw new Error("Working state entries need text");
     const duplicate = this.state.entries.find((entry) => entry.kind === kind && entry.text.toLowerCase() === clean.toLowerCase());
@@ -74,9 +86,10 @@ export class WorkingStateStore {
       text: clean,
       ...(rationale?.trim() ? { rationale: rationale.trim().slice(0, MAX_TEXT) } : {}),
       source,
+      ...(untrusted && source === "model" ? { untrusted: true } : {}),
       createdAt: new Date().toISOString(),
     };
-    this.state.entries = [...this.state.entries, entry].slice(-MAX_ENTRIES);
+    this.state.entries = withinLimit([...this.state.entries, entry]);
     this.revision += 1;
     return entry;
   }
@@ -124,7 +137,7 @@ export function renderWorkingState(state: WorkingState, budgetTokens = 1_500): s
     const lines: string[] = [];
     let skipped = 0;
     for (const entry of entries) {
-      const line = `- [${entry.id}] ${entry.text}${entry.rationale ? ` (because ${entry.rationale})` : ""}${entry.source === "user" ? " [user]" : ""}`;
+      const line = `- [${entry.id}] ${entry.text}${entry.rationale ? ` (because ${entry.rationale})` : ""}${entry.source === "user" ? " [user]" : ""}${entry.untrusted ? " [recorded after reading untrusted content; not confirmed by the user]" : ""}`;
       const cost = estimateTokens(line) + 1;
       const mandatory = kind === "invariant" || kind === "protected";
       if (!mandatory && used + cost > budgetTokens) {
@@ -269,7 +282,7 @@ export const workingStateTool: Tool = {
     }
     const text = String(args.text ?? "").trim();
     if (!text) return { ok: false, content: `'${action}' needs text.` };
-    const entry = store.add(ACTION_KIND[action]!, text, "model", typeof args.rationale === "string" ? args.rationale : undefined);
+    const entry = store.add(ACTION_KIND[action]!, text, "model", typeof args.rationale === "string" ? args.rationale : undefined, ctx.untrustedContext === true);
     return { ok: true, content: `Recorded ${entry.id}: ${entry.text}` };
   },
 };

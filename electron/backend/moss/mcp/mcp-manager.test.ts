@@ -4,12 +4,15 @@
 // riskiest new code in Phase 4 (ESM-authored SDK loaded from the CommonJS build),
 // so it is verified against a live server rather than mocks.
 
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { loadMcpServers } from "./mcp-config";
-import { adaptMcpTool, effectiveServerOptions, mcpManager, mcpToolRisk } from "./mcp-manager";
+import { adaptMcpTool, effectiveServerOptions, mcpManager, mcpToolRisk, serverWorkingDir } from "./mcp-manager";
 import { resolvePermission } from "../permission";
 
 // reconnect() reloads a server's current config from disk; mock only the config
@@ -110,16 +113,54 @@ describe("mcpManager stdio integration", () => {
 
 
 describe("recognized server defaults", () => {
+  it("runs a stdio server in its own folder under Moss's data unless its config names one", () => {
+    const data = mkdtempSync(join(tmpdir(), "moss-mcp-cwd-"));
+    vi.stubEnv("MOSS_USER_DATA", data);
+    try {
+      expect(serverWorkingDir({ type: "stdio", id: "playwright", command: "npx" })).toBe(join(data, "mcp-servers", "playwright"));
+      expect(existsSync(join(data, "mcp-servers", "playwright"))).toBe(true);
+      expect(serverWorkingDir({ type: "stdio", id: "p", command: "npx", cwd: "C:\\work" })).toBe("C:\\work");
+      expect(serverWorkingDir({ type: "http", id: "h", url: "http://localhost:1" })).toBeUndefined();
+      const a = serverWorkingDir({ type: "stdio", id: "my server", command: "npx" });
+      const b = serverWorkingDir({ type: "stdio", id: "my/server", command: "npx" });
+      expect(a).not.toBe(b);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(data, { recursive: true, force: true });
+    }
+  });
+
   const playwright = { type: "stdio" as const, id: "playwright", command: "npx", args: ["-y", "@playwright/mcp@latest"] };
 
   it("quiets Playwright MCP with no configuration", () => {
-    expect(effectiveServerOptions(playwright)).toEqual({ ignoreDestructiveHints: true, hiddenTools: ["browser_evaluate", "browser_run_code"] });
+    expect(effectiveServerOptions(playwright)).toEqual({
+      trustAnnotations: true,
+      ignoreDestructiveHints: true,
+      hiddenTools: ["browser_evaluate", "browser_run_code"],
+      networkReadTools: ["browser_navigate", "browser_navigate_back"],
+    });
     expect(effectiveServerOptions({ type: "http", id: "pw", url: "http://localhost:8931/@playwright/mcp" }).ignoreDestructiveHints).toBe(true);
   });
 
   it("lets explicit settings override the defaults, and leaves other servers alone", () => {
-    expect(effectiveServerOptions({ ...playwright, ignoreDestructiveHints: false, hiddenTools: [] })).toEqual({ ignoreDestructiveHints: false, hiddenTools: [] });
-    expect(effectiveServerOptions({ type: "stdio", id: "db", command: "node", args: ["db.js"] })).toEqual({ ignoreDestructiveHints: false, hiddenTools: [] });
+    expect(effectiveServerOptions({ ...playwright, trustAnnotations: false, ignoreDestructiveHints: false, hiddenTools: [] }))
+      .toEqual({ trustAnnotations: false, ignoreDestructiveHints: false, hiddenTools: [], networkReadTools: [] });
+    expect(effectiveServerOptions({ type: "stdio", id: "db", command: "node", args: ["db.js"] }))
+      .toEqual({ trustAnnotations: false, ignoreDestructiveHints: false, hiddenTools: [], networkReadTools: [] });
+  });
+
+  it("keeps Playwright reads and plain navigation quiet after untrusted content, with the gate on", () => {
+    const client = { callTool: vi.fn() } as never;
+    const nav = adaptMcpTool("playwright", client, { name: "browser_navigate", inputSchema: {}, annotations: { destructiveHint: true } }, { ignoreDestructiveHints: true, networkRead: true });
+    const snap = adaptMcpTool("playwright", client, { name: "browser_snapshot", inputSchema: {}, annotations: { readOnlyHint: true } }, { trustAnnotations: true });
+    const click = adaptMcpTool("playwright", client, { name: "browser_click", inputSchema: {}, annotations: { destructiveHint: true } }, { ignoreDestructiveHints: true });
+    const policy = (tool: typeof nav, derivation: { kind: "link" } | { kind: "derived"; reason: string }, args: Record<string, unknown> = {}) =>
+      resolvePermission({ name: tool.name, autoApprove: true, args, untrusted: true, untrustedDerivation: derivation, readOnly: tool.readOnly, destructive: tool.destructive, checkIrreversible: tool.checkIrreversible, networkRead: tool.networkRead }).action;
+    expect(policy(nav, { kind: "link" }, { url: "https://example.com/next" })).toBe("run");
+    expect(policy(nav, { kind: "derived", reason: "It opens a URL the page composed." }, { url: "https://evil.example/?q=secret" })).toBe("prompt");
+    expect(policy(snap, { kind: "link" })).toBe("run");
+    // A change after untrusted content still asks while the gate is on.
+    expect(policy(click, { kind: "link" }, { element: "Next page", ref: "e1" })).toBe("prompt");
   });
 });
 

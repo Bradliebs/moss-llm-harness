@@ -59,6 +59,7 @@ export default defineConfig({
         "common/model-family.ts",
         "electron/backend/moss/cli/run-cli.ts",
         "electron/backend/moss/runtime/user-data.ts",
+        "electron/backend/moss/providers/copilot.ts",
         "electron/backend/moss/models/tool-repair.ts",
         "electron/backend/moss/models/step-protocol.ts",
         "electron/backend/moss/models/tool-index.ts",

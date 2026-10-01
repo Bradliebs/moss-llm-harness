@@ -7,7 +7,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("node:fs", () => ({ readFileSync: vi.fn(() => Buffer.from("AUDIO")) }));
+// The workspace does not exist on disk, so the path guard skips its link check.
+vi.mock("node:fs", () => ({ readFileSync: vi.fn(() => Buffer.from("AUDIO")), existsSync: vi.fn(() => false), realpathSync: { native: vi.fn((path: string) => path) } }));
 vi.mock("../stt", () => ({ transcribeAudio: vi.fn(async () => "transcribed text") }));
 
 import { readFileSync } from "node:fs";

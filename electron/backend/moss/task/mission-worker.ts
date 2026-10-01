@@ -81,10 +81,17 @@ export class RunTurnMissionWorker implements MissionWorker {
     let terminal: Extract<MossEvent, { type: "turn-complete" | "turn-aborted" | "turn-error" }> | undefined;
     let completion: CompletionContext | undefined;
 
+    const dependencies = await loadDependencies(order, this.options.loadArtifact);
+    let untrustedSources: string[] = [];
     await runTurn({
       provider,
       model: this.options.model,
-      messages: await workOrderMessages(order, this.options.loadArtifact),
+      messages: workOrderMessages(order, dependencies),
+      // Text an earlier step read from the web is still untrusted here.
+      initialUntrusted: dependencies
+        .filter((artifact) => (artifact.untrustedSources?.length ?? 0) > 0)
+        .map((artifact) => ({ sources: artifact.untrustedSources!, content: artifact.content ?? artifact.summary })),
+      onUntrustedSources: (sources) => { untrustedSources = sources; },
       tools: definitions,
       toolRegistry: registry,
       workspaceRoot: this.options.workspaceRoot,
@@ -154,7 +161,7 @@ export class RunTurnMissionWorker implements MissionWorker {
       result: {
         status: "succeeded",
         summary,
-        artifacts: (order.step.mission?.expectedArtifacts ?? []).map((name) => ({ name, summary, content })),
+        artifacts: (order.step.mission?.expectedArtifacts ?? []).map((name) => ({ name, summary, content, ...(untrustedSources.length > 0 ? { untrustedSources } : {}) })),
       },
       usage,
     };
@@ -173,18 +180,33 @@ function scopedGrant(order: MissionWorkOrder, allowed: ReadonlySet<string>): Tas
   };
 }
 
-async function workOrderMessages(
+interface LoadedDependency {
+  id: string;
+  stepId: string;
+  name: string;
+  summary: string;
+  sha256: string;
+  content?: string | null;
+  untrustedSources?: string[];
+}
+
+function loadDependencies(
   order: MissionWorkOrder,
   loadArtifact?: (taskId: string, artifactId: string) => Promise<string | null>,
-): Promise<AgentMessage[]> {
-  const dependencyArtifacts = await Promise.all(order.dependencyArtifacts.map(async (artifact) => ({
+): Promise<LoadedDependency[]> {
+  return Promise.all(order.dependencyArtifacts.map(async (artifact) => ({
     id: artifact.id,
     stepId: artifact.stepId,
     name: artifact.name,
     summary: artifact.summary,
     sha256: artifact.sha256,
     ...(loadArtifact ? { content: await loadArtifact(order.taskId, artifact.id) } : {}),
+    ...(artifact.untrustedSources?.length ? { untrustedSources: [...artifact.untrustedSources] } : {}),
   })));
+}
+
+function workOrderMessages(order: MissionWorkOrder, dependencies: readonly LoadedDependency[]): AgentMessage[] {
+  const dependencyArtifacts = dependencies.map(({ untrustedSources: _sources, ...artifact }) => artifact);
   return [
     {
       role: "system",
