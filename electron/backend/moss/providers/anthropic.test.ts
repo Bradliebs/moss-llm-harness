@@ -132,7 +132,7 @@ describe("AnthropicProvider.streamChat", () => {
       }),
     );
     const events = await collect(new AnthropicProvider("https://api"));
-    expect(events).toEqual([{ type: "usage", usage: { inputTokens: 1005 } }]);
+    expect(events).toEqual([{ type: "usage", usage: { inputTokens: 1005, cachedInputTokens: 900 } }]);
   });
 
   it("throws when the stream carries an error event", async () => {
@@ -166,9 +166,8 @@ describe("AnthropicProvider.streamChat", () => {
     expect(body.system).toEqual([
       { type: "text", text: "be nice", cache_control: { type: "ephemeral" } },
     ]);
-    expect(body.messages).toEqual([
-      { role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] },
-    ]);
+    // The only user message carries this turn's context, so it is not cached.
+    expect(JSON.stringify(body.messages)).not.toContain("cache_control");
     expect(body.tools).toEqual([
       {
         name: "do_thing",
@@ -198,6 +197,24 @@ describe("AnthropicProvider.streamChat", () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
     expect(body.tools[0].cache_control).toBeUndefined();
     expect(body.tools[1].cache_control).toEqual({ type: "ephemeral" });
+  });
+
+  it("caches the history before the latest user message, not the message itself", async () => {
+    const fetchMock = stubStream(sse({ type: "content_block_stop", index: 0 }));
+    const request: ChatRequest = {
+      model: "claude",
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "reply" },
+        { role: "user", content: "second <turn_context>x</turn_context>" },
+      ],
+    };
+    for await (const _ of new AnthropicProvider("https://api", "key").streamChat(request, new AbortController().signal)) {
+      /* drain */
+    }
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body.messages[1].content).toEqual([{ type: "text", text: "reply", cache_control: { type: "ephemeral" } }]);
+    expect(JSON.stringify(body.messages[2])).not.toContain("cache_control");
   });
 
   it("marks the last block of a multi-block final message instead of replacing it", async () => {

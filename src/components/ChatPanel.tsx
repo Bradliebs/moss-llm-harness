@@ -1402,9 +1402,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         {usage.inputTokens || usage.outputTokens ? (
           <span
             className="text-xs text-neutral-400 dark:text-neutral-600"
-            title="Total token usage for this conversation (input / output), summed across messages."
+            title={`Total token usage for this conversation (input / output), summed across messages.${usage.cachedInputTokens ? ` ${formatTokens(usage.cachedInputTokens)} input tokens came from the provider's prompt cache.` : ""}`}
           >
-            {formatTokens(usage.inputTokens ?? 0)} in / {formatTokens(usage.outputTokens ?? 0)} out
+            {formatTokens(usage.inputTokens ?? 0)} in{usage.cachedInputTokens && usage.inputTokens ? ` (${Math.round((100 * usage.cachedInputTokens) / usage.inputTokens)}% cached)` : ""} / {formatTokens(usage.outputTokens ?? 0)} out
           </span>
         ) : null}
         {cost !== null && (usage.inputTokens || usage.outputTokens) ? (

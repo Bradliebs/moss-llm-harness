@@ -41,20 +41,28 @@ function noteText(dropped: number): string {
   return `[Context note: ${dropped} earlier ${dropped === 1 ? "message was" : "messages were"} omitted to fit the context window.]`;
 }
 
-function systemWithNote(system: AgentMessage | undefined, dropped: number): AgentMessage {
-  if (system) return { ...system, content: `${system.content}\n\n${noteText(dropped)}` };
-  return { role: "system", content: noteText(dropped) };
+/** The leading system messages with the omission note on the last of them.
+ *  A task turn has two (the execution policy, then the real system prompt), and
+ *  both must survive compaction. */
+function systemWithNote(system: readonly AgentMessage[], dropped: number): AgentMessage[] {
+  if (system.length === 0) return [{ role: "system", content: noteText(dropped) }];
+  const last = system[system.length - 1];
+  return [...system.slice(0, -1), { ...last, content: `${last.content}\n\n${noteText(dropped)}` }];
+}
+
+/** How many system messages lead the history (the app's prompt, plus task notes). */
+export function leadingSystemCount(messages: readonly AgentMessage[]): number {
+  let leading = 0;
+  while (leading < messages.length && messages[leading].role === "system") leading++;
+  return leading;
 }
 
 function splitSystem(messages: readonly AgentMessage[]): {
-  system: AgentMessage | undefined;
+  system: AgentMessage[];
   body: readonly AgentMessage[];
 } {
-  const hasSystem = messages.length > 0 && messages[0].role === "system";
-  return {
-    system: hasSystem ? messages[0] : undefined,
-    body: hasSystem ? messages.slice(1) : messages,
-  };
+  const leading = leadingSystemCount(messages);
+  return { system: messages.slice(0, leading), body: messages.slice(leading) };
 }
 
 /** Return whether a provider error specifically reports an oversized model
@@ -80,7 +88,7 @@ export function compactForOverflow(messages: readonly AgentMessage[]): Compactio
   }
   if (cut < 1) return unchanged;
 
-  const compacted = [systemWithNote(system, cut), ...body.slice(cut)];
+  const compacted = [...systemWithNote(system, cut), ...body.slice(cut)];
   if (estimateTokens(compacted) >= estimateTokens(messages)) return unchanged;
 
   return {
@@ -111,12 +119,22 @@ export function compactIfNeeded(
   for (let i = 0; i < body.length; i++) if (body[i].role === "user") userIdxs.push(i);
   if (userIdxs.length === 0) return unchanged; // no safe boundary
 
-  // Prefer the smallest drop that fits; otherwise fall back to the largest safe
-  // drop (keep from the most recent user message onward).
+  // Drop in steps of half the budget rather than the minimum that fits. The
+  // persisted history keeps growing, so a minimal cut would move every turn,
+  // changing the start of the prompt (losing the provider's prefix cache) and
+  // the dropped set (forcing a fresh summary). Stepped, the same cut holds until
+  // about half a budget of new conversation has accumulated.
+  const quantum = Math.max(1, Math.floor(inputBudget / 2));
+  const excess = estimateTokens(messages) - inputBudget;
+  const stepDrop = Math.ceil(excess / quantum) * quantum;
+  let dropped = 0;
+  const prefix: number[] = [0];
+  for (const message of body) prefix.push((dropped += estimateTokens([message])));
   let cut = userIdxs[userIdxs.length - 1];
   for (const c of userIdxs) {
     if (c === 0) continue; // dropping nothing is not compaction
-    const candidate = [systemWithNote(system, c), ...body.slice(c)];
+    if (prefix[c] < stepDrop) continue;
+    const candidate = [...systemWithNote(system, c), ...body.slice(c)];
     if (estimateTokens(candidate) <= inputBudget) {
       cut = c;
       break;
@@ -125,7 +143,7 @@ export function compactIfNeeded(
   if (cut === 0) return unchanged; // only the first message is a user; nothing to drop
 
   return {
-    messages: [systemWithNote(system, cut), ...body.slice(cut)],
+    messages: [...systemWithNote(system, cut), ...body.slice(cut)],
     compacted: true,
     droppedCount: cut,
   };

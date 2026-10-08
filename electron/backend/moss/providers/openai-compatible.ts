@@ -23,7 +23,7 @@ interface OAStreamChunk {
     delta?: { content?: string; tool_calls?: OAToolCallDelta[] };
     finish_reason?: string | null;
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
 }
 
 interface OpenAiModelList {
@@ -187,7 +187,11 @@ export class OpenAiCompatibleProvider implements ChatProvider {
       if (json.usage) {
         yield {
           type: "usage",
-          usage: { inputTokens: json.usage.prompt_tokens, outputTokens: json.usage.completion_tokens },
+          usage: {
+            inputTokens: json.usage.prompt_tokens,
+            outputTokens: json.usage.completion_tokens,
+            ...(json.usage.prompt_tokens_details?.cached_tokens ? { cachedInputTokens: json.usage.prompt_tokens_details.cached_tokens } : {}),
+          },
         };
       }
       if (choice?.finish_reason === "tool_calls") yield* flush();

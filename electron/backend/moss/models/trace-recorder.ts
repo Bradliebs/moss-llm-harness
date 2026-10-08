@@ -99,6 +99,7 @@ export class RecordingProvider implements ChatProvider {
             ...response.usage,
             ...(event.usage.inputTokens !== undefined ? { inputTokens: event.usage.inputTokens } : {}),
             ...(event.usage.outputTokens !== undefined ? { outputTokens: event.usage.outputTokens } : {}),
+            ...(event.usage.cachedInputTokens !== undefined ? { cachedInputTokens: event.usage.cachedInputTokens } : {}),
           };
         }
         yield event;

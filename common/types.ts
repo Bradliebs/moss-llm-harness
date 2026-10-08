@@ -429,6 +429,11 @@ export interface AgentMessage {
   toolCalls?: ToolCall[];
   /** present on tool-result turns; references the ToolCall.id it answers */
   toolCallId?: string;
+  /** on tool results: what the model actually saw, when it differs from the
+   *  capped content (wrapped as external, quarantined, spilled, or with harness
+   *  notes). Replayed on later turns so the model sees the same text and the
+   *  provider's prompt cache still matches. Never shown to the user. */
+  modelContent?: string;
   /** on tool results that carry third-party content their tool name does not
    *  reveal (a subagent report); never sent to a provider */
   untrustedSources?: string[];
@@ -468,6 +473,8 @@ export interface AgentMessage {
 export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;
+  /** of inputTokens, how many the provider served from its prompt cache */
+  cachedInputTokens?: number;
 }
 
 /** Shadow confidence label for a completed turn, derived from what happened in

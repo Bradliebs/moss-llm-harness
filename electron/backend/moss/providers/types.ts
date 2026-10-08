@@ -20,7 +20,7 @@ export interface ChatRequest {
 export type ProviderStreamEvent =
   | { type: "text-delta"; text: string }
   | { type: "tool-call"; toolCall: { id: string; name: string; arguments: string } }
-  | { type: "usage"; usage: { inputTokens?: number; outputTokens?: number } };
+  | { type: "usage"; usage: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number } };
 
 export interface ChatProvider {
   readonly kind: string;

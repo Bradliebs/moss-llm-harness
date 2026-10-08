@@ -95,6 +95,7 @@ import { StepProtocolProvider } from "../backend/moss/models/step-protocol";
 import { findToolTool, semanticIndex } from "../backend/moss/models/tool-index";
 import { endpointLabel } from "../backend/moss/models/capability-profile";
 import { applyScaffoldingMessages, planScaffolding } from "../backend/moss/models/scaffolding";
+import { findToolDefinition, planToolDeferral } from "../backend/moss/models/tool-deferral";
 import { RecordingProvider, TraceRecorder, traceStore } from "../backend/moss/models/trace-recorder";
 import { replayTrace } from "../backend/moss/models/trace-replay";
 import { skillLedger, type SkillOutcome } from "../backend/moss/skills/skill-ledger";
@@ -109,7 +110,7 @@ import { productDiagnostics } from "../backend/moss/product-diagnostics";
 import { createProvider } from "../backend/moss/providers";
 import { skillsStore } from "../backend/moss/skills/skills-store";
 import { transcribeAudio } from "../backend/moss/stt";
-import { buildSystemMessage } from "../backend/moss/system-prompt";
+import { buildSystemMessage, buildTurnMemory } from "../backend/moss/system-prompt";
 import { classifyTool } from "../backend/moss/permission";
 import { MissionAuthorityBroker, validateMissionAuthorizationRequest } from "../backend/moss/task/mission-authority";
 import { MissionController, remainingBudget } from "../backend/moss/task/mission-controller";
@@ -915,10 +916,15 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     const messages = hasSystem
       ? req.messages
       : [buildSystemMessage({ includeSkills: enableTools, includeClarification: !req.taskSpec && !req.taskId, query: lastUser?.content ?? "", customInstructions: req.customInstructions, personalityId: req.personalityId, adaptiveTone: req.adaptiveTone }), ...req.messages];
+    // Notes that depend on this request go in the turn context, not the system
+    // message, so the system message stays the same from turn to turn.
+    const turnContext: string[] = [];
     if (!hasSystem && lastUser?.content) {
+      const recalled = buildTurnMemory(lastUser.content);
+      if (recalled) turnContext.push(recalled);
       // Episodic memory: verified lessons from earlier runs that match this request.
       const lessons = renderLessons(await lessonStore.relevant(lastUser.content, 3, rankingEmbed ? (query, texts) => semanticIndex.similarities(query, texts, rankingEmbed, controller.signal) : undefined).catch(() => []));
-      if (lessons) messages[0] = { ...messages[0], content: `${messages[0].content}\n\n${lessons}` };
+      if (lessons) turnContext.push(lessons);
     }
     const workingState = new WorkingStateStore(normalizeWorkingState(req.workingState));
     const stallLimit = typeof req.stallLimit === "number" && Number.isFinite(req.stallLimit) ? Math.max(0, Math.floor(req.stallLimit)) : undefined;
@@ -1078,25 +1084,30 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
           : [],
         ...(baseline ? { baseline: { passed: baseline.ok, checks: baseline.results.length } } : {}),
       });
-      const userIndex = messages.map((message) => message.role).lastIndexOf("user");
-      messages.splice(userIndex < 0 ? messages.length : userIndex, 0, {
-        role: "system",
-        content: renderTaskProgressPacket(packet),
-      });
+      turnContext.push(renderTaskProgressPacket(packet));
     }
     // Missions keep their granted capabilities and budget accounting, so model
     // adaptation and escalation apply to ordinary turns and turn tasks only.
     const profile = req.adaptiveScaffolding !== false && toolDefinitions.length > 0 ? await profileFor(req.config) : null;
-    let scaffolding = planScaffolding(profile, toolDefinitions, lastUser?.content ?? "");
-    const narrowed = scaffolding.tools.length < toolDefinitions.length;
-    if (narrowed) {
-      // Rank by meaning when embeddings are configured, and always offer
-      // find_tool so a narrowed model can recover a tool it was not given.
-      const ranked = await semanticIndex.rankTools(toolDefinitions, lastUser?.content ?? "", scaffolding.tools.length, rankingEmbed, controller.signal);
-      scaffolding = { ...scaffolding, tools: [...ranked, { name: findToolTool.name, description: findToolTool.description, parameters: findToolTool.parameters }] };
+    // Large MCP tool sets wait until the conversation needs them.
+    const deferral = planToolDeferral(toolDefinitions, req.messages, lastUser?.content ?? "");
+    for (const group of deferral.enabled) decide({ kind: "find-tool", summary: `Offered the ${group.id} tools: ${group.reason}.`, settings: "models" });
+    if (deferral.deferred.length > 0) {
+      decide({ kind: "find-tool", summary: `Held back ${deferral.deferred.map((group) => `${group.id} (${group.tools.length} tools)`).join(", ")} until needed; find_tool enables a set.`, settings: "models" });
     }
+    let scaffolding = planScaffolding(profile, deferral.offered, lastUser?.content ?? "");
+    const narrowed = scaffolding.tools.length < deferral.offered.length;
+    const needsFindTool = narrowed || deferral.deferred.length > 0;
+    if (narrowed) {
+      // Rank by meaning when embeddings are configured.
+      const ranked = await semanticIndex.rankTools(deferral.offered, lastUser?.content ?? "", scaffolding.tools.length, rankingEmbed, controller.signal);
+      scaffolding = { ...scaffolding, tools: ranked };
+    }
+    // find_tool lets a narrowed model, or any model with tools held back,
+    // recover a tool it was not given.
+    if (needsFindTool) scaffolding = { ...scaffolding, tools: [...scaffolding.tools, findToolDefinition({ name: findToolTool.name, description: findToolTool.description, parameters: findToolTool.parameters }, deferral.deferred)] };
     if (scaffolding.notice) decide({ kind: "scaffold", summary: scaffolding.notice, settings: "models" }, "info");
-    const scaffoldedRegistry = narrowed ? new Map([...toolRegistry, [findToolTool.name, findToolTool]]) : toolRegistry;
+    const scaffoldedRegistry = needsFindTool ? new Map([...toolRegistry, [findToolTool.name, findToolTool]]) : toolRegistry;
     // Learned procedures are offered whenever tools are on, even when narrowed.
     const procedures = learnProcedures && toolDefinitions.length > 0 ? await procedureStore.offered().catch(() => []) : [];
     if (procedures.length > 0) {
@@ -1127,15 +1138,19 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     await runTurn({
       provider,
       model: req.config.model,
-      messages: applyScaffoldingMessages(messages, scaffolding),
+      // The reminder goes after the turn context, at the very end.
+      messages: applyScaffoldingMessages(messages, { ...scaffolding, userReminder: undefined }),
+      ...(scaffolding.userReminder ? { userReminder: scaffolding.userReminder } : {}),
       tools: scaffolding.tools,
       toolRegistry: scaffoldedRegistry,
-      ...(narrowed ? { toolCatalog: toolDefinitions } : {}),
+      ...(needsFindTool ? { toolCatalog: toolDefinitions } : {}),
+      ...(deferral.deferred.length > 0 ? { toolGroups: deferral.deferred.map((group) => group.tools) } : {}),
       ...(rankingEmbed ? { rankingEmbed } : {}),
       ...(quarantine ? { quarantine } : {}),
       ...(procedures.length > 0 ? { expandProcedure: expandLearned } : {}),
       ...(scaffolding.maxToolCallsPerRound ? { maxToolCallsPerRound: scaffolding.maxToolCallsPerRound } : {}),
       workingState,
+      ...(turnContext.length > 0 ? { turnContext } : {}),
       ...(stallLimit !== undefined ? { stallLimit } : {}),
       ...(req.untrustedContentGate === false ? { provenanceGate: false } : {}),
       // The renderer counts its own history; a system message added here shifts it.

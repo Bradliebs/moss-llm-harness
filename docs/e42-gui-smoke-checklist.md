@@ -499,7 +499,7 @@ still required before closing end-to-end dictation acceptance.
     - With the Playwright MCP server enabled and no extra settings, confirm
       **Settings > Knowledge** shows it with 24 tools and both **trust
       read-only** and **ignore destructive flags** checked. With auto-approve
-      on, ask Moss to open a review site and summarize a page. Confirm
+      on, ask Moss to open `www.dpreview.com` and summarize a page. Confirm
       navigation and snapshots run without asking with the untrusted-content
       gate on, that a click asks while the gate is on and runs when it is off,
       and that clicking a button named "Submit order" always asks.
@@ -517,6 +517,23 @@ still required before closing end-to-end dictation acceptance.
       the next approval card. Confirm that card still asks, and that changes in
       your next message no longer do.
 
+26. **Token use and prompt caching**
+    - With the Playwright MCP server enabled, ask "Summarize README.md". Open
+      **Why?** and confirm it says the playwright tools were held back. Then
+      ask "Open example.com and take a screenshot" and confirm **Why?** names
+      the rule that offered them ("the request asks to open a web address").
+    - Ask "Why is console.log noisy in src/main.ts?" in a new chat and confirm
+      the playwright tools stay held back.
+    - With an Anthropic, OpenAI, or Copilot model, send two messages in the
+      same chat and confirm the token count in the chat header shows a
+      "% cached" share on the second.
+    - Start a message with `/` and a skill name, and confirm the skill still
+      loads with working-state entries or saved memories present.
+    - Set a small context limit (for example 8,192) and hold a long chat.
+      Confirm the "Summarized N older messages" notice appears, and that on
+      the next turns **Why?** says the summary was reused rather than
+      requested again.
+
 ## Pass criteria
 
 - No uncaught errors in the main-process console or the renderer devtools.
@@ -526,8 +543,8 @@ still required before closing end-to-end dictation acceptance.
   constrained output, cross-provider escalation, data-level provenance, setup,
   live scores, context fit, voting, Why, practice runs, quarantine, learned
   procedures, the mission critic, judged replay, headless runs, SMTP email with
-  secure credential storage, the Playwright MCP defaults, and the GitHub Copilot
-  provider behave as
+  secure credential storage, the Playwright MCP defaults, the GitHub Copilot
+  provider, deferred tool sets, and cached-token reporting behave as
   described above.
 - Reload preserves session history, titles, task state, and the "auto" provenance
   tag without replaying an interrupted action.

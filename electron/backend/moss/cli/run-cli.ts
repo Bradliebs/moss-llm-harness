@@ -363,7 +363,8 @@ export async function runMossCli(args: readonly string[], dependencies: RunCliDe
     await runTurn({
       provider,
       model: options.model,
-      messages: applyScaffoldingMessages(messages, scaffolding),
+      messages: applyScaffoldingMessages(messages, { ...scaffolding, userReminder: undefined }),
+      ...(scaffolding.userReminder ? { userReminder: scaffolding.userReminder } : {}),
       tools: scaffolding.tools,
       toolRegistry,
       ...(narrowed ? { toolCatalog: TOOL_DEFINITIONS } : {}),

@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
+
 import type { AgentMessage, TokenUsage } from "../../../../common/types";
 import type { ChatProvider } from "../providers/types";
+import { leadingSystemCount } from "./compaction";
 
 const DEFAULT_TRANSCRIPT_CHARS = 8_000;
 const MAX_MESSAGE_CHARS = 1_200;
@@ -19,6 +22,8 @@ export interface CompactionSummaryResult {
   ok: boolean;
   summary: string;
   usage?: TokenUsage;
+  /** reused from an earlier turn; no model call was made */
+  cached?: boolean;
 }
 
 function clip(text: string, maxChars: number): string {
@@ -59,7 +64,48 @@ export function buildCompactionTranscript(messages: readonly AgentMessage[], max
   return [opening, `[${omitted} intermediate message${omitted === 1 ? "" : "s"} omitted]`, ...tail].join("\n\n");
 }
 
+/** Summaries of dropped history, keyed by model and content. Compaction keeps the
+ *  same cut for many turns, so the same messages would otherwise be summarized
+ *  again on every one of them. */
+const summaryCache = new Map<string, string>();
+const SUMMARY_CACHE_LIMIT = 32;
+/** After a failed summary, the same messages are not retried for a while: a
+ *  slow or broken summarizer would otherwise delay every turn by its timeout. */
+const failedAt = new Map<string, number>();
+const FAILURE_BACKOFF_MS = 10 * 60_000;
+
+function summaryKey(model: string, contextLimit: number | undefined, messages: readonly AgentMessage[]): string {
+  return createHash("sha256").update(`${model}\u0000${contextLimit ?? 0}\u0000`).update(JSON.stringify(messages.map((message) => [message.role, message.content, message.toolCalls ?? null]))).digest("hex");
+}
+
+export function clearCompactionSummaryCache(): void {
+  summaryCache.clear();
+  failedAt.clear();
+}
+
 export async function summarizeCompactedContext(
+  provider: ChatProvider,
+  model: string,
+  messages: readonly AgentMessage[],
+  options: { signal: AbortSignal; contextLimit?: number; timeoutMs?: number },
+): Promise<CompactionSummaryResult> {
+  const key = summaryKey(model, options.contextLimit, messages);
+  const cached = summaryCache.get(key);
+  if (cached) return { ok: true, summary: cached, cached: true };
+  const failed = failedAt.get(key);
+  if (failed !== undefined && Date.now() - failed < FAILURE_BACKOFF_MS) return { ok: false, summary: "" };
+  const result = await summarizeUncached(provider, model, messages, options);
+  if (result.ok) {
+    summaryCache.set(key, result.summary);
+    if (summaryCache.size > SUMMARY_CACHE_LIMIT) summaryCache.delete(summaryCache.keys().next().value!);
+  } else if (!options.signal.aborted) {
+    failedAt.set(key, Date.now());
+    if (failedAt.size > SUMMARY_CACHE_LIMIT) failedAt.delete(failedAt.keys().next().value!);
+  }
+  return result;
+}
+
+async function summarizeUncached(
   provider: ChatProvider,
   model: string,
   messages: readonly AgentMessage[],
@@ -113,7 +159,8 @@ export async function summarizeCompactedContext(
 
 export function attachCompactionSummary(messages: readonly AgentMessage[], summary: string): AgentMessage[] {
   if (!summary.trim()) return [...messages];
-  const systemOffset = messages[0]?.role === "system" ? 1 : 0;
+  // After every leading system message (the app prompt, then task notes).
+  const systemOffset = leadingSystemCount(messages);
   return [
     ...messages.slice(0, systemOffset),
     {

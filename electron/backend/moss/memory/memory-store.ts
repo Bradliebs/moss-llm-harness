@@ -13,7 +13,7 @@ import { userDataDir } from "../runtime/user-data";
 import { createLogger } from "../../../../common/logger";
 import type { MemoryCategory, MemoryEntry } from "../../../../common/types";
 import { writeFileAtomicSync } from "../persistence/atomic-file";
-import { formatMemoryEntriesForSystemPrompt, scoreMemory } from "./memory-format";
+import { formatMemoryEntriesForSystemPrompt, queryWords, scoreMemory } from "./memory-format";
 
 const log = createLogger("Memory");
 
@@ -112,11 +112,13 @@ export class MemoryStore {
     this.save();
   }
 
-  /** Keyword search, best match first. Empty query returns most-recent first. */
-  recall(query: string, limit = 20): MemoryEntry[] {
+  /** Keyword search, best match first. Empty query returns most-recent first.
+   *  An explicit search (m_recall) also matches two-letter words. */
+  recall(query: string, limit = 20, minWordLength = 3): MemoryEntry[] {
     this.ensureLoaded();
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    if (words.length === 0) return [...this.entries].slice(-limit).reverse();
+    if (!query.trim()) return [...this.entries].slice(-limit).reverse();
+    const words = queryWords(query, minWordLength);
+    if (words.length === 0) return [];
     return this.entries
       .map((m) => ({ m, score: scoreMemory(m, words) }))
       .filter((x) => x.score > 0)
@@ -132,11 +134,29 @@ export class MemoryStore {
    *  most-recent episodic. */
   selectForSystemPrompt(query: string, limit = 20): string {
     this.ensureLoaded();
-    const preferences = this.entries.filter((m) => m.category === "preference");
-    const prefIds = new Set(preferences.map((m) => m.id));
-    const keptPreferences = preferences.slice(-MAX_PROMPT_PREFERENCES);
-    const episodic = this.recall(query, limit).filter((m) => !prefIds.has(m.id));
-    return formatMemoryEntriesForSystemPrompt([...keptPreferences, ...episodic]);
+    return formatMemoryEntriesForSystemPrompt([...this.preferenceEntries(), ...this.recalledEntries(query, limit)]);
+  }
+
+  /** Durable preferences only. They change only when the user saves one, so
+   *  they belong in the stable system message. */
+  selectPreferencesForPrompt(): string {
+    this.ensureLoaded();
+    return formatMemoryEntriesForSystemPrompt(this.preferenceEntries());
+  }
+
+  /** Memories recalled for this request. They change from turn to turn, so they
+   *  go in the per-turn context rather than the system message. */
+  selectRecalledForPrompt(query: string, limit = 20): string {
+    this.ensureLoaded();
+    return formatMemoryEntriesForSystemPrompt(this.recalledEntries(query, limit));
+  }
+
+  private preferenceEntries(): MemoryEntry[] {
+    return this.entries.filter((m) => m.category === "preference").slice(-MAX_PROMPT_PREFERENCES);
+  }
+
+  private recalledEntries(query: string, limit: number): MemoryEntry[] {
+    return this.recall(query, limit).filter((m) => m.category !== "preference");
   }
 }
 

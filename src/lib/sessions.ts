@@ -440,11 +440,13 @@ export function sessionToMarkdown(session: Session, options: MarkdownExportOptio
 export function sessionTokenUsage(messages: AgentMessage[]): TokenUsage {
   let inputTokens = 0;
   let outputTokens = 0;
+  let cachedInputTokens = 0;
   for (const m of messages) {
     inputTokens += m.usage?.inputTokens ?? 0;
     outputTokens += m.usage?.outputTokens ?? 0;
+    cachedInputTokens += m.usage?.cachedInputTokens ?? 0;
   }
-  return { inputTokens, outputTokens };
+  return { inputTokens, outputTokens, ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}) };
 }
 
 export interface ToolUsageSummary {

@@ -1,7 +1,8 @@
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { clearCompactionSummaryCache } from "../context/compaction-summary";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { EvalCase } from "../../../../common/evals";
 import type { AgentMessage, MossEvent } from "../../../../common/types";
 import { runTurn } from "../agent-runner";
@@ -89,6 +90,9 @@ async function executeContext(testCase: EvalCase, root: string, compact = true) 
   });
   return { ...script, events, trace: collector.snapshot() };
 }
+
+// Compaction summaries are cached across turns by content; each test starts clean.
+beforeEach(() => clearCompactionSummaryCache());
 
 describe("context behavior setup", () => {
   it.each(createContextCases().filter((testCase) => testCase.family === "context-pressure"))("scores actual executor compaction and rejects missing trace evidence for $id", async (testCase) => {

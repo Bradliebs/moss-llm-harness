@@ -91,7 +91,7 @@ describe("CopilotProvider", () => {
     const session = fakeSession([[
       event("assistant.message_delta", { deltaContent: "Hel" }),
       event("assistant.message_delta", { deltaContent: "lo" }),
-      event("assistant.usage", { inputTokens: 12, outputTokens: 3 }),
+      event("assistant.usage", { inputTokens: 12, outputTokens: 3, cacheReadTokens: 8 }),
       event("assistant.message", { content: "Hello" }),
       event("session.idle"),
     ]]);
@@ -101,7 +101,7 @@ describe("CopilotProvider", () => {
     expect(events).toEqual([
       { type: "text-delta", text: "Hel" },
       { type: "text-delta", text: "lo" },
-      { type: "usage", usage: { inputTokens: 12, outputTokens: 3 } },
+      { type: "usage", usage: { inputTokens: 12, outputTokens: 3, cachedInputTokens: 8 } },
     ]);
     expect(session.prompts).toEqual(["Say hello"]);
     expect(client.configs[0]).toMatchObject({ model: "claude-sonnet-5", systemMessage: { mode: "replace", content: "Be brief." }, availableTools: [] });

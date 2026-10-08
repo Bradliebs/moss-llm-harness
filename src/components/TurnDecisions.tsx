@@ -13,7 +13,7 @@ const LABELS: Record<HarnessDecisionKind, string> = {
   constrain: "Constrained",
   vote: "Voted",
   repair: "Repaired",
-  "find-tool": "Found tool",
+  "find-tool": "Tools",
   route: "Routed",
   escalate: "Escalated",
   gate: "Asked you",

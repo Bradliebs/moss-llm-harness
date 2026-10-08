@@ -198,6 +198,12 @@ describe("OpenAiCompatibleProvider.streamChat", () => {
     expect(events).toContainEqual({ type: "usage", usage: { inputTokens: 11, outputTokens: 22 } });
   });
 
+  it("reports how much of the prompt the provider served from its cache", async () => {
+    stubStream(sse({ usage: { prompt_tokens: 1000, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 896 } } }));
+    const events = await collect(new OpenAiCompatibleProvider("http://x/v1"));
+    expect(events).toContainEqual({ type: "usage", usage: { inputTokens: 1000, outputTokens: 5, cachedInputTokens: 896 } });
+  });
+
   it("retries without reasoning_effort when the server rejects it, and sends it per request", async () => {
     const stream = sse({ choices: [{ delta: { content: "ok" } }] });
     const fetchMock = vi.fn()

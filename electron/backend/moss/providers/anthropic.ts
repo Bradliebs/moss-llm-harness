@@ -136,21 +136,40 @@ export function toAnthropic(messages: AgentMessage[]): { system?: string; messag
   return { system: system || undefined, messages: out };
 }
 
-/** Put a cache breakpoint on the final content block of the conversation, so the
- *  next request in the same agent turn (and the next turn in the same session)
- *  reads everything up to here from cache instead of reprocessing it. Mutates the
- *  freshly built array from `toAnthropic`. Empty blocks cannot be cached, so a
- *  message with no content is left alone. */
-function markConversationBreakpoint(messages: AnthropicMessage[]): void {
-  const last = messages[messages.length - 1];
-  if (!last) return;
-  if (typeof last.content === "string") {
-    if (!last.content) return;
-    last.content = [{ type: "text", text: last.content, cache_control: CACHE_BREAKPOINT }];
+/** Mark a message's final content block as a cache breakpoint. Empty blocks
+ *  cannot be cached, so a message with no content is left alone. */
+function markBreakpoint(message: AnthropicMessage | undefined): void {
+  if (!message) return;
+  if (typeof message.content === "string") {
+    if (!message.content) return;
+    message.content = [{ type: "text", text: message.content, cache_control: CACHE_BREAKPOINT }];
     return;
   }
-  const block = last.content[last.content.length - 1];
+  const block = message.content[message.content.length - 1];
   if (block) block.cache_control = CACHE_BREAKPOINT;
+}
+
+const isToolResults = (message: AnthropicMessage): boolean =>
+  message.role === "user" && Array.isArray(message.content) && message.content.some((block) => block.type === "tool_result");
+
+/** Two conversation breakpoints (with the system and tools ones, the API's limit
+ *  of four). The latest user message carries this turn's <turn_context>, which
+ *  the next turn will not repeat, so a cache written there would never be read.
+ *  Instead: one on the message before it, the end of the history every later
+ *  turn repeats, and one on the last message when it is a tool result, which
+ *  the next round of the same turn repeats. Mutates the freshly built array
+ *  from `toAnthropic`. */
+function markConversationBreakpoints(messages: AnthropicMessage[]): void {
+  let latestUser = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user" && !isToolResults(messages[i])) {
+      latestUser = i;
+      break;
+    }
+  }
+  if (latestUser > 0) markBreakpoint(messages[latestUser - 1]);
+  const last = messages[messages.length - 1];
+  if (last && (latestUser < 0 || isToolResults(last))) markBreakpoint(last);
 }
 
 export class AnthropicProvider implements ChatProvider {
@@ -163,12 +182,11 @@ export class AnthropicProvider implements ChatProvider {
 
   async *streamChat(req: ChatRequest, signal: AbortSignal): AsyncIterable<ProviderStreamEvent> {
     const { system, messages } = toAnthropic(req.messages);
-    markConversationBreakpoint(messages);
+    markConversationBreakpoints(messages);
 
-    // Three breakpoints, ordered by how often each section changes: tools are
-    // stable for a whole session, the system prompt for a whole turn, and the
-    // conversation grows every round. If a later section changes, the earlier
-    // caches still hit.
+    // Breakpoints ordered by how often each section changes: tools are stable
+    // for a whole session, the system prompt nearly so, and the conversation
+    // grows every round. If a later section changes, the earlier caches still hit.
     const reqTools = req.tools;
     const tools =
       reqTools && reqTools.length > 0
@@ -225,6 +243,7 @@ export class AnthropicProvider implements ChatProvider {
                   (u.input_tokens ?? 0) +
                   (u.cache_creation_input_tokens ?? 0) +
                   (u.cache_read_input_tokens ?? 0),
+                ...(u.cache_read_input_tokens ? { cachedInputTokens: u.cache_read_input_tokens } : {}),
               },
             };
           }

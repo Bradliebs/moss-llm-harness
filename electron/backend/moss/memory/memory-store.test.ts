@@ -50,6 +50,32 @@ describe("MemoryStore", () => {
     expect(hits[0].fact).toContain("electron");
   });
 
+  it("does not recall every memory for short or common words", () => {
+    store.add("project uses electron and vite");
+    store.add("the cat is orange");
+    expect(store.recall("is a")).toEqual([]);
+    expect(store.recall("what is the cat colour?").map((m) => m.fact)).toEqual(["the cat is orange"]);
+  });
+
+  it("matches two-letter terms as whole words in an explicit search only", () => {
+    store.add("CI runs on GitHub Actions");
+    store.add("a decision about naming");
+    expect(store.recall("CI", 20, 2).map((m) => m.fact)).toEqual(["CI runs on GitHub Actions"]);
+    expect(store.recall("CI")).toEqual([]);
+    expect(store.recall("is a", 20, 2)).toEqual([]);
+    store.add("backend is written in Go");
+    expect(store.recall("go", 20, 2).map((m) => m.fact)).toEqual(["backend is written in Go"]);
+  });
+
+  it("puts preferences and recalled memories in separate blocks", () => {
+    store.add("user prefers dark mode", "preference");
+    store.add("project uses electron", "fact");
+    expect(store.selectPreferencesForPrompt()).toContain("dark mode");
+    expect(store.selectPreferencesForPrompt()).not.toContain("electron");
+    expect(store.selectRecalledForPrompt("electron")).toContain("project uses electron");
+    expect(store.selectRecalledForPrompt("electron")).not.toContain("dark mode");
+  });
+
   it("persists across instances", () => {
     store.add("remember me");
     const reopened = new MemoryStore(dir);

@@ -60,7 +60,7 @@ export const recallTool: Tool = {
     required: ["query"],
   },
   async execute(args) {
-    const results = memoryStore.recall(String(args.query ?? ""));
+    const results = memoryStore.recall(String(args.query ?? ""), 20, 2);
     if (results.length === 0) return { ok: true, content: "No matching memories." };
     return { ok: true, content: results.map((m) => `[${m.category}|${m.id}] ${m.fact}`).join("\n") };
   },

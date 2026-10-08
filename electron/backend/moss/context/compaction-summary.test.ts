@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import type { AgentMessage } from "../../../../common/types";
 import type { ChatProvider, ChatRequest, ProviderStreamEvent } from "../providers/types";
-import { attachCompactionSummary, buildCompactionTranscript, summarizeCompactedContext } from "./compaction-summary";
+import { attachCompactionSummary, buildCompactionTranscript, clearCompactionSummaryCache, summarizeCompactedContext } from "./compaction-summary";
+
+beforeEach(() => clearCompactionSummaryCache());
 
 function providerFor(events: ProviderStreamEvent[]): ChatProvider & { requests: ChatRequest[] } {
   const requests: ChatRequest[] = [];
@@ -87,5 +89,28 @@ describe("semantic context compaction", () => {
     expect(attached.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
     expect(attached[0].content).toBe("trusted rules");
     expect(attached[2].content).toBe("Earlier decision");
+  });
+});
+
+describe("summary reuse", () => {
+  it("summarizes the same dropped messages once, and again only when they change", async () => {
+    const provider = providerFor([{ type: "text-delta", text: "User wanted tabs." }]);
+    const dropped: AgentMessage[] = [{ role: "user", content: "Use tabs please" }, { role: "assistant", content: "Will do." }];
+    const first = await summarizeCompactedContext(provider, "m", dropped, { signal: new AbortController().signal });
+    const second = await summarizeCompactedContext(provider, "m", dropped, { signal: new AbortController().signal });
+    expect(first).toMatchObject({ ok: true, summary: "User wanted tabs." });
+    expect(second).toMatchObject({ ok: true, summary: "User wanted tabs.", cached: true });
+    expect(provider.requests).toHaveLength(1);
+    await summarizeCompactedContext(provider, "m", [...dropped, { role: "user", content: "and 2 spaces" }], { signal: new AbortController().signal });
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it("does not retry a failed summary of the same messages on every turn", async () => {
+    let calls = 0;
+    const failing: ChatProvider = { kind: "x", async *streamChat() { calls += 1; throw new Error("timeout"); }, async listModels() { return []; } };
+    const dropped: AgentMessage[] = [{ role: "user", content: "old" }, { role: "assistant", content: "older" }];
+    expect((await summarizeCompactedContext(failing, "m", dropped, { signal: new AbortController().signal })).ok).toBe(false);
+    expect((await summarizeCompactedContext(failing, "m", dropped, { signal: new AbortController().signal })).ok).toBe(false);
+    expect(calls).toBe(1);
   });
 });

@@ -14,10 +14,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage, MossEvent, TaskExecutionGrant, ToolDefinition } from "../../../common/types";
 import { runTurn } from "./agent-runner";
 import type { CompletionContext, CompletionDecision } from "./agent-runner";
+import { clearCompactionSummaryCache } from "./context/compaction-summary";
 import { ToolOutputStore } from "./context/tool-output-store";
 import { ProviderError } from "./providers/types";
 import type { ChatProvider, ChatRequest, ProviderStreamEvent } from "./providers/types";
 import type { Tool, ToolResult } from "./tools";
+
+// Summaries are cached across turns by content; each test starts clean.
+beforeEach(() => clearCompactionSummaryCache());
 
 /** Provider that replays one event array per round, clamping to the last entry
  *  so a single-round script can drive the round-cap test. */

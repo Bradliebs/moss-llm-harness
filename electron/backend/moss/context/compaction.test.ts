@@ -115,3 +115,30 @@ describe("compactIfNeeded", () => {
     expect(r.compacted).toBe(false);
   });
 });
+
+describe("stable compaction across turns", () => {
+  it("keeps the same cut while the conversation grows, so the prompt start stays the same", () => {
+    const turn = (n: number): AgentMessage[] => [user(`question ${n} ${"q".repeat(380)}`), asst(`answer ${n} ${"a".repeat(380)}`)];
+    let history: AgentMessage[] = [sys("system prompt")];
+    for (let n = 0; n < 12; n++) history = [...history, ...turn(n)];
+    const first = compactIfNeeded(history, { contextLimit: 2_000 });
+    expect(first.compacted).toBe(true);
+    const next = compactIfNeeded([...history, ...turn(12)], { contextLimit: 2_000 });
+    expect(next.droppedCount).toBe(first.droppedCount);
+    expect(next.messages.slice(0, first.messages.length)).toEqual(first.messages);
+    // It still fits the budget after the step.
+    expect(estimateTokens(next.messages)).toBeLessThanOrEqual(Math.floor(2_000 * 0.75));
+  });
+});
+
+describe("compaction with several leading system messages", () => {
+  it("keeps every leading system message, so a task turn never loses the real system prompt", () => {
+    const history: AgentMessage[] = [sys("Incremental execution policy"), sys("You are Moss. Safety rules."), user("u1 " + "x".repeat(2000)), asst("a1 " + "y".repeat(2000)), user("u2 " + "x".repeat(2000)), asst("a2"), user("now")];
+    for (const result of [compactIfNeeded(history, { contextLimit: 1_000 }), compactForOverflow(history)]) {
+      expect(result.compacted).toBe(true);
+      expect(result.messages[0].content).toBe("Incremental execution policy");
+      expect(result.messages[1].content).toContain("You are Moss. Safety rules.");
+      expect(result.messages[1].content).toContain("omitted to fit the context window");
+    }
+  });
+});

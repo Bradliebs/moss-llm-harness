@@ -26,15 +26,16 @@ function utf8Suffix(text: string, maxBytes: number): string {
   return result;
 }
 
-export function exceedsInlineLimit(text: string): boolean {
-  return Buffer.byteLength(text) > INLINE_BYTES;
+/** `limit` lowers the 8,000-byte inline size for a small context window. */
+export function exceedsInlineLimit(text: string, limit = INLINE_BYTES): boolean {
+  return Buffer.byteLength(text) > Math.min(limit, INLINE_BYTES);
 }
 
-export function spillPreview(text: string, artifactId: string): string {
+export function spillPreview(text: string, artifactId: string, limit = INLINE_BYTES): string {
   const totalBytes = Buffer.byteLength(text);
   const notice = `Full output stored as artifact ${artifactId}. Use read_tool_output with this id to read another range or search it.`;
   const largestMarker = `\n\n...[${totalBytes} bytes omitted]...\n\n`;
-  const retainedBudget = INLINE_BYTES - Buffer.byteLength(notice) - Buffer.byteLength(largestMarker) - 2;
+  const retainedBudget = Math.min(limit, INLINE_BYTES) - Buffer.byteLength(notice) - Buffer.byteLength(largestMarker) - 2;
   const tailBudget = Math.min(TAIL_BYTES, Math.floor(retainedBudget / 2));
   const headBudget = Math.max(0, retainedBudget - tailBudget);
   const head = utf8Prefix(text, headBudget);

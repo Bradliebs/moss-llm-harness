@@ -213,12 +213,15 @@ the oldest model-facing turns into a bounded assistant-authored note. The
 summary call cannot use tools, excludes raw tool output and arguments, and is
 counted in token usage. If summarization fails, Moss falls back to deterministic
 trimming. Saved conversation history is never changed. Provider-reported
-context overflow uses the same compaction path for one retry.
+context overflow uses the same compaction path for one retry. Older messages
+are dropped in steps, so later turns reuse the same summary instead of asking
+for a new one; see [Prompt caching and token use](#prompt-caching-and-token-use).
 
 Large tool results remain complete in saved conversation history and the live
 tool card. To protect model context, Moss stores an oversized result as an
 opaque application artifact and sends the model a bounded head-and-tail preview
-with an artifact ID. The read-only `read_tool_output` tool can retrieve another
+with an artifact ID. The limit is 8,000 bytes, or a fifth of a smaller
+configured context window. The read-only `read_tool_output` tool can retrieve another
 range or search the stored text without exposing its host path. Artifacts are
 kept outside the selected workspace and are pruned after seven days or when the
 store exceeds 200 records.
@@ -432,6 +435,55 @@ offers **Create variant and switch**: it creates a named copy such as
 `qwen2.5:7b-ctx16k` with the right `num_ctx`, copies the capability profile to
 it, and selects it. Your original model is never changed.
 
+#### Prompt caching and token use
+
+Local and cloud providers reuse work for a prompt that starts the same way as
+the previous one: Ollama keeps the processed prompt in memory, and Anthropic,
+OpenAI, and Copilot bill cached input at a fraction of the price. On this PC a
+4,100-token prompt took 3.4 s to process the first time and 0.1 s when it
+matched the previous one. Moss keeps the start of each prompt fixed:
+
+* The system message holds only what changes rarely: instructions, safety
+  rules, your custom instructions and personality, the skills index, saved
+  preferences, and the date.
+* What depends on the request (working state, memories recalled for it, lessons
+  from earlier runs, and task progress) goes in a `<turn_context>` block at the
+  end of your latest message, built once per turn. The block says it comes from
+  Moss, so a message that starts with `/skill-name` still starts that way. A
+  scaffolding reminder for a model that skims system text comes after it, last.
+* Tool results are replayed on later turns exactly as the model saw them,
+  including the untrusted-content wrapper and quarantine extracts.
+* For Anthropic, Moss marks cache points on the tool list, the system message,
+  the end of the history before your latest message, and the latest tool result,
+  so each turn and each tool round reads what came before from the cache.
+* With a context limit set, compaction drops older messages in steps of half
+  the budget, so the same cut and the same summary serve many turns. A summary
+  is reused rather than requested again, and a failed one is not retried for
+  10 minutes. On a small context window, each tool result is capped at a fifth
+  of the window (8,000 characters at most); a longer result is saved in full
+  and `read_tool_output` reads the rest.
+
+Large MCP tool sets wait until they are needed: a server whose definitions
+exceed about 1,200 tokens is held back until an earlier turn used it or the
+request clearly asks for it: it names the server, says "browser", asks to open
+or visit a web address ("open example.com", "go to localhost:5173"), or uses two
+distinct hints such as words from the tool names (navigate, screenshot,
+console) and page words (website, page, login). One hint alone, such as
+"console.log" or "snapshot test", is not enough, and hints do not count in a
+request about code (file names, paths, backticks, or words such as component,
+handler, route, or test). The **Why** panel records which rule offered a set.
+`find_tool` lists the held-back sets and enables a whole set at once, or only
+the matching tool when the whole set would take more than 40% of the room left
+in a small context window. With Playwright, an ordinary request sends about
+3,100 tokens of tool definitions instead of 7,200.
+
+The token count in the chat header shows how much of the input came from the
+provider's cache, when the provider reports it (Anthropic, OpenAI, Copilot;
+Ollama's OpenAI-compatible endpoint does not). Some local chat templates place
+the tool list just before the last message (Mistral's, for example), so those
+models still process the tool definitions again on each turn; deferred tool
+sets matter most there.
+
 ### Adaptive scaffolding
 
 Once a model has a capability profile, Moss adjusts the structure of each tool
@@ -457,7 +509,9 @@ background for the next turn, and an endpoint that fails is left alone for 10
 minutes. Whenever tools are narrowed, the model also
 gets `find_tool`: it describes what it needs, and the best matching hidden tools
 become available on its next step. Calling a hidden tool by name brings it in
-too. A tool the harness withheld never counts toward escalation.
+too, together with the rest of its MCP server's tools when that set was held
+back (see [Prompt caching and token use](#prompt-caching-and-token-use)). A tool
+the harness withheld never counts toward escalation.
 
 The adaptation changes only the model-facing request: saved conversations keep
 the original messages. Missions keep their granted capabilities unchanged. Turn
@@ -520,7 +574,8 @@ disagreed.
 providers:
 
 * A fast model handles context-compaction summaries and read-only subagents
-  started with the `delegate` tool
+  started with the `delegate` tool. A subagent gets the safety rules but not
+  your memories, lessons, or turn context
 * An escalation model takes over a turn after Moss rejects the chat model's
   work a set number of times (default 2)
 * A critic reviews mission outputs bound to a critic check, and judges replays.
@@ -764,7 +819,8 @@ about the task in the harness:
 | Model adapter | Constrained step protocol for weak tool callers and tool-call repair for every model |
 | Adjustable scaffolding | Meaning-ranked tool narrowing with `find_tool`, step guidance, and per-round call limits |
 | Routing | Fast and escalation routes on any configured provider, with per-model mission pricing |
-| Governed state | Per-conversation working state, rendered every round and never summarized away |
+| Governed state | Per-conversation working state, rendered every turn and never summarized away |
+| Context efficiency | Fixed prompt start for provider prompt caching, large MCP tool sets loaded on demand, stepped compaction with reused summaries |
 | Independent verification | Host-run checks bound to mission criteria, and a checklist critic from another model family; the model never grades itself |
 | Earned memory | Skill trust ledger with versions, recalled lessons, and learned procedures that run without planning |
 | Supervisor | No-progress detection, loop reminders, budgets, and a stop that asks you |
@@ -875,6 +931,9 @@ flags. In `mcp-servers.json`, `trustAnnotations`, `ignoreDestructiveHints`, and
 Playwright; for example `"hiddenTools": []` offers Playwright's code tools
 again, and they ask every time they run.
 
+A server with large tool definitions is held back from requests that do not
+need it (see [Prompt caching and token use](#prompt-caching-and-token-use)).
+
 A stdio server without a configured working directory runs in its own folder
 under the Moss data folder (`mcp-servers/<id>`), so files it saves, such as
 Playwright snapshots and screenshots, land there rather than in the folder Moss
@@ -887,7 +946,11 @@ with the same access as the account running Moss.
 
 ### Memory and skills
 
-Memory stores durable facts and preferences for later conversations. Skills store
+Memory stores durable facts and preferences for later conversations. Saved
+preferences are in every request's system message. Other memories are added to
+a turn only when they share words with your request, in the turn context at the
+end of your message. The `m_recall` tool searches memory on the model's request
+and also matches short terms such as "CI" or "Go". Skills store
 reusable instructions that the model can load when their descriptions match a
 task. Both can be reviewed and managed from the Library.
 
@@ -921,9 +984,9 @@ verification or a completed task, never the model's own claim.
 Completed and failed tasks leave lessons: what worked, what failed, and why.
 When a new request shares key words with a lesson, or is close in meaning to it
 with **Rank tools and lessons by meaning** on, up to three are added to the
-system prompt as guidance, not instructions. Lessons about failures are recalled
-whenever failures back them; lessons about successes need a success rate of at
-least 50 percent.
+turn context at the end of your message as guidance, not instructions. Lessons
+about failures are recalled whenever failures back them; lessons about
+successes need a success rate of at least 50 percent.
 
 #### Learned procedures
 
@@ -960,9 +1023,12 @@ questions, and established facts. Open it with **State** in the chat header.
   records then are marked as coming after untrusted content.
 * At 200 entries the oldest model facts, questions, and decisions make room
   first; your entries, invariants, and protected paths are never evicted.
-* The state is rendered into the system message on every model round and sized
-  to the context window: invariants and protected paths are always included,
-  and older facts are dropped first when space runs short.
+* The state is rendered once per turn, in the turn context at the end of your
+  latest message in the copy sent to the model, and sized to the context
+  window: invariants and protected paths are always included, and older facts
+  are dropped first when space runs short. A change the model makes mid-turn is
+  reported by the `working_state` tool's result and rendered in full on the
+  next turn, so the earlier part of the prompt never has to be rewritten.
 * **Protected paths** accept files, folders, and globs such as `migrations/**`.
   Moss refuses writes, edits, and moves that touch them, and commands that are
   not read-only and name them, before any approval prompt appears.

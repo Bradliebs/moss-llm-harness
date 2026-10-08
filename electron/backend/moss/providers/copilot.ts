@@ -340,7 +340,14 @@ export class CopilotProvider implements ChatProvider {
           }
           break;
         case "assistant.usage":
-          yield { type: "usage", usage: { inputTokens: Number(data.inputTokens ?? 0), outputTokens: Number(data.outputTokens ?? 0) } };
+          yield {
+            type: "usage",
+            usage: {
+              inputTokens: Number(data.inputTokens ?? 0),
+              outputTokens: Number(data.outputTokens ?? 0),
+              ...(Number(data.cacheReadTokens ?? 0) > 0 ? { cachedInputTokens: Number(data.cacheReadTokens) } : {}),
+            },
+          };
           break;
         case "assistant.message": {
           if (typeof data.content === "string" && data.content && !data.parentToolCallId && !streamed.has(String(data.messageId ?? ""))) {
