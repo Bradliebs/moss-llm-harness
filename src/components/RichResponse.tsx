@@ -119,6 +119,8 @@ function CodeBlock({ children, onCopy }: { children: ReactNode; onCopy: (text: s
 function markdownComponents(onCopy: (text: string) => void, streaming: boolean): Components {
   return {
     ...(streaming ? {} : { table: ResultTable }),
+    // The page has its own h1 (the conversation); an answer's top heading sits below it.
+    h1: ({ children }) => <h2 data-level="1">{children}</h2>,
     a: ({ href, children }) => {
       const safeHref = safeExternalUrl(href);
       return (

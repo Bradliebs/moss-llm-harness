@@ -12,15 +12,15 @@ interface RunCenterProps {
 
 function stateIcon(run: TaskSnapshot): React.ReactElement {
   if (run.state === "blocked" || run.state === "failed") {
-    return <AlertTriangle size={16} className="text-amber-500" aria-hidden="true" />;
+    return <AlertTriangle size={16} className="text-amber-700 dark:text-amber-400" aria-hidden="true" />;
   }
   if (run.state === "paused" || run.state === "waiting_for_approval") {
-    return <CirclePause size={16} className="text-sky-500" aria-hidden="true" />;
+    return <CirclePause size={16} className="text-sky-600 dark:text-sky-400" aria-hidden="true" />;
   }
   if (run.state === "completed") {
-    return <CheckCircle2 size={16} className="text-emerald-500" aria-hidden="true" />;
+    return <CheckCircle2 size={16} className="text-emerald-600 dark:text-emerald-400" aria-hidden="true" />;
   }
-  return <LoaderCircle size={16} className="animate-spin text-emerald-500" aria-hidden="true" />;
+  return <LoaderCircle size={16} className="animate-spin text-emerald-600 dark:text-emerald-400" aria-hidden="true" />;
 }
 
 function stateLabel(run: TaskSnapshot): string {
@@ -146,27 +146,27 @@ export function RunCenter({ onClose }: RunCenterProps): React.ReactElement {
           }
         }}
       >
-        <header className="flex items-center gap-3 border-b border-neutral-200 px-5 py-4 dark:border-neutral-800">
+        <div className="flex items-center gap-3 border-b border-neutral-200 px-5 py-4 dark:border-neutral-800">
           <div>
             <h2 id="run-center-title" className="font-semibold text-neutral-900 dark:text-white">Run center</h2>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               Inspect durable missions without interrupting background work.
             </p>
           </div>
           <button
             ref={closeRef}
             type="button"
-            className="ml-auto rounded-md p-2 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-white"
+            className="ml-auto rounded-md p-2 text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-white"
             onClick={onClose}
             aria-label="Close run center"
           >
             <X size={18} aria-hidden="true" />
           </button>
-        </header>
+        </div>
         <div className="min-h-0 overflow-y-auto p-4">
           {error ? <p className="mb-3 text-sm text-red-700 dark:text-red-300" role="alert">{error}</p> : null}
           {visibleRuns.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+            <p className="rounded-lg border border-dashed border-neutral-300 p-8 text-center text-sm text-neutral-600 dark:border-neutral-700 dark:text-neutral-400">
               No mission runs yet.
             </p>
           ) : (
@@ -181,7 +181,7 @@ export function RunCenter({ onClose }: RunCenterProps): React.ReactElement {
                         <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
                           {session?.title ?? run.spec.objective}
                         </p>
-                        <p className="mt-0.5 line-clamp-2 text-xs text-neutral-500 dark:text-neutral-400">
+                        <p className="mt-0.5 line-clamp-2 text-xs text-neutral-600 dark:text-neutral-400">
                           {run.spec.objective}
                         </p>
                         <div className="mt-2 flex flex-wrap gap-2 text-[11px]">

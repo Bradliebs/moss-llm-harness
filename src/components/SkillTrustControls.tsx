@@ -55,7 +55,7 @@ export function SkillTrustControls({ skill, onChanged }: { skill: Skill; onChang
               <span>v{item.version} · {new Date(item.savedAt).toLocaleString()}</span>
               {item.version !== trust.version ? (
                 <button type="button" className={action} onClick={() => void rollback(item.version)}>Roll back to v{item.version}</button>
-              ) : <span className="text-neutral-500 dark:text-neutral-400">current</span>}
+              ) : <span className="text-neutral-600 dark:text-neutral-400">current</span>}
             </li>
           ))}
         </ul>

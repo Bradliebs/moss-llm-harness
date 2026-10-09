@@ -9,12 +9,12 @@ export type ToolStatus = "approval" | "running" | "done" | "denied" | "error";
 export function toolStatusColor(status: ToolStatus): string {
   switch (status) {
     case "done":
-      return "text-emerald-600 dark:text-emerald-400";
+      return "text-emerald-700 dark:text-emerald-400";
     case "running":
-      return "text-sky-600 dark:text-sky-400";
+      return "text-sky-700 dark:text-sky-400";
     case "error":
     case "denied":
-      return "text-red-600 dark:text-red-400";
+      return "text-red-700 dark:text-red-400";
     default:
       return "text-neutral-600 dark:text-neutral-400";
   }

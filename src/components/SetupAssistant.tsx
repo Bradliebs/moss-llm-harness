@@ -3,6 +3,7 @@
 // "Set up for this PC": detects local models, the GPU, and saved cloud keys,
 // proposes a complete setup, and applies only the lines the user keeps ticked.
 
+import { CircleCheck, CircleDashed, CircleX, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 
 import type { SetupDetectionRequest } from "@common/types";
@@ -121,7 +122,7 @@ export function SetupAssistant({ className }: { className: string }): React.Reac
       </p>
       <button
         type="button"
-        className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+        className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
         disabled={busy !== null}
         onClick={() => void detect()}
       >
@@ -170,9 +171,16 @@ export function SetupAssistant({ className }: { className: string }): React.Reac
       {steps.length > 0 ? (
         <ol className="space-y-0.5 text-xs" aria-label="Setup progress">
           {steps.map((step, index) => (
-            <li key={index} className={step.state === "failed" ? "text-red-700 dark:text-red-300" : "text-neutral-700 dark:text-neutral-200"}>
-              {step.state === "done" ? "✓" : step.state === "failed" ? "✗" : step.state === "running" ? "…" : "·"} {step.label}
-              {step.note ? ` — ${step.note}` : ""}
+            <li key={index} className={`flex items-start gap-1.5 ${step.state === "failed" ? "text-red-700 dark:text-red-300" : "text-neutral-700 dark:text-neutral-200"}`}>
+              {step.state === "done" ? <CircleCheck size={14} className="mt-px shrink-0 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+                : step.state === "failed" ? <CircleX size={14} className="mt-px shrink-0" aria-hidden="true" />
+                : step.state === "running" ? <LoaderCircle size={14} className="mt-px shrink-0 animate-spin" aria-hidden="true" />
+                : <CircleDashed size={14} className="mt-px shrink-0 text-neutral-400" aria-hidden="true" />}
+              <span>
+                <span className="sr-only">{step.state === "done" ? "Done: " : step.state === "failed" ? "Failed: " : step.state === "running" ? "Running: " : "Waiting: "}</span>
+                {step.label}
+                {step.note ? ` — ${step.note}` : ""}
+              </span>
             </li>
           ))}
         </ol>

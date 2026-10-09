@@ -45,7 +45,7 @@ export function CommandPalette({ commands, onClose }: { commands: readonly Palet
       >
         <input
           ref={inputRef}
-          className="w-full border-b border-neutral-200 bg-transparent px-4 py-3 text-sm text-neutral-900 outline-none placeholder:text-neutral-500 dark:border-neutral-800 dark:text-neutral-100 dark:placeholder:text-neutral-400"
+          className="w-full border-b border-neutral-200 bg-transparent px-4 py-3 text-sm text-neutral-900 outline-none focus:shadow-[inset_0_-2px_0_var(--focus-ring)] placeholder:text-neutral-600 dark:border-neutral-800 dark:text-neutral-100 dark:placeholder:text-neutral-400"
           placeholder="Type a command or conversation name"
           value={query}
           role="combobox"

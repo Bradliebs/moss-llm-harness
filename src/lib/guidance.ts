@@ -69,7 +69,7 @@ export function explainToolFailure(content: string | undefined): ToolFailureExpl
   if (/timed out after/i.test(content)) {
     return {
       rule: "Tool time limit",
-      detail: "Commands stop after 60 seconds. Long-running servers and watchers are not supported by run_command.",
+      detail: "Commands stop after 60 seconds unless the model asks for longer (up to 600). Long-running servers and watchers are not supported by run_command.",
     };
   }
   return null;

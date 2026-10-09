@@ -48,7 +48,7 @@ function scriptedProvider(expectCompaction = true) {
         yield { type: "tool-call", toolCall: { id: "recover-read", name: "read_file", arguments: JSON.stringify({ path: "durable-state.txt" }) } };
       } else if (request.messages.some((message) => message.toolCallId === "recover-write")) {
         yield { type: "text-delta", text: "Recovered the durable identifier." };
-      } else if (result.content.includes("ENOENT")) {
+      } else if (/ENOENT|File not found/.test(result.content)) {
         yield { type: "text-delta", text: "The durable file is missing; the identifier cannot be recovered." };
       } else {
         if (!result.content.includes("shipment-")) throw new Error(`Unexpected real read_file result: ${result.content}`);

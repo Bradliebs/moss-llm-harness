@@ -295,6 +295,12 @@ describe("SettingsPanel", () => {
     expect(settings.updateSettings).toHaveBeenCalledWith({ enableTools: false });
   });
 
+  it("turns on the project instruction files", () => {
+    render(<SettingsPanel onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: /Use the project.s instruction files/ }));
+    expect(settings.updateSettings).toHaveBeenCalledWith({ projectInstructions: true });
+  });
+
   it("updates and clamps the tool-round limit", () => {
     render(<SettingsPanel onClose={() => {}} />);
     const input = screen.getByLabelText("Tool rounds per turn");
@@ -322,7 +328,7 @@ describe("SettingsPanel", () => {
     const onClose = vi.fn();
     render(<SettingsPanel onClose={onClose} />);
     await waitFor(() => expect(screen.getByText("No MCP servers configured or connected.")).toBeDefined());
-    fireEvent.click(screen.getByText("✕"));
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

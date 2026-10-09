@@ -64,7 +64,7 @@ describe("SetupAssistant", () => {
     expect(probe).not.toHaveBeenCalled();
     expect(createContextVariant).toHaveBeenCalledWith("http://localhost:11434/v1", "mid:8b", 16_384);
     expect(updateSettings).toHaveBeenLastCalledWith({ model: "mid:8b-ctx16k" });
-    expect(screen.getByLabelText("Setup progress").textContent).toContain("✓ Check mid:8b's context window — created mid:8b-ctx16k");
+    expect(screen.getByLabelText("Setup progress").textContent).toContain("Done: Check mid:8b's context window — created mid:8b-ctx16k");
   });
 
   it("reports failed steps without stopping the rest", async () => {
@@ -79,8 +79,8 @@ describe("SetupAssistant", () => {
     fireEvent.click(screen.getByRole("button", { name: /Apply 2 items/ }));
     // A failure is announced as an alert.
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Applied 2 setup items; 1 step failed."));
-    expect(screen.getByLabelText("Setup progress").textContent).toContain("✗ Download nomic-embed-text — offline");
-    expect(screen.getByLabelText("Setup progress").textContent).toContain("✓ Check mid:8b's context window — Fine.");
+    expect(screen.getByLabelText("Setup progress").textContent).toContain("Failed: Download nomic-embed-text — offline");
+    expect(screen.getByLabelText("Setup progress").textContent).toContain("Done: Check mid:8b's context window — Fine.");
     expect(applyPreset).not.toHaveBeenCalled();
   });
 

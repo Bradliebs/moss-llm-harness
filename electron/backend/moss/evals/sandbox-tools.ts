@@ -1,5 +1,6 @@
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { commandTimeoutMs } from "../tools/shell-tool";
 import type { Tool } from "../tools/types";
 import type { runVerify } from "../verify/verifier";
 import type { EvalSandboxBackend } from "./sandbox-backend";
@@ -60,9 +61,9 @@ export function createSandboxTools(tools: Tool[], backend: EvalSandboxBackend, r
         assertHealthy();
         if (tool.name !== "run_command") return tool.execute(args, context);
         if (typeof args.command !== "string" || !args.command.trim()) return { ok: false, content: "command is required" };
-        const result = await run(args.command, context.signal, tool.timeoutMs);
+        const result = await run(args.command, context.signal, commandTimeoutMs(args));
         return { ok: result.exitCode === 0 && !result.timedOut && !context.signal.aborted,
-          content: result.timedOut ? "Sandbox command timed out" : [result.stdout, result.stderr].filter(Boolean).join("\n") || `Exited with code ${result.exitCode}` };
+          content: result.timedOut ? "Sandbox command timed out" : [result.stdout, result.stderr, result.exitCode !== 0 ? `[exit code ${result.exitCode}]` : ""].filter(Boolean).join("\n") || `Exited with code ${result.exitCode}` };
       },
     };
   });

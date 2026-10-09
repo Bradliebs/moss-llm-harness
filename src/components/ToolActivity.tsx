@@ -25,7 +25,7 @@ export function ToolActivity({ total, autoApproved, entries }: ToolActivityProps
     <span className="relative">
       <button
         type="button"
-        className={autoApproved > 0 ? "text-xs text-amber-400/80 hover:underline" : "text-xs text-neutral-400 dark:text-neutral-600 hover:underline"}
+        className={autoApproved > 0 ? "text-xs text-amber-800 hover:underline dark:text-amber-300" : "text-xs text-neutral-600 dark:text-neutral-400 hover:underline"}
         title={`${total} tool call(s) ran in this conversation; ${autoApproved} ran without asking because auto-approve was on. Click to review.`}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
@@ -64,18 +64,18 @@ export function ToolActivity({ total, autoApproved, entries }: ToolActivityProps
                 <span className="flex-1 truncate font-mono text-neutral-800 dark:text-neutral-200">{entry.name}</span>
                 <span className={
                   entry.risk === "destructive"
-                    ? "rounded bg-red-900/60 px-1 text-[10px] uppercase text-red-300"
+                    ? "rounded bg-red-100 px-1 text-[10px] uppercase text-red-900 dark:bg-red-900/60 dark:text-red-300"
                     : entry.risk === "mutating"
-                      ? "rounded bg-amber-900/60 px-1 text-[10px] uppercase text-amber-300"
+                      ? "rounded bg-amber-100 px-1 text-[10px] uppercase text-amber-900 dark:bg-amber-900/60 dark:text-amber-300"
                       : "rounded bg-neutral-200 px-1 text-[10px] uppercase text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
                 }>
                   {entry.risk}
                 </span>
                 {entry.autoApproved ? (
-                  <span className="rounded bg-amber-900/40 px-1 text-[10px] uppercase text-amber-300">auto</span>
+                  <span className="rounded bg-amber-100 px-1 text-[10px] uppercase text-amber-900 dark:bg-amber-900/40 dark:text-amber-300">auto</span>
                 ) : null}
                 {entry.durationMs != null ? (
-                  <span className="font-mono text-[10px] tabular-nums text-neutral-500 dark:text-neutral-400">{entry.durationMs}ms</span>
+                  <span className="font-mono text-[10px] tabular-nums text-neutral-600 dark:text-neutral-400">{entry.durationMs}ms</span>
                 ) : null}
               </li>
             ))}

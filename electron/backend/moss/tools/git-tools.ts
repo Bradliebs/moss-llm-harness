@@ -72,7 +72,7 @@ export const gitStatusTool: Tool = {
 
 export const gitDiffTool: Tool = {
   name: "git_diff",
-  description: "Show uncommitted changes in the workspace repository as a unified diff.",
+  description: "Show uncommitted changes to tracked files in the workspace repository as a unified diff. New untracked files are not included: git_status lists them and read_file shows them.",
   parameters: {
     type: "object",
     properties: {

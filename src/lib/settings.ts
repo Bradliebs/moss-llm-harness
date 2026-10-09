@@ -82,6 +82,8 @@ export interface MossSettings {
   personalityId: string;
   /** when true, the assistant adapts its tone to remembered preferences */
   adaptiveTone: boolean;
+  /** add the workspace's AGENTS.md (and similar files) to each turn as background */
+  projectInstructions: boolean;
   workspaceRoot: string | null;
   /** speech-to-text endpoint base URL (empty = reuse the provider baseUrl) */
   sttBaseUrl: string;
@@ -194,6 +196,7 @@ const DEFAULT_SETTINGS: MossSettings = {
   customInstructions: "",
   personalityId: DEFAULT_PERSONALITY_ID,
   adaptiveTone: false,
+  projectInstructions: false,
   workspaceRoot: null,
   sttBaseUrl: "",
   sttModel: "whisper-1",

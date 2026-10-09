@@ -157,7 +157,7 @@ export function repairToolCall(call: ToolCall, tools: readonly ToolDefinition[])
     return {
       call: { ...call, name: resolvedName },
       repairs,
-      error: `Invalid JSON arguments for ${resolvedName}: ${call.arguments.slice(0, 200)}. Send a JSON object with properties: ${properties.join(", ") || "none"}.`,
+      error: `Invalid JSON arguments for ${resolvedName}: ${call.arguments.slice(0, 200)}${call.arguments.length > 200 ? "..." : ""}. Send a JSON object with properties: ${properties.join(", ") || "none"}.${call.arguments.length > 2_000 ? " The arguments were long and may have been cut off: write large content in smaller pieces, for example create the file with its first part, then add the rest with edit_file." : ""}`,
     };
   }
   if (properties.length > 0) {

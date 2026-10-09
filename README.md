@@ -192,8 +192,9 @@ persists conversations locally, restores the selected conversation after a
 reload, and derives a title from the first user message.
 
 Use the left sidebar to create, search, select, rename, pin, export, copy, or
-delete conversations. Pinned conversations stay at the top of the list. Choose
-**Select conversations** to export several conversations into one Markdown file
+delete conversations. Deleting one conversation asks once more: select the
+trash icon, then **Delete?**. Pinned conversations stay at the top of the list.
+Choose **Select conversations** to export several conversations into one Markdown file
 or delete them together after a confirmation. Collapse the sidebar to a narrow
 rail with its toolbar button or `Ctrl+B`; Moss remembers the choice. In a compact
 window, open the same conversation list from the menu button in the chat header.
@@ -204,9 +205,15 @@ Select **Edit** on an earlier message to load it into the composer. The original
 conversation is unchanged until you send the edit, which replaces that message
 and everything after it. **Cancel edit** or `Esc` restores the empty composer.
 
-The **Clear** action removes messages from the selected conversation while
-keeping its entry. **Continue in new chat** creates a separate conversation with
+The chat header names the open conversation. Its actions are icon buttons
+with tooltips (text labels appear in wide windows): **Continue in new chat**,
+**Clear**, **Working state**, and **Settings**. **Clear** removes messages from
+the selected conversation while keeping its entry, after a second click on
+**Confirm clear**. **Continue in new chat** creates a separate conversation with
 a bounded summary of the current context and leaves the original unchanged.
+
+The conversation follows new output while you are at the end. Scroll up to read
+and it stays put; **Jump to latest** returns to the end.
 
 When a configured context window approaches its input budget, Moss summarizes
 the oldest model-facing turns into a bounded assistant-authored note. The
@@ -492,7 +499,10 @@ models keep every tool and no extra guidance. Capable models
 get guidance to work in small verified steps and at most 24 task-relevant tools.
 Limited and unreliable models get a numbered-plan, one-step-per-response
 instruction, at most 8 task-relevant tools (plus `find_tool` and any learned
-procedures), and only the first tool call of each response runs; the model is told to issue the next call on its own. Models that
+procedures), and only the first tool call of each response runs; the model is
+told to issue the next call on its own. A list of 8 or more always keeps
+`read_file`, `edit_file`, and `run_command`, so the wording of a request cannot
+leave a small model unable to read, change, or test code. Models that
 ignored a system-prompt rule during probing also get a short reminder in the
 latest user turn. A notice describes each adaptation.
 
@@ -858,6 +868,64 @@ deadline. Moss aborts the tool at that deadline and waits for its cleanup to
 settle before reporting a timeout. Tools that do not declare this capability do
 not receive a generic deadline that could abandon work in the background.
 
+#### Coding in a workspace
+
+The workspace tools are built for the way models edit code:
+
+* `read_file` returns a file that fits in one result as it is. A longer file
+  comes back a page of whole lines at a time, sized to what the model can see,
+  with the next `startLine` to ask for, so the model always gets exact text to
+  edit. `startLine` and `endLine` read any part.
+* `edit_file` matches Windows (CRLF) files when the model writes `\n`, keeps
+  the file's line ending, and reports the line it changed. When `oldText` is
+  not found, it shows the lines where its first line does appear, so the next
+  try can copy them exactly. `write_file` keeps CRLF when it overwrites a CRLF
+  file and says how many lines it replaced.
+* `search_files` accepts a regular expression (`regex`), run in a separate
+  thread that is stopped after 5 seconds so a slow pattern cannot freeze the
+  app, and an `include` glob. It skips lockfiles, minified files, files over
+  1 MB, and cache folders such
+  as `.venv`, `__pycache__`, `target`, and `coverage`. `glob_files` understands
+  `{ts,tsx}`, and a pattern without `/`, such as `*.test.ts`, matches in every
+  folder (`./*.ts` matches only the top folder).
+* `run_command` names its shell (cmd.exe on Windows), keeps the start and end
+  of long output where test runners print their summary, adds `[exit code N]`
+  when a command fails, and returns what a command printed before a timeout.
+  Commands get no input, so one that waits for a prompt or an editor fails at
+  once instead of hanging. The time limit is 60 seconds unless the model asks
+  for more with `timeoutSeconds` (up to 600); the approval card shows it.
+* With a workspace and tools on, the system prompt adds four lines of coding
+  habits: read before editing, make the smallest change, run the tests after
+  changing code, and the platform the commands run on.
+
+With a workspace selected and tools on, a chat turn gets at least 16 tool rounds
+(20 with verification), whatever **Tool rounds per turn** says: reading,
+editing, and testing take a round each, and small models make one call per
+round. A higher setting still applies.
+
+Under **Settings > Tools > Verification**, **Use the project's instruction
+files** adds the workspace's `AGENTS.md`, `CLAUDE.md`, or
+`.github/copilot-instructions.md` (up to 2,000 characters) to each turn's turn
+context as background on the project's conventions, such as how to build and
+test. It is off by default. Turn it on only for repositories you trust: the
+files cannot change approvals or safety rules, but they are written by whoever
+wrote the repository. The **Why** panel notes when they were added. This
+applies to chat turns; missions and headless runs use their own settings.
+Verification itself stays off until you turn it on, because the suggested
+commands come from the repository's own scripts and would run without asking.
+
+With verification commands configured, Moss runs them after each round that
+changes files and adds the result to the model's view of that change. A round
+whose only change was running one of those commands itself is not checked
+again. Passing runs do not use up the per-turn limit on failing runs (three by
+default); after it, the model is told checks are paused. Before the turn can
+finish, Moss checks the final state once more when files changed since the last
+run. If that fails and a round is left, the model is sent back to fix it, with
+the command output marked as untrusted data and told to say so if the check was
+failing before its changes. A turn runs verification at most eight times, two
+of them kept for the final check and one recheck after a fix.
+Failure output is sized to the context window, keeping more of its end.
+
 During one turn, Moss also tracks consecutive calls with the same tool name and
 canonical arguments. At increasing thresholds it adds an advisory to the
 model-facing result, prompting the model to inspect prior evidence or change its
@@ -1011,7 +1079,8 @@ demote, restore, or delete procedures in the Library. Turn learning off under
 Long conversations lose detail when older turns are summarized. Moss keeps a
 separate, typed **working state** for each conversation that is never
 summarized away: invariants, protected paths, decisions with their reasons, open
-questions, and established facts. Open it with **State** in the chat header.
+questions, and established facts. Open it with **Working state** in the chat
+header.
 
 * You can add any entry and remove any entry.
 * The model records decisions, facts, and questions with the `working_state`
@@ -1157,7 +1226,11 @@ uses a curated set of lazily loaded Shiki grammars.
 The response surface supports headings, nested lists, task lists, tables,
 blockquotes, inline code, highlighted code blocks, copy controls, regeneration,
 checkpoint reversion, token details, and a streaming indicator. User messages
-remain compact bubbles while assistant responses use a wider document layout.
+remain compact bubbles while assistant responses use a wider document layout;
+tool cards sit in the same column as the answer they lead to. A tool waiting for
+approval has an amber outline and full-size **Approve** and **Deny** buttons.
+Tables with three or more rows add a filter, row selection, and a row count;
+smaller tables keep sorting and CSV export.
 
 Recognized provider failures include a short fix and a direct action: rejected
 API keys, unavailable models, unreachable providers, and spending caps open model
@@ -1184,7 +1257,10 @@ and opens the owning conversation. Turn this off under **Settings > General**.
 
 Shortcuts avoid Electron's reload and developer-tools accelerators. **Settings >
 General** also offers larger text, a high-contrast mode with stronger borders and
-focus outlines, and a keyboard shortcut reference. Screen readers hear concise
+focus outlines, and a keyboard shortcut reference. In both themes, keyboard
+focus shows a green outline, the main screens pass an automated WCAG AA check,
+status is shown by icon and words as well as colour, and animations stop when
+Windows asks for reduced motion. Screen readers hear concise
 announcements when a reply completes, fails, or needs approval, instead of every
 streamed token. Settings reopens on the category you last used.
 

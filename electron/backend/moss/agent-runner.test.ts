@@ -1112,7 +1112,7 @@ describe("runTurn verification loop", () => {
     expect(notices(h)).toHaveLength(0);
   });
 
-  it("stops verifying once the cycle budget is exhausted", async () => {
+  it("does not spend the budget on passing runs", async () => {
     const provider = scriptedProvider([
       [call("c1", "write_file")],
       [call("c2", "write_file")],
@@ -1124,6 +1124,45 @@ describe("runTurn verification loop", () => {
       verify: { enabled: true, commands: ["exit 0"], maxCycles: 1 },
     });
 
-    expect(notices(h)).toHaveLength(1);
+    expect(notices(h).map((n) => n.message)).toEqual(["Verification passed", "Verification passed"]);
+    expect(h.events.at(-1)?.type).toBe("turn-complete");
+  });
+
+  it("stops verifying after the failure budget, says so, and checks the final state before finishing", async () => {
+    const requests: ChatRequest[] = [];
+    const provider = scriptedProvider([
+      [call("c1", "write_file")],
+      [call("c2", "write_file")],
+      [{ type: "text-delta", text: "done" }],
+    ], requests);
+    const h = await run(provider, [tool("write_file", { ok: true, content: "W" })], {
+      autoApprove: true,
+      workspaceRoot: cwd,
+      verify: { enabled: true, commands: ["exit 1"], maxCycles: 1 },
+    });
+
+    // One budgeted run after the first write and one check of the final state;
+    // the model then changed nothing, so it is not checked again.
+    expect(notices(h).filter((n) => n.level === "warn")).toHaveLength(2);
+    const secondWrite = requests[2].messages.filter((m) => m.role === "tool").at(-1)!.content;
+    expect(secondWrite).toContain("[verification] Not run after this change");
+    const finalFeedback = requests[3].messages.at(-1)!;
+    expect(finalFeedback.role).toBe("user");
+    expect(finalFeedback.content).toContain("Moss ran `exit 1` to check your changes and it failed");
+    expect(h.events.at(-1)?.type).toBe("turn-complete");
+  });
+
+  it("checks the final state even with no per-round runs left", async () => {
+    const provider = scriptedProvider([
+      [call("c1", "write_file")],
+      [{ type: "text-delta", text: "done" }],
+    ]);
+    const h = await run(provider, [tool("write_file", { ok: true, content: "W" })], {
+      autoApprove: true,
+      workspaceRoot: cwd,
+      verify: { enabled: true, commands: ["exit 0"], maxCycles: 0 },
+    });
+    expect(notices(h).map((n) => n.message)).toEqual(["Verification passed"]);
+    expect(h.events.at(-1)?.type).toBe("turn-complete");
   });
 });

@@ -63,7 +63,7 @@ export function TurnUndo({ turnId }: { turnId: string }): React.ReactElement | n
           {files.map((file) => (
             <li key={file.path}>
               <code>{file.path}</code>{" "}
-              <span className="text-neutral-500 dark:text-neutral-400">{file.existed ? "modified" : "created (undo deletes it)"}</span>
+              <span className="text-neutral-600 dark:text-neutral-400">{file.existed ? "modified" : "created (undo deletes it)"}</span>
             </li>
           ))}
         </ul>

@@ -15,5 +15,8 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    // Fonts stay files: the CSP (default-src 'self') blocks data: fonts, and
+    // an inlined font subset silently fell back to a system font.
+    assetsInlineLimit: (file) => (/\.(woff2?|ttf|otf)$/i.test(file) ? false : undefined),
   },
 });

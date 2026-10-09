@@ -50,6 +50,8 @@ function InteractiveTable({ headers, rows }: { headers: Cell[]; rows: Cell[][] }
   if (sort) visible.sort((left, right) => compare(left.row[sort.column].text, right.row[sort.column].text) * (sort.direction === "ascending" ? 1 : -1) || left.index - right.index);
   const exported = visible.filter(({ index }) => selected.size === 0 || selected.has(index));
   const allSelected = visible.length > 0 && visible.every(({ index }) => selected.has(index));
+  // Filtering and selecting a one- or two-row table is noise; it keeps sorting and export.
+  const full = rows.length >= 3;
 
   function download(): void {
     setError("");
@@ -73,20 +75,24 @@ function InteractiveTable({ headers, rows }: { headers: Cell[]; rows: Cell[][] }
   return (
     <section aria-label="Result table" className="result-table">
       <div className="result-table-toolbar">
-        <label className="result-table-filter"><Search size={15} aria-hidden="true" /><input aria-label="Filter table rows" type="search" value={filter} onChange={(event) => setFilter(event.target.value)} /></label>
-        <span role="status" className="result-table-count">{visible.length}/{rows.length} rows{selected.size ? ` · ${selected.size} selected` : ""}</span>
+        {full ? (
+          <>
+            <label className="result-table-filter"><Search size={15} aria-hidden="true" /><input aria-label="Filter table rows" type="search" placeholder="Filter rows" value={filter} onChange={(event) => setFilter(event.target.value)} /></label>
+            <span role="status" className="result-table-count">{visible.length}/{rows.length} rows{selected.size ? ` · ${selected.size} selected` : ""}</span>
+          </>
+        ) : <span className="flex-1" />}
         <button type="button" className="response-icon-button" title={`Export ${exported.length} ${selected.size ? "selected visible" : "visible"} rows as CSV`} aria-label="Export table as CSV" disabled={exported.length === 0} onClick={download}><Download size={16} aria-hidden="true" /></button>
-        <button type="button" className="response-icon-button" title="Reset table" aria-label="Reset table" disabled={!filter && !sort && selected.size === 0} onClick={() => { setFilter(""); setSort(null); setSelected(new Set()); setError(""); }}><RotateCcw size={16} aria-hidden="true" /></button>
+        {full || sort ? <button type="button" className="response-icon-button" title="Reset table" aria-label="Reset table" disabled={!filter && !sort && selected.size === 0} onClick={() => { setFilter(""); setSort(null); setSelected(new Set()); setError(""); }}><RotateCcw size={16} aria-hidden="true" /></button> : null}
       </div>
       {error ? <p role="alert">{error}</p> : null}
       <div className="result-table-scroll" role="region" aria-label="Table data" tabIndex={0}>
         <table>
           <thead><tr>
-            <th scope="col" className="result-table-selection"><input type="checkbox" aria-label="Select all visible rows" disabled={!visible.length} checked={allSelected} ref={(node) => { if (node) node.indeterminate = !allSelected && visible.some(({ index }) => selected.has(index)); }} onChange={() => setSelected((previous) => {
+            {full ? <th scope="col" className="result-table-selection"><input type="checkbox" aria-label="Select all visible rows" disabled={!visible.length} checked={allSelected} ref={(node) => { if (node) node.indeterminate = !allSelected && visible.some(({ index }) => selected.has(index)); }} onChange={() => setSelected((previous) => {
               const next = new Set(previous);
               for (const { index } of visible) { if (allSelected) next.delete(index); else next.add(index); }
               return next;
-            })} /></th>
+            })} /></th> : null}
             {headers.map((header, column) => <th key={column} scope="col" aria-sort={sort?.column === column ? sort.direction : "none"}>
               <button type="button" className="result-table-sort" aria-label={`Sort by ${header.text || `column ${column + 1}`}`} onClick={() => setSort((previous) => previous?.column === column ? previous.direction === "ascending" ? { column, direction: "descending" } : null : { column, direction: "ascending" })}>
                 <span>{header.text}</span>{sort?.column !== column ? <ArrowUpDown size={14} /> : sort.direction === "ascending" ? <ArrowUp size={14} /> : <ArrowDown size={14} />}
@@ -94,7 +100,7 @@ function InteractiveTable({ headers, rows }: { headers: Cell[]; rows: Cell[][] }
             </th>)}
           </tr></thead>
           <tbody>{visible.map(({ row, index }) => <tr key={index} data-selected={selected.has(index) || undefined}>
-            <td className="result-table-selection"><input type="checkbox" aria-label={`Select row ${index + 1}`} checked={selected.has(index)} onChange={() => setSelected((previous) => { const next = new Set(previous); if (next.has(index)) next.delete(index); else next.add(index); return next; })} /></td>
+            {full ? <td className="result-table-selection"><input type="checkbox" aria-label={`Select row ${index + 1}`} checked={selected.has(index)} onChange={() => setSelected((previous) => { const next = new Set(previous); if (next.has(index)) next.delete(index); else next.add(index); return next; })} /></td> : null}
             {row.map((cell, column) => <td key={column}>{cell.content}</td>)}
           </tr>)}</tbody>
         </table>

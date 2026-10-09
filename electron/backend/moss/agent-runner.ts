@@ -333,6 +333,51 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
   let failedToolCalls = 0;
   let mutations = 0;
   let latestVerification: VerifyResult | undefined;
+  // Whether files changed after the last verification run, and how many checks
+  // of the final state are left: one, plus one after a failed final check.
+  let changedSinceVerify = false;
+  let finalChecksLeft = 2;
+  let budgetNoted = false;
+  // A hard cap on verification runs per turn, passing or not: a suite can take minutes.
+  let verifyRunsLeft = 8;
+  /** A run_command that is itself one of the verification commands has just
+   *  checked the code; running the suite again right after it adds nothing. */
+  const isVerifyCommand = (call: ToolCall): boolean => {
+    if (call.name !== "run_command") return false;
+    try {
+      const command = String((JSON.parse(call.arguments) as { command?: unknown }).command ?? "").trim().replace(/\s+/g, " ");
+      return verifyCommands.some((verify) => verify.trim().replace(/\s+/g, " ") === command);
+    } catch {
+      return false;
+    }
+  };
+  const verifyNow = async (): Promise<VerifyResult> => {
+    verifyRunsLeft--;
+    const verifyResult = await (opts.verificationRunner ?? runVerify)(verifyCommands, opts.workspaceRoot, signal, {
+      commandTimeoutMs: opts.toolTimeoutMs,
+    });
+    latestVerification = verifyResult;
+    changedSinceVerify = false;
+    opts.onVerification?.(verifyResult);
+    if (verifyResult.results.length > 0) {
+      onEvent({
+        type: "verification",
+        ok: verifyResult.ok,
+        checkCount: verifyResult.results.length,
+        ...(!verifyResult.ok
+          ? { failedCheckHash: hashTraceValue(verifyResult.results.find((result) => !result.ok)?.command ?? "unknown") }
+          : {}),
+      });
+      onEvent({
+        type: "notice",
+        level: verifyResult.ok ? "info" : "warn",
+        message: verifyResult.ok
+          ? "Verification passed"
+          : `Verification failed: ${verifyResult.results.find((r) => !r.ok)?.command ?? ""}`,
+      });
+    }
+    return verifyResult;
+  };
   const failedActionSignatures: string[] = [];
   const usedToolNames = new Set<string>();
   const repeatToolReminder = new RepeatToolReminder();
@@ -526,6 +571,24 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
           onEvent({ type: "notice", level: "warn", message: "Empty provider response; retrying once" });
           continue;
         }
+        // Files changed since the last check: check the final state before the
+        // turn can finish, so a change that breaks the build is not reported as done.
+        if (changedSinceVerify && finalChecksLeft > 0 && verifyRunsLeft > 0 && verifyCommands.length > 0 && opts.workspaceRoot && !signal.aborted) {
+          finalChecksLeft--;
+          const verifyResult = await verifyNow();
+          // Only if a later round can still run tools; otherwise the failure notice stands.
+          if (!verifyResult.ok && round + 1 < maxRounds) {
+            // The command output is data, not the user's words: it goes in an
+            // untrusted-content wrapper under a line the harness wrote.
+            const failed = verifyResult.results.find((result) => !result.ok)?.command ?? "verification";
+            conversation.push({
+              role: "user",
+              content: `[verification] Moss ran \`${failed}\` to check your changes and it failed. Its output follows as data. Fix the failure, then finish; if it was already failing before your changes, say so instead of changing unrelated code.\n\n${wrapExternalContent("verification", formatVerifyReport(verifyResult, resultCap))}`,
+            });
+            onEvent({ type: "round-end", round, toolCallCount: 0, finish: "rejected" });
+            continue;
+          }
+        }
         if (opts.completionGuard || jsonArtifactGuard) {
           const artifactDecision = await jsonArtifactGuard?.check(signal);
           const decision = artifactDecision?.accept === false ? artifactDecision : await opts.completionGuard?.({
@@ -661,10 +724,14 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         if (result.ok) successfulToolCalls++;
         else failedToolCalls++;
         if (result.ok && isVerificationMutation(call.name, risk)) {
-          mutatedThisRound = true;
           mutations++;
-          lastConvToolMsg = convToolMsg;
+          if (!isVerifyCommand(call)) {
+            mutatedThisRound = true;
+            lastConvToolMsg = convToolMsg;
+          }
         }
+        // A spilled result points at read_tool_output, so make sure the model has it.
+        if (convToolMsg.content.includes("Use read_tool_output with this id")) offerTool("read_tool_output");
         onEvent({
           type: "tool-result",
           callId: call.id,
@@ -730,32 +797,17 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
       // (not the persisted history): a standalone injected message would break
       // Anthropic's strict user/assistant alternation, whereas extending a
       // tool_result stays valid for both providers. A notice surfaces it live.
-      if (mutatedThisRound && verifyCyclesLeft > 0 && lastConvToolMsg && !signal.aborted) {
-        verifyCyclesLeft--;
-        const verifyResult = await (opts.verificationRunner ?? runVerify)(verifyCommands, opts.workspaceRoot, signal, {
-          commandTimeoutMs: opts.toolTimeoutMs,
-        });
-        latestVerification = verifyResult;
-        opts.onVerification?.(verifyResult);
-        const report = formatVerifyReport(verifyResult);
-        if (report) {
-          lastConvToolMsg.content = `${lastConvToolMsg.content}\n\n${report}`;
-          onEvent({
-            type: "verification",
-            ok: verifyResult.ok,
-            checkCount: verifyResult.results.length,
-            ...(!verifyResult.ok
-              ? { failedCheckHash: hashTraceValue(verifyResult.results.find((result) => !result.ok)?.command ?? "unknown") }
-              : {}),
-          });
-          onEvent({
-            type: "notice",
-            level: verifyResult.ok ? "info" : "warn",
-            message: verifyResult.ok
-              ? "Verification passed"
-              : `Verification failed: ${verifyResult.results.find((r) => !r.ok)?.command ?? ""}`,
-          });
-        }
+      if (mutatedThisRound) changedSinceVerify = true;
+      // Two runs are kept back: the final check and one more after a fix.
+      if (mutatedThisRound && verifyCyclesLeft > 0 && verifyRunsLeft > 2 && lastConvToolMsg && !signal.aborted) {
+        const verifyResult = await verifyNow();
+        // Only a failure uses up the budget: a pass costs the model nothing to read.
+        if (!verifyResult.ok) verifyCyclesLeft--;
+        const report = formatVerifyReport(verifyResult, resultCap);
+        if (report) lastConvToolMsg.content = `${lastConvToolMsg.content}\n\n${report}`;
+      } else if (mutatedThisRound && verifyCommands.length > 0 && opts.workspaceRoot && lastConvToolMsg && !budgetNoted) {
+        budgetNoted = true;
+        lastConvToolMsg.content = `${lastConvToolMsg.content}\n\n[verification] Not run after this change: this turn's verification runs are used up. Moss checks once more when you finish.`;
       }
     }
 
@@ -982,7 +1034,7 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
     args = call.arguments ? (JSON.parse(call.arguments) as Record<string, unknown>) : {};
   } catch {
     return {
-      result: { ok: false, content: `Invalid JSON arguments for ${call.name}: ${call.arguments}` },
+      result: { ok: false, content: `Invalid JSON arguments for ${call.name}: ${call.arguments.slice(0, 200)}${call.arguments.length > 200 ? "..." : ""}` },
       autoApproved: false,
     };
   }
@@ -1063,7 +1115,7 @@ async function executeCall(call: ToolCall, opts: RunTurnOptions, plan: PlanStore
 
   try {
     opts.signal.throwIfAborted();
-    const execute = (signal: AbortSignal) => tool.execute(args, { workspaceRoot: opts.workspaceRoot, signal, stt: opts.stt, email: opts.email, embed: opts.embed, checkpoint: opts.checkpoint, approvalGranted, gatedMemory: opts.gatedMemory, plan, delegate, ...(guards?.workingState ? { workingState: guards.workingState } : {}), ...(guards?.findTools ? { findTools: guards.findTools } : {}), ...(guards?.provenance.tainted ? { untrustedContext: true } : {}) });
+    const execute = (signal: AbortSignal) => tool.execute(args, { workspaceRoot: opts.workspaceRoot, signal, maxResultChars: toolResultCap(opts.contextLimit), stt: opts.stt, email: opts.email, embed: opts.embed, checkpoint: opts.checkpoint, approvalGranted, gatedMemory: opts.gatedMemory, plan, delegate, ...(guards?.workingState ? { workingState: guards.workingState } : {}), ...(guards?.findTools ? { findTools: guards.findTools } : {}), ...(guards?.provenance.tainted ? { untrustedContext: true } : {}) });
     const timeoutMs = tool.timeoutMs === undefined ? undefined : opts.toolTimeoutMs ?? tool.timeoutMs;
     const result = timeoutMs === undefined
       ? await execute(opts.signal)

@@ -567,6 +567,9 @@ export interface ChatStartRequest {
   /** when true, the assistant adapts its tone to remembered preferences
    *  (memory-driven adaptation) */
   adaptiveTone?: boolean;
+  /** when true and a workspace is selected, the workspace's AGENTS.md, CLAUDE.md,
+   *  or .github/copilot-instructions.md is added to the turn context as background */
+  projectInstructions?: boolean;
   /** speech-to-text config for the transcribe_audio tool */
   stt?: SttConfig;
   /** email config for the send_email tool */

@@ -6,7 +6,7 @@
 // stay disabled for a conversation whose run is still active.
 
 import { useState } from "react";
-import { CheckSquare, Copy, Download, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plus, Trash2, X } from "lucide-react";
+import { Activity, BookOpen, CheckSquare, Copy, Download, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plus, Settings as SettingsIcon, Trash2, X } from "lucide-react";
 
 import {
   createSession,
@@ -68,6 +68,8 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  // Deleting one conversation takes a second click on the same button.
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const exportOptions = { includeTools: true, model: settings.model, modelRates: settings.modelRates };
   const runsByTask = new Map(runs.map((run) => [run.id, run]));
@@ -170,7 +172,7 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
         <span className="text-sm font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">Moss</span>
         <button
           type="button"
-          className="ml-auto hidden h-8 w-8 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white md:inline-flex"
+          className="ml-auto hidden h-8 w-8 items-center justify-center rounded-md text-neutral-600 transition hover:bg-neutral-200 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white md:inline-flex"
           onClick={() => updateSettings({ sidebarCollapsed: true })}
           title="Collapse sidebar"
           aria-label="Collapse sidebar"
@@ -179,7 +181,7 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
         </button>
         <button
           type="button"
-          className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-md text-neutral-500 transition hover:bg-neutral-200 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white md:hidden"
+          className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-md text-neutral-600 transition hover:bg-neutral-200 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-white md:hidden"
           onClick={onClose}
           title="Close conversations"
           aria-label="Close conversations"
@@ -189,14 +191,16 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
       </div>
       <div className="border-b border-neutral-200 dark:border-neutral-800 p-2">
         <button
-          className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-medium text-white shadow transition hover:bg-emerald-600 disabled:opacity-50"
+          className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-sm font-medium text-white shadow-sm transition-colors duration-150 hover:bg-emerald-800 disabled:opacity-50"
           onClick={createAndClose}
+          aria-label="Start new chat"
         >
-          + New chat
+          <Plus size={16} aria-hidden="true" />
+          New chat
         </button>
         {sessions.length > 0 ? (
           <input
-            className="mt-2 w-full rounded-md border border-neutral-300/60 dark:border-neutral-700/60 bg-neutral-200 dark:bg-neutral-800 px-2 py-1.5 text-sm text-neutral-900 dark:text-neutral-100 placeholder:text-neutral-500 dark:placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+            className="mt-2 w-full rounded-md border border-neutral-300 dark:border-neutral-700/60 bg-white dark:bg-neutral-800 px-2 py-1.5 text-sm text-neutral-900 dark:text-neutral-100 placeholder:text-neutral-500 dark:placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]"
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -249,9 +253,9 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
 
       <nav className="min-h-0 flex-1 overflow-y-auto p-2">
         {sessions.length === 0 ? (
-          <p className="px-2 py-4 text-xs text-neutral-500 dark:text-neutral-400">No conversations yet.</p>
+          <p className="px-2 py-4 text-xs text-neutral-600 dark:text-neutral-400">No conversations yet.</p>
         ) : visible.length === 0 ? (
-          <p className="px-2 py-4 text-xs text-neutral-500 dark:text-neutral-400">No matching conversations.</p>
+          <p className="px-2 py-4 text-xs text-neutral-600 dark:text-neutral-400">No matching conversations.</p>
         ) : (
           <ul className="space-y-1">
             {visible.map((s) => {
@@ -268,7 +272,7 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
               >
                 {editingId === s.id ? (
                   <input
-                    className="min-w-0 flex-1 rounded border border-neutral-400 dark:border-neutral-600 bg-white dark:bg-neutral-900 px-1 py-0.5 text-sm text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                    className="min-w-0 flex-1 rounded border border-neutral-400 dark:border-neutral-600 bg-white dark:bg-neutral-900 px-1 py-0.5 text-sm text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]"
                     value={draft}
                     autoFocus
                     onChange={(e) => setDraft(e.target.value)}
@@ -310,7 +314,7 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
                     </button>
                     <div className="invisible absolute right-1 flex items-center rounded bg-neutral-200 dark:bg-neutral-800 opacity-0 shadow-sm transition group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
                       <button
-                        className="p-1 text-neutral-500 dark:text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400"
+                        className="rounded p-1.5 text-neutral-600 dark:text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400"
                         onClick={() => setSessionPinned(s.id, !s.pinned)}
                         title={s.pinned ? "Unpin conversation" : "Pin conversation"}
                         aria-label={s.pinned ? "Unpin conversation" : "Pin conversation"}
@@ -318,7 +322,7 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
                         {s.pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />}
                       </button>
                       <button
-                        className="p-1 text-neutral-500 dark:text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40"
+                        className="rounded p-1.5 text-neutral-600 dark:text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400 disabled:opacity-40"
                         onClick={() => beginRename(s)}
                         disabled={busy && active}
                         title="Rename conversation"
@@ -327,7 +331,7 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
                         <Pencil size={14} aria-hidden="true" />
                       </button>
                       <button
-                        className="p-1 text-neutral-500 dark:text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400"
+                        className="rounded p-1.5 text-neutral-600 dark:text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400"
                         onClick={() => downloadTextFile(fileNameFor(s), sessionToMarkdown(s, exportOptions))}
                         title="Export conversation as Markdown"
                         aria-label="Export conversation as Markdown"
@@ -335,22 +339,38 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
                         <Download size={14} aria-hidden="true" />
                       </button>
                       <button
-                        className="p-1 text-neutral-500 dark:text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400"
+                        className="rounded p-1.5 text-neutral-600 dark:text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400"
                         onClick={() => copyToClipboard(sessionToMarkdown(s, exportOptions))}
                         title="Copy conversation as Markdown"
                         aria-label="Copy conversation as Markdown"
                       >
                         <Copy size={14} aria-hidden="true" />
                       </button>
-                      <button
-                        className="p-1 text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40"
-                        onClick={() => deleteSession(s.id)}
-                        disabled={busy && active}
-                        title="Delete conversation"
-                        aria-label="Delete conversation"
-                      >
-                        <Trash2 size={14} aria-hidden="true" />
-                      </button>
+                      {confirmDeleteId === s.id ? (
+                        <button
+                          className="rounded bg-red-700 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
+                          onClick={() => {
+                            setConfirmDeleteId(null);
+                            deleteSession(s.id);
+                          }}
+                          onBlur={() => setConfirmDeleteId(null)}
+                          autoFocus
+                          title="Click again to delete this conversation"
+                          aria-label="Confirm delete conversation"
+                        >
+                          Delete?
+                        </button>
+                      ) : (
+                        <button
+                          className="rounded p-1.5 text-neutral-600 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40"
+                          onClick={() => setConfirmDeleteId(s.id)}
+                          disabled={busy && active}
+                          title="Delete conversation"
+                          aria-label="Delete conversation"
+                        >
+                          <Trash2 size={14} aria-hidden="true" />
+                        </button>
+                      )}
                     </div>
                   </>
                 )}
@@ -363,9 +383,10 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
 
       <div className="space-y-1 border-t border-neutral-200 dark:border-neutral-800 p-2">
         <button
-          className="w-full rounded-md px-3 py-1.5 text-left text-sm text-neutral-700 dark:text-neutral-300 transition hover:bg-neutral-200 dark:hover:bg-neutral-800"
+          className="inline-flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-neutral-700 dark:text-neutral-300 transition-colors duration-150 hover:bg-neutral-200 dark:hover:bg-neutral-800"
           onClick={onOpenRuns}
         >
+          <Activity size={16} aria-hidden="true" />
           Run center
           {runs.some(isRunActive) ? (
             <span className="ml-2 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
@@ -374,15 +395,17 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
           ) : null}
         </button>
         <button
-          className="w-full rounded-md px-3 py-1.5 text-left text-sm text-neutral-700 dark:text-neutral-300 transition hover:bg-neutral-200 dark:hover:bg-neutral-800"
+          className="inline-flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-neutral-700 dark:text-neutral-300 transition-colors duration-150 hover:bg-neutral-200 dark:hover:bg-neutral-800"
           onClick={onOpenLibrary}
         >
+          <BookOpen size={16} aria-hidden="true" />
           Library
         </button>
         <button
-          className="w-full rounded-md px-3 py-1.5 text-left text-sm text-neutral-700 dark:text-neutral-300 transition hover:bg-neutral-200 dark:hover:bg-neutral-800"
+          className="inline-flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-neutral-700 dark:text-neutral-300 transition-colors duration-150 hover:bg-neutral-200 dark:hover:bg-neutral-800"
           onClick={onOpenSettings}
         >
+          <SettingsIcon size={16} aria-hidden="true" />
           Settings
         </button>
       </div>

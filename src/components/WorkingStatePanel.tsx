@@ -63,7 +63,7 @@ export function WorkingStatePanel({
         aria-labelledby="working-state-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header className="flex items-center gap-2 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
+        <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
           <div>
             <h2 id="working-state-title" className="font-semibold text-neutral-900 dark:text-white">Working state</h2>
             <p className="text-xs text-neutral-600 dark:text-neutral-300">Kept outside the transcript and sent with every model request.</p>
@@ -71,7 +71,7 @@ export function WorkingStatePanel({
           <button ref={closeRef} type="button" className="ml-auto rounded p-1.5 text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800" aria-label="Close working state" onClick={onClose}>
             <X size={18} aria-hidden="true" />
           </button>
-        </header>
+        </div>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3 text-sm">
           {KINDS.map((section) => {
             const items = entries.filter((entry) => entry.kind === section.kind);
@@ -132,7 +132,7 @@ export function WorkingStatePanel({
               onChange={(event) => setRationale(event.target.value)}
             />
           ) : null}
-          <button type="submit" className="rounded bg-emerald-700 px-3 py-1 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50" disabled={!text.trim()}>
+          <button type="submit" className="rounded bg-emerald-700 px-3 py-1 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50" disabled={!text.trim()}>
             Add
           </button>
         </form>

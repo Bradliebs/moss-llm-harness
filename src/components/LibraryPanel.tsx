@@ -2,6 +2,7 @@
 //
 // Overlay for managing durable memory and skills. Opened from the chat header.
 
+import { Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ProceduresSection } from "./ProceduresSection";
 import { SkillTrustControls } from "./SkillTrustControls";
@@ -53,7 +54,7 @@ function MemorySection(): React.ReactElement {
       </div>
       <div className="mb-2 flex gap-2">
         <input
-          className="flex-1 rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-sm"
+          className="border border-neutral-300 dark:border-neutral-700 flex-1 rounded bg-white dark:bg-neutral-800 px-2 py-1 text-sm"
           placeholder="Remember a fact…"
           value={fact}
           onChange={(e) => setFact(e.target.value)}
@@ -62,7 +63,7 @@ function MemorySection(): React.ReactElement {
           }}
         />
         <select
-          className="rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-sm"
+          className="border border-neutral-300 dark:border-neutral-700 rounded bg-white dark:bg-neutral-800 px-2 py-1 text-sm"
           value={category}
           onChange={(e) => setCategory(e.target.value as MemoryCategory)}
         >
@@ -78,14 +79,20 @@ function MemorySection(): React.ReactElement {
       </div>
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
         {entries.length === 0 ? (
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">No memories yet.</p>
+          <p className="text-xs text-neutral-600 dark:text-neutral-400">No memories yet.</p>
         ) : (
           entries.map((m) => (
             <div key={m.id} className="flex items-start gap-2 rounded bg-white dark:bg-neutral-900 px-2 py-1 text-sm">
               <span className="rounded bg-neutral-200 dark:bg-neutral-800 px-1 text-xs text-neutral-600 dark:text-neutral-400">{m.category}</span>
               <span className="flex-1 text-neutral-800 dark:text-neutral-200">{m.fact}</span>
-              <button className="text-xs text-neutral-500 dark:text-neutral-400 hover:text-red-400" onClick={() => void remove(m.id)}>
-                ✕
+              <button
+                type="button"
+                className="rounded p-1 text-neutral-600 transition-colors duration-150 hover:bg-red-500/10 hover:text-red-700 dark:text-neutral-400 dark:hover:text-red-400"
+                onClick={() => void remove(m.id)}
+                aria-label="Delete memory"
+                title="Delete memory"
+              >
+                <Trash2 size={14} aria-hidden="true" />
               </button>
             </div>
           ))
@@ -202,25 +209,25 @@ function SkillsSection(): React.ReactElement {
       <h2 className="mb-2 text-sm font-semibold text-neutral-800 dark:text-neutral-200">Skills</h2>
       <div className="mb-2 space-y-2 rounded border border-neutral-200 dark:border-neutral-800 p-2">
         <input
-          className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-sm"
+          className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1 text-sm"
           placeholder="Skill name"
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
         <input
-          className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-sm"
+          className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1 text-sm"
           placeholder="Short description (shown to the model)"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
         <textarea
-          className="w-full resize-none rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-sm"
+          className="border border-neutral-300 dark:border-neutral-700 w-full resize-none rounded bg-white dark:bg-neutral-800 px-2 py-1 text-sm"
           rows={3}
           placeholder="Full instructions (loaded on demand)"
           value={instructions}
           onChange={(e) => setInstructions(e.target.value)}
         />
-        {error ? <p className="text-xs text-red-600 dark:text-red-400">{error}</p> : null}
+        {error ? <p className="text-xs text-red-700 dark:text-red-400">{error}</p> : null}
         {importMessage ? <p className="text-xs text-neutral-600 dark:text-neutral-400">{importMessage}</p> : null}
         <div className="flex gap-2">
           <button className="rounded bg-blue-700 px-3 py-1 text-sm hover:bg-blue-600" onClick={() => void create()}>
@@ -236,7 +243,7 @@ function SkillsSection(): React.ReactElement {
       </div>
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
         {skills.length === 0 ? (
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">No skills yet.</p>
+          <p className="text-xs text-neutral-600 dark:text-neutral-400">No skills yet.</p>
         ) : (
           skills.map((s) => (
             <div key={s.id} className="rounded bg-white dark:bg-neutral-900 px-2 py-1 text-sm">
@@ -261,43 +268,49 @@ function SkillsSection(): React.ReactElement {
                   <span className="flex-1 font-medium text-neutral-800 dark:text-neutral-200">{s.name}</span>
                 )}
                 {s.createdBy === "agent" ? (
-                  <span className="rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-300">
+                  <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-900 dark:bg-amber-900/60 dark:text-amber-300">
                     agent
                   </span>
                 ) : null}
                 {s.createdBy === "import" ? (
-                  <span className="rounded bg-cyan-900/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-cyan-300">
+                  <span className="rounded bg-cyan-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-cyan-900 dark:bg-cyan-900/60 dark:text-cyan-300">
                     imported
                   </span>
                 ) : null}
                 <button
-                  className="text-xs text-neutral-500 dark:text-neutral-400 hover:text-blue-400"
+                  className="text-xs text-neutral-600 dark:text-neutral-400 hover:text-blue-400"
                   title="Rename skill"
                   onClick={() => beginRename(s)}
                 >
                   Rename
                 </button>
                 <button
-                  className="text-xs text-neutral-500 dark:text-neutral-400 hover:text-blue-400"
+                  className="text-xs text-neutral-600 dark:text-neutral-400 hover:text-blue-400"
                   title="Edit skill"
                   onClick={() => beginEdit(s)}
                 >
                   Edit
                 </button>
-                <button className="text-xs text-neutral-500 dark:text-neutral-400 hover:text-red-400" onClick={() => void remove(s.id)}>
-                  ✕
+                <button
+                  type="button"
+                  className="rounded p-1 text-neutral-600 transition-colors duration-150 hover:bg-red-500/10 hover:text-red-700 dark:text-neutral-400 dark:hover:text-red-400"
+                  onClick={() => void remove(s.id)}
+                  aria-label="Delete skill"
+                  title="Delete skill"
+                >
+                  <Trash2 size={14} aria-hidden="true" />
                 </button>
               </div>
               {editingId === s.id ? (
                 <div className="mt-1 space-y-1 pl-6">
                   <input
-                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-sm"
+                    className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1 text-sm"
                     aria-label="Edit description"
                     value={editDescription}
                     onChange={(e) => setEditDescription(e.target.value)}
                   />
                   <textarea
-                    className="w-full resize-none rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-sm"
+                    className="border border-neutral-300 dark:border-neutral-700 w-full resize-none rounded bg-white dark:bg-neutral-800 px-2 py-1 text-sm"
                     aria-label="Edit instructions"
                     rows={3}
                     value={editInstructions}

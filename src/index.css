@@ -9,12 +9,13 @@
 :root {
   color-scheme: light;
   --response-ink: #202328;
-  --response-muted: #687078;
+  --response-muted: #59616a;
   --response-line: rgba(35, 42, 48, 0.14);
   --response-soft: rgba(255, 255, 255, 0.48);
   --response-code: #f1f3f4;
   --response-accent: #087f64;
   --response-accent-line: rgba(8, 127, 100, 0.45);
+  --focus-ring: #047857;
 }
 :root.dark {
   color-scheme: dark;
@@ -25,6 +26,7 @@
   --response-code: #111315;
   --response-accent: #4ed2ad;
   --response-accent-line: rgba(78, 210, 173, 0.45);
+  --focus-ring: #34d399;
 }
 
 html,
@@ -57,30 +59,38 @@ body {
   background: rgba(16, 185, 129, 0.35);
 }
 
-/* Slim, theme-matched scrollbars */
+/* In the base layer, so Tailwind utilities on a component still win. */
+@layer base {
+  /* Keyboard focus is always visible, in the accent colour of each theme.
+     Controls that draw their own focus ring (focus:outline-none focus:ring-*)
+     keep it; everything else gets this outline. */
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  /* Every clickable control shows the hand cursor; disabled ones do not. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  select:not(:disabled),
+  summary,
+  label:has(> input[type="checkbox"]:not(:disabled)) {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+/* Slim, theme-matched scrollbars. Chromium uses scrollbar-color once it is
+   set and ignores ::-webkit-scrollbar rules, so each theme sets its own. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #c4c4cc transparent;
+  scrollbar-color: #b9b9c2 transparent;
 }
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-*::-webkit-scrollbar-thumb {
-  background: #c4c4cc;
-  border-radius: 9999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-*::-webkit-scrollbar-thumb:hover {
-  background: #a8a8b2;
-  background-clip: padding-box;
-}
-.dark *::-webkit-scrollbar-thumb {
-  background: #2a2a31;
-}
-.dark *::-webkit-scrollbar-thumb:hover {
-  background: #3a3a44;
+:root.dark,
+.dark * {
+  scrollbar-color: #52525b transparent;
 }
 
 @keyframes moss-fade-in {
@@ -131,7 +141,8 @@ body {
   letter-spacing: 0;
 }
 
-.rich-response h1 { font-size: 1.45rem; }
+.rich-response h1,
+.rich-response h2[data-level="1"] { font-size: 1.45rem; }
 .rich-response h2 { font-size: 1.2rem; }
 .rich-response h3 { font-size: 1.02rem; }
 .rich-response h4 { font-size: 0.94rem; }
@@ -230,6 +241,10 @@ body {
   border: 1px solid var(--response-line);
   border-radius: 4px;
   padding: 0.2rem 0.5rem;
+  color: var(--response-muted);
+}
+
+.result-table-filter input::placeholder {
   color: var(--response-muted);
 }
 
@@ -389,7 +404,8 @@ body {
 
 @media (max-width: 640px) {
   .rich-response { font-size: 0.9rem; line-height: 1.66; }
-  .rich-response h1 { font-size: 1.25rem; }
+  .rich-response h1,
+  .rich-response h2[data-level="1"] { font-size: 1.25rem; }
   .rich-response h2 { font-size: 1.1rem; }
   .response-footer { align-items: flex-start; }
   .response-usage { max-width: 70%; }
@@ -399,6 +415,15 @@ body {
   .animate-fade-in,
   .stream-caret {
     animation: none;
+  }
+  /* Hover and state changes switch at once instead of animating. */
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
   }
 }
 

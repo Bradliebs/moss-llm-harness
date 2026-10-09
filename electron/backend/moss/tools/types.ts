@@ -9,6 +9,8 @@ export interface ToolContext {
   /** absolute sandbox root; empty string means no workspace selected */
   workspaceRoot: string;
   signal: AbortSignal;
+  /** the most the model sees of one result; a tool that pages output sizes its pages to fit */
+  maxResultChars?: number;
   /** speech-to-text config, when configured, for the transcribe_audio tool */
   stt?: SttConfig;
   /** email config, when configured, for the send_email tool */

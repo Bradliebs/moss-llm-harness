@@ -125,7 +125,7 @@ try {
 
   async function launch(next) {
     scenario = next;
-    await page.getByRole("button", { name: "+ New chat", exact: true }).click();
+    await page.getByRole("button", { name: "Start new chat", exact: true }).click();
     await page.getByRole("button", { name: "Mission", exact: true }).click();
     await page.getByText("Review mission", { exact: true }).click();
     const review = page.getByLabel("Mission review", { exact: true });

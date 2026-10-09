@@ -64,7 +64,7 @@ describe("Sidebar", () => {
   it("creates a new conversation on the New chat button", () => {
     const onClose = vi.fn();
     render(<Sidebar busy={false} open onClose={onClose} onOpenSettings={noop} onOpenLibrary={noop} />);
-    fireEvent.click(screen.getByText("+ New chat"));
+    fireEvent.click(screen.getByRole("button", { name: "Start new chat" }));
     expect(sessions.createSession).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -95,6 +95,8 @@ describe("Sidebar", () => {
     });
     render(<Sidebar busy={false} onOpenSettings={noop} onOpenLibrary={noop} />);
     fireEvent.click(screen.getByTitle("Delete conversation"));
+    expect(sessions.deleteSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete conversation" }));
     expect(sessions.deleteSession).toHaveBeenCalledWith("a");
   });
 
@@ -114,7 +116,7 @@ describe("Sidebar", () => {
       currentId: "a",
     });
     render(<Sidebar busy={true} onOpenSettings={noop} onOpenLibrary={noop} />);
-    expect((screen.getByText("+ New chat") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Start new chat" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByText("First chat") as HTMLButtonElement).disabled).toBe(false);
   });
 

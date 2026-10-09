@@ -50,6 +50,13 @@ describe("resolveMaxToolRounds", () => {
     expect(resolveMaxToolRounds(100, false)).toBe(64);
     expect(resolveMaxToolRounds(Number.NaN, false)).toBe(8);
   });
+
+  it("gives coding turns in a workspace room to read, edit, and test", () => {
+    expect(resolveMaxToolRounds(8, false, true)).toBe(16);
+    expect(resolveMaxToolRounds(8, true, true)).toBe(20);
+    expect(resolveMaxToolRounds(40, true, true)).toBe(40);
+    expect(resolveMaxToolRounds(8, false, false)).toBe(8);
+  });
 });
 
 describe("resolveMissionSpec", () => {

@@ -70,7 +70,7 @@ export function ProductDiagnosticsSettings({ onStatus }: ProductDiagnosticsSetti
       <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">
         Product diagnostics
       </h3>
-      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="text-xs text-neutral-600 dark:text-neutral-400">
         Optional, local-only product signals. Moss never records prompts, responses, file contents, API keys,
         workspace paths, or raw tool arguments.
       </p>
@@ -84,7 +84,7 @@ export function ProductDiagnosticsSettings({ onStatus }: ProductDiagnosticsSetti
           <span className="block text-xs font-medium text-neutral-800 dark:text-neutral-200">
             Collect local product diagnostics
           </span>
-          <span className="block text-[11px] text-neutral-500 dark:text-neutral-400">
+          <span className="block text-[11px] text-neutral-600 dark:text-neutral-400">
             Stores bounded timing, outcome, blocker, approval, and verification categories on this device.
           </span>
         </span>
@@ -106,7 +106,7 @@ export function ProductDiagnosticsSettings({ onStatus }: ProductDiagnosticsSetti
           {entries.length} retained {entries.length === 1 ? "event" : "events"}
         </p>
         {entries.length > 0 ? (
-          <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto text-[11px] text-neutral-500 dark:text-neutral-400">
+          <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto text-[11px] text-neutral-600 dark:text-neutral-400">
             {entries.slice(0, 20).map((entry) => (
               <li key={entry.id} className="flex justify-between gap-3">
                 <span>{entry.kind.replaceAll("-", " ")}</span>

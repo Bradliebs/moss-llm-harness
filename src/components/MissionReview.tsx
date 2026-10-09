@@ -121,7 +121,7 @@ export function MissionContractEditor({
         <h3 id="mission-contract-heading" className="text-xs font-semibold text-neutral-700 dark:text-neutral-200">
           Outcome contract
         </h3>
-        <p className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+        <p className="mt-0.5 text-[11px] text-neutral-600 dark:text-neutral-400">
           Every mandatory outcome needs a host-run verification method, or an independent critic, before launch.
         </p>
       </div>
@@ -130,8 +130,8 @@ export function MissionContractEditor({
           const verification = criterion.verification;
           return (
             <fieldset key={criterion.id} className="space-y-2 rounded border border-neutral-200 p-2 dark:border-neutral-700">
-              <legend className="px-1 text-[11px] font-medium text-neutral-500 dark:text-neutral-300">Criterion {index + 1}</legend>
-              <label className="block text-[11px] text-neutral-500 dark:text-neutral-300">
+              <legend className="px-1 text-[11px] font-medium text-neutral-600 dark:text-neutral-300">Criterion {index + 1}</legend>
+              <label className="block text-[11px] text-neutral-600 dark:text-neutral-300">
                 Measurable outcome
                 <input
                   aria-label={`Acceptance criterion ${index + 1}`}
@@ -142,7 +142,7 @@ export function MissionContractEditor({
                 />
               </label>
               <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                <label className="text-[11px] text-neutral-500 dark:text-neutral-300">
+                <label className="text-[11px] text-neutral-600 dark:text-neutral-300">
                   Verification method
                   <select
                     aria-label={`Verification method ${index + 1}`}
@@ -168,7 +168,7 @@ export function MissionContractEditor({
                 {contract.criteria.length > 1 ? (
                   <button
                     type="button"
-                    className="self-end rounded px-2 py-1 text-xs text-red-600 hover:bg-red-500/10 dark:text-red-400"
+                    className="self-end rounded px-2 py-1 text-xs text-red-700 hover:bg-red-500/10 dark:text-red-400"
                     onClick={() => onChange({
                       ...contract,
                       criteria: contract.criteria.filter((_, criterionIndex) => criterionIndex !== index),
@@ -204,7 +204,7 @@ export function MissionContractEditor({
                   </p>
                 )
               ) : verification?.kind === "file-exists" ? (
-                <label className="block text-[11px] text-neutral-500 dark:text-neutral-300">
+                <label className="block text-[11px] text-neutral-600 dark:text-neutral-300">
                   Workspace-relative path
                   <input
                     aria-label={`Verification path ${index + 1}`}
@@ -219,7 +219,7 @@ export function MissionContractEditor({
                 </label>
               ) : verification?.kind === "file-contains" ? (
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <label className="text-[11px] text-neutral-500 dark:text-neutral-300">
+                  <label className="text-[11px] text-neutral-600 dark:text-neutral-300">
                     Workspace-relative path
                     <input
                       aria-label={`Verification path ${index + 1}`}
@@ -235,7 +235,7 @@ export function MissionContractEditor({
                       }))}
                     />
                   </label>
-                  <label className="text-[11px] text-neutral-500 dark:text-neutral-300">
+                  <label className="text-[11px] text-neutral-600 dark:text-neutral-300">
                     Expected text
                     <input
                       aria-label={`Expected text ${index + 1}`}
@@ -254,7 +254,7 @@ export function MissionContractEditor({
                 </div>
               ) : verification?.kind === "critic" ? (
                 <div className="space-y-1.5">
-                  <label className="block text-[11px] text-neutral-500 dark:text-neutral-300">
+                  <label className="block text-[11px] text-neutral-600 dark:text-neutral-300">
                     How the critic should judge it (optional)
                     <textarea
                       aria-label={`Critic rubric ${index + 1}`}
@@ -267,7 +267,7 @@ export function MissionContractEditor({
                       placeholder="For example: names at least three vendors with prices and a source for each"
                     />
                   </label>
-                  <label className="block text-[11px] text-neutral-500 dark:text-neutral-300">
+                  <label className="block text-[11px] text-neutral-600 dark:text-neutral-300">
                     Workspace files to review, comma-separated (optional)
                     <input
                       aria-label={`Critic files ${index + 1}`}
@@ -285,14 +285,14 @@ export function MissionContractEditor({
                       placeholder="reports/vendors.md"
                     />
                   </label>
-                  <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  <p className="text-[11px] text-neutral-600 dark:text-neutral-400">
                     A model from a different family than the ones doing the work reads the step&apos;s artifacts and these files, with no
                     tools, and must quote them to pass. This is a judgement, not a deterministic check.
                   </p>
                 </div>
               ) : verification?.kind === "http" ? (
                 <div className="grid gap-2 sm:grid-cols-[1fr_7rem]">
-                  <label className="text-[11px] text-neutral-500 dark:text-neutral-300">
+                  <label className="text-[11px] text-neutral-600 dark:text-neutral-300">
                     URL
                     <input
                       aria-label={`Verification URL ${index + 1}`}
@@ -309,7 +309,7 @@ export function MissionContractEditor({
                       placeholder="http://127.0.0.1:3000/health"
                     />
                   </label>
-                  <label className="text-[11px] text-neutral-500 dark:text-neutral-300">
+                  <label className="text-[11px] text-neutral-600 dark:text-neutral-300">
                     Status
                     <input
                       aria-label={`Expected HTTP status ${index + 1}`}
@@ -352,7 +352,7 @@ export function MissionContractEditor({
         Add criterion
       </button>
       <div className="grid gap-2 sm:grid-cols-2">
-        <label className="text-[11px] text-neutral-500 dark:text-neutral-300">
+        <label className="text-[11px] text-neutral-600 dark:text-neutral-300">
           Constraints, one per line
           <textarea
             aria-label="Mission constraints"
@@ -361,7 +361,7 @@ export function MissionContractEditor({
             onChange={(event) => onChange({ ...contract, constraints: event.target.value })}
           />
         </label>
-        <label className="text-[11px] text-neutral-500 dark:text-neutral-300">
+        <label className="text-[11px] text-neutral-600 dark:text-neutral-300">
           Assumptions, one per line
           <textarea
             aria-label="Mission assumptions"

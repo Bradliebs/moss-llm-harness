@@ -210,7 +210,7 @@ still required before closing end-to-end dictation acceptance.
      and the turn ends without a tool card.
 
 3. **New chat titling (regression for the sidebar fix)**
-   - Click "+ New chat". Confirm the new row reads "New chat".
+   - Click **New chat**. Confirm the new row reads "New chat".
    - Send a first message. Confirm the sidebar row title updates to the message
      text immediately on send (not only after the turn completes), truncated near
      40 characters with an ellipsis for long input.
@@ -381,11 +381,11 @@ still required before closing end-to-end dictation acceptance.
     - Select **Delete all** and confirm the trace folder is emptied.
 
 21. **Working state, supervisor, provenance, and skill trust**
-    - Open **State**, add `secret.txt` as a protected path, and ask the model to
+    - Open **Working state**, add `secret.txt` as a protected path, and ask the model to
       overwrite it. Confirm the file is unchanged and the tool card or reply
       names the protection. Add an invariant and confirm the model follows it
       after **Continue in new chat**.
-    - Ask the model to record a decision. Confirm it appears in **State** and
+    - Ask the model to record a decision. Confirm it appears in **Working state** and
       that the model cannot remove it.
     - Ask for a task that loops, such as reading the same file repeatedly.
       Confirm the warning after three stalled rounds and that the turn stops
@@ -534,6 +534,37 @@ still required before closing end-to-end dictation acceptance.
       the next turns **Why?** says the summary was reused rather than
       requested again.
 
+27. **Coding tools**
+    - On Windows, open a workspace containing a CRLF file and ask the model to
+      change one line. Confirm the edit succeeds and `git diff` shows only that
+      line.
+    - Ask for a change in the middle of a file over 1,000 lines. Confirm the
+      model reads it with `startLine` and `endLine`.
+    - With a failing test and verification set to `npm test`, ask the model to
+      fix it. Confirm the tool card shows the test summary and `[exit code 1]`,
+      and that the turn does not finish while the final check fails.
+    - Ask the model to run the full test suite. When it passes `timeoutSeconds`,
+      confirm the approval card shows that time limit.
+    - With **Tool rounds per turn** at 8 and a workspace selected, confirm a
+      long fix can use more than 8 rounds (up to 16, or 20 with verification).
+    - Add an `AGENTS.md` saying "Run tests with node test.js". Turn on **Use
+      the project's instruction files** and ask the model to run the tests.
+      Confirm **Why?** says the file was added and the model uses that command.
+      Turn it off and confirm the note is gone.
+
+28. **Interface polish**
+    - In light and dark themes, press `Tab` through the header, composer, and
+      Settings. Confirm every control shows a green focus outline.
+    - Select **Clear** and confirm nothing is removed until **Confirm clear**;
+      select the trash icon on a conversation and confirm it asks **Delete?**.
+    - During a long streamed reply, scroll up. Confirm the view stays put and
+      **Jump to latest** appears; select it to return to the end.
+    - Resize the window to 420 by 740 and open a conversation. Confirm the
+      header actions stay together on the right and nothing scrolls sideways
+      in Settings.
+    - With Windows animation effects off, confirm hover and panel changes do
+      not animate.
+
 ## Pass criteria
 
 - No uncaught errors in the main-process console or the renderer devtools.
@@ -544,7 +575,7 @@ still required before closing end-to-end dictation acceptance.
   live scores, context fit, voting, Why, practice runs, quarantine, learned
   procedures, the mission critic, judged replay, headless runs, SMTP email with
   secure credential storage, the Playwright MCP defaults, the GitHub Copilot
-  provider, deferred tool sets, and cached-token reporting behave as
-  described above.
+  provider, deferred tool sets, cached-token reporting, the coding tools, and the
+  interface polish checks behave as described above.
 - Reload preserves session history, titles, task state, and the "auto" provenance
   tag without replaying an interrupted action.

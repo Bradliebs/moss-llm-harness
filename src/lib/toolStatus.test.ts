@@ -19,7 +19,7 @@ describe("toolStatusColor", () => {
     const statuses: ToolStatus[] = ["approval", "running", "done", "denied", "error"];
     for (const s of statuses) {
       const cls = toolStatusColor(s);
-      expect(cls).toMatch(/^text-\w+-600 dark:text-\w+-400$/);
+      expect(cls).toMatch(/^text-\w+-[67]00 dark:text-\w+-400$/);
     }
   });
 });

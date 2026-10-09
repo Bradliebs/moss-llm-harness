@@ -138,7 +138,7 @@ export function ModelProfileSettings({ className }: { className: string }): Reac
         ) : (
           <button
             type="button"
-            className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+            className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
             disabled={!bridge || !settings.model || !settings.baseUrl}
             onClick={() => void run()}
           >

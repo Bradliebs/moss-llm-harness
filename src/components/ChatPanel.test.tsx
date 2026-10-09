@@ -1316,6 +1316,8 @@ describe("ChatPanel", () => {
     };
     render(<Harness />);
     fireEvent.click(screen.getByText("Clear"));
+    expect(mockClearSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
     expect(mockClearSession).toHaveBeenCalledWith("s1");
   });
 

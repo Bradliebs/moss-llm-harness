@@ -49,7 +49,7 @@ export function JevSettings(): React.ReactElement {
       <label className="block">
         <span className="mb-1 block text-neutral-600 dark:text-neutral-400">TypeSafe API key</span>
         <input type="password" autoComplete="off" spellCheck={false}
-          className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+          className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
           placeholder={saved ? "Key saved" : "No key saved"} value={apiKey}
           disabled={busy} onChange={(event) => setApiKey(event.target.value)} />
       </label>
@@ -60,9 +60,9 @@ export function JevSettings(): React.ReactElement {
         <button type="button" title="Remove TypeSafe API key" aria-label="Remove TypeSafe API key"
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-neutral-200 dark:bg-neutral-800 disabled:opacity-40"
           disabled={busy || !saved} onClick={() => void save(true)}><Trash2 size={16} /></button>
-        <span className="text-xs text-neutral-500">{saved ? "Key saved securely" : "No key saved"}</span>
+        <span className="text-xs text-neutral-600">{saved ? "Key saved securely" : "No key saved"}</span>
       </div>
-      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="text-xs text-neutral-600 dark:text-neutral-400">
         Approved context is sent to TypeSafe. Separate API charges apply outside Moss&apos;s model budget.
         Ordinary chat only; tools must be enabled. Changes apply to the next turn.
       </p>

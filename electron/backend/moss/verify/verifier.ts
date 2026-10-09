@@ -66,11 +66,18 @@ async function runOne(
  *  is clearly distinguishable from the tool output it is appended to. On failure
  *  a focus line steers the model to a surgical fix -- change only what the
  *  failing check needs, without re-touching checks that already passed. */
-export function formatVerifyReport(result: VerifyResult): string {
+export function formatVerifyReport(result: VerifyResult, maxOutputChars = OUTPUT_CAP): string {
   if (result.results.length === 0) return "";
+  // A failure's cause and summary are usually at the end, so keep more of it.
+  const fit = (output: string): string => {
+    if (output.length <= maxOutputChars) return output;
+    const head = Math.floor(maxOutputChars * 0.25);
+    const tail = maxOutputChars - head;
+    return `${output.slice(0, head)}\n...[${output.length - head - tail} characters omitted]...\n${output.slice(-tail)}`;
+  };
   const lines = result.results.map((r) => {
     const status = r.ok ? "PASS" : "FAIL";
-    return r.ok ? `[verification] ${status}: ${r.command}` : `[verification] ${status}: ${r.command}\n${r.output}`;
+    return r.ok ? `[verification] ${status}: ${r.command}` : `[verification] ${status}: ${r.command}\n${fit(r.output)}`;
   });
   if (!result.ok) {
     lines.push(

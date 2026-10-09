@@ -1,7 +1,7 @@
 // src/components/ChatPanel.tsx
 
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, FileText, Menu, PanelRightOpen, RefreshCw, X } from "lucide-react";
+import { ArrowDown, Check, ChevronDown, Copy, Eraser, FileText, Folder, Forward, ListChecks, Menu, PanelRightOpen, RefreshCw, Settings as SettingsIcon, X } from "lucide-react";
 
 import type { AgentMessage, ApprovalProvenance, ChatEventPayload, ConfidenceMode, DocumentAttachment, MissionCapabilityDescriptor, MissionLaunchPolicy, Skill, TaskBudget, TaskHistoryEntry, TaskSnapshot, TaskSpec, TokenUsage } from "@common/types";
 import { PERSONALITY_PRESETS } from "@common/personalities";
@@ -151,14 +151,18 @@ function ToolCard({
     <details
       ref={detailsRef}
       open={active}
-      className="group mr-auto w-full max-w-2xl animate-fade-in overflow-hidden rounded-lg border border-neutral-300/60 bg-white/80 text-sm shadow-sm dark:border-neutral-700/60 dark:bg-neutral-900/80"
+      className={`group w-full animate-fade-in overflow-hidden rounded-lg border bg-white/80 text-sm shadow-sm dark:bg-neutral-900/80 ${
+        tool.status === "approval"
+          ? "border-amber-500/70 ring-1 ring-amber-500/30 dark:border-amber-400/60"
+          : "border-neutral-300/60 dark:border-neutral-700/60"
+      }`}
     >
       <summary
         className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 marker:hidden"
         title={`${tool.name}(${tool.args})`}
       >
         <span className="font-mono text-xs text-emerald-700 dark:text-emerald-300">{tool.name}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-neutral-500 dark:text-neutral-400">
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-neutral-600 dark:text-neutral-400">
           {tool.args}
         </span>
         {tool.autoApproved ? (
@@ -170,7 +174,7 @@ function ToolCard({
           </span>
         ) : null}
         <span className={`text-xs ${toolStatusColor(tool.status)}`}>{tool.status}</span>
-        <span className="text-[10px] text-neutral-400 transition-transform group-open:rotate-180" aria-hidden="true">▼</span>
+        <ChevronDown size={14} className="shrink-0 text-neutral-600 transition-transform duration-150 group-open:rotate-180 dark:text-neutral-400" aria-hidden="true" />
       </summary>
 
       <div className="border-t border-neutral-200/70 px-3 py-2 dark:border-neutral-700/70">
@@ -211,7 +215,7 @@ function ToolCard({
           </>
         ) : (
           <>
-            <div className="text-[10px] font-medium uppercase text-neutral-500 dark:text-neutral-400">Arguments</div>
+            <div className="text-[10px] font-medium uppercase text-neutral-600 dark:text-neutral-400">Arguments</div>
             <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">
               {tool.args}
             </pre>
@@ -229,7 +233,7 @@ function ToolCard({
         ) : null}
         {tool.status === "approval" ? (
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="text-amber-700 dark:text-amber-300">Approval required.</span>
+            <span className="font-medium text-amber-800 dark:text-amber-300">Approval required.</span>
             {tool.risk === "destructive" ? (
               <span
                 className="rounded-full border border-red-500/40 bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:text-red-300"
@@ -247,30 +251,34 @@ function ToolCard({
             ) : null}
             <input
               aria-label="Approval reason"
-              className="min-w-48 flex-1 rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs text-neutral-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-200"
+              className="min-w-48 flex-1 rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs text-neutral-800 focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-200"
               maxLength={500}
               placeholder="Optional reason"
               value={approvalComment}
               onChange={(event) => setApprovalComment(event.target.value)}
             />
-            <button
-              type="button"
-              className="rounded-md bg-emerald-700 px-2.5 py-0.5 font-medium text-white transition hover:bg-emerald-600"
-              onClick={() => onApprove(tool.callId, true, approvalComment)}
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-red-700 px-2.5 py-0.5 font-medium text-white transition hover:bg-red-600"
-              onClick={() => onApprove(tool.callId, false, approvalComment)}
-            >
-              Deny
-            </button>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                className="inline-flex h-9 items-center gap-1.5 rounded-md bg-emerald-700 px-3.5 font-medium text-white shadow-sm transition-colors duration-150 hover:bg-emerald-800"
+                onClick={() => onApprove(tool.callId, true, approvalComment)}
+              >
+                <Check size={16} aria-hidden="true" />
+                Approve
+              </button>
+              <button
+                type="button"
+                className="inline-flex h-9 items-center gap-1.5 rounded-md border border-red-600/60 px-3.5 font-medium text-red-700 transition-colors duration-150 hover:bg-red-600 hover:text-white dark:border-red-400/60 dark:text-red-300 dark:hover:bg-red-700 dark:hover:text-white"
+                onClick={() => onApprove(tool.callId, false, approvalComment)}
+              >
+                <X size={16} aria-hidden="true" />
+                Deny
+              </button>
+            </div>
           </div>
         ) : tool.result ? (
           <>
-            <div className="mt-2 text-[10px] font-medium uppercase text-neutral-500 dark:text-neutral-400">Output</div>
+            <div className="mt-2 text-[10px] font-medium uppercase text-neutral-600 dark:text-neutral-400">Output</div>
             <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">
               {tool.result}
             </pre>
@@ -446,6 +454,16 @@ interface ChatPanelProps {
   onOpenSettings: (category?: SettingsCategoryId) => void;
 }
 
+/** Header actions: quiet outlined buttons with an icon, the text hidden on
+ *  narrow windows (the aria-label keeps the name). */
+const HEADER_BUTTON =
+  "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-neutral-300 px-2 text-neutral-700 transition-colors duration-150 hover:bg-neutral-200 hover:text-neutral-900 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-white";
+
+/** The last folder of a workspace path, which is what tells workspaces apart. */
+function workspaceName(path: string): string {
+  return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+}
+
 export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPanelProps): React.ReactElement {
   const settings = useSettings();
   const sessions = useSessions();
@@ -548,9 +566,35 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const skillMenuOpen = !skillMenuDismissed && slashMatch !== null && matchingSkills.length > 0;
   const slashActive = slashMatch !== null;
 
+  // Follow new output only while the reader is at the end; scrolling up to read
+  // stops it, and a "Jump to latest" button appears instead. Sending a message
+  // or opening another conversation always goes to the end.
+  // Clearing a conversation takes a second click on the same button.
+  const [confirmClear, setConfirmClear] = useState(false);
+  const followRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [history, activity, pendingUser]);
+    if (pendingUser) followRef.current = true;
+  }, [pendingUser]);
+  useEffect(() => {
+    followRef.current = true;
+  }, [current?.id]);
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    if (followRef.current) {
+      element.scrollTo({ top: element.scrollHeight });
+      setShowJump(false);
+    } else {
+      setShowJump(true);
+    }
+  }, [history, activity, pendingUser, current?.id]);
+  const jumpToLatest = (): void => {
+    followRef.current = true;
+    setShowJump(false);
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: reduce ? "auto" : "smooth" });
+  };
 
   useEffect(() => {
     setStatus("");
@@ -859,6 +903,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       customInstructions: activeSettings.customInstructions,
       personalityId: getSessionPersonality(sessionId) ?? activeSettings.personalityId,
       adaptiveTone: activeSettings.adaptiveTone,
+      projectInstructions: activeSettings.projectInstructions,
       stt: {
         baseUrl: (activeSettings.sttBaseUrl || activeSettings.baseUrl || "").trim(),
         apiKey: activeSettings.apiKey || undefined,
@@ -1357,10 +1402,17 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           <Menu size={18} aria-hidden="true" />
         </button>
         <MossFace className="h-8 w-8" label="Moss portrait" />
-        <span className="font-semibold tracking-tight text-neutral-800 dark:text-neutral-200">Moss</span>
+        {/* In a conversation the header names it (the page heading); otherwise the app. */}
+        {current && !showWelcome ? (
+          <h1 className="min-w-0 max-w-[16rem] truncate font-semibold tracking-tight text-neutral-900 dark:text-neutral-100" title={current.title}>
+            {current.title}
+          </h1>
+        ) : (
+          <span className="font-semibold tracking-tight text-neutral-800 dark:text-neutral-200">Moss</span>
+        )}
         {models.length > 0 ? (
           <select
-            className="w-56 rounded-md border border-neutral-300/60 dark:border-neutral-700/60 bg-neutral-200 dark:bg-neutral-800 px-2 py-1 transition focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+            className="w-40 min-w-0 rounded-md border border-neutral-300 dark:border-neutral-700/60 bg-white dark:bg-neutral-800 px-2 py-1 transition focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)] sm:w-56"
             aria-label="Model"
             value={settings.model}
             onChange={(e) => updateSettings({ model: e.target.value })}
@@ -1374,16 +1426,17 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           </select>
         ) : (
           <button
-            className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600"
+            className={HEADER_BUTTON}
             onClick={() => onOpenSettings()}
           >
             Set up provider…
           </button>
         )}
-        {settings.model ? <span className="text-xs text-neutral-500 dark:text-neutral-400">{settings.model}</span> : null}
+        {settings.model && models.length === 0 ? <span className="text-xs text-neutral-600 dark:text-neutral-400">{settings.model}</span> : null}
         {current ? (
           <select
-            className="w-40 rounded-md border border-neutral-300/60 dark:border-neutral-700/60 bg-neutral-200 dark:bg-neutral-800 px-2 py-1 transition focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+            className="hidden w-40 rounded-md border border-neutral-300 dark:border-neutral-700/60 bg-white dark:bg-neutral-800 px-2 py-1 transition focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)] sm:block"
+            aria-label="Personality for this chat"
             value={current.personalityId ?? ""}
             onChange={(e) => setSessionPersonality(current.id, e.target.value || undefined)}
             disabled={busy}
@@ -1401,7 +1454,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         ) : null}
         {usage.inputTokens || usage.outputTokens ? (
           <span
-            className="text-xs text-neutral-400 dark:text-neutral-600"
+            className="text-xs text-neutral-600 dark:text-neutral-400"
             title={`Total token usage for this conversation (input / output), summed across messages.${usage.cachedInputTokens ? ` ${formatTokens(usage.cachedInputTokens)} input tokens came from the provider's prompt cache.` : ""}`}
           >
             {formatTokens(usage.inputTokens ?? 0)} in{usage.cachedInputTokens && usage.inputTokens ? ` (${Math.round((100 * usage.cachedInputTokens) / usage.inputTokens)}% cached)` : ""} / {formatTokens(usage.outputTokens ?? 0)} out
@@ -1409,7 +1462,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         ) : null}
         {cost !== null && (usage.inputTokens || usage.outputTokens) ? (
           <span
-            className="text-xs text-neutral-400 dark:text-neutral-600"
+            className="text-xs text-neutral-600 dark:text-neutral-400"
             title={`Estimated cost for this conversation using built-in rates for ${settings.model}. Approximate; provider pricing may differ.`}
           >
             ~{formatUsd(cost)}
@@ -1424,8 +1477,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             <span
               className={
                 contextUsed >= settings.contextLimit
-                  ? "text-xs font-medium text-amber-600 dark:text-amber-400"
-                  : "text-xs text-neutral-400 dark:text-neutral-600"
+                  ? "text-xs font-medium text-amber-800 dark:text-amber-400"
+                  : "text-xs text-neutral-600 dark:text-neutral-400"
               }
             >
               ctx {formatTokens(contextUsed)}/{formatTokens(settings.contextLimit)}
@@ -1442,7 +1495,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         ) : null}
         {settings.enableTools && mcpToolCount > 0 ? (
           <span
-            className="rounded-full border border-sky-500/30 bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300"
+            className="rounded-full border border-sky-500/30 bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-800 dark:text-sky-300"
             title="Tools available from connected MCP servers."
           >
             {mcpToolCount} MCP {mcpToolCount === 1 ? "tool" : "tools"}
@@ -1450,7 +1503,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         ) : null}
         {settings.enableTools && mcpDownCount > 0 ? (
           <span
-            className="rounded-full border border-rose-500/30 bg-rose-500/15 px-2 py-0.5 text-xs font-medium text-rose-300"
+            className="rounded-full border border-rose-500/30 bg-rose-500/15 px-2 py-0.5 text-xs font-medium text-rose-800 dark:text-rose-300"
             title="Configured MCP servers that are enabled but failed to connect. Retry them in Settings."
           >
             {mcpDownCount} MCP {mcpDownCount === 1 ? "server" : "servers"} down
@@ -1458,52 +1511,94 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         ) : null}
         {settings.enableTools && settings.autoApproveTools ? (
           <span
-            className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300"
+            className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-800 dark:text-amber-300"
             title="Tools that write files or run commands run automatically without asking."
           >
             Auto-approving tools
           </span>
         ) : null}
-        <span className="ml-auto truncate text-xs text-neutral-500 dark:text-neutral-400">
-          {settings.workspaceRoot ?? "no workspace"}
+        {/* Status and actions stay together at the right end, wrapping as one group. */}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <span
+          className="hidden min-w-0 max-w-[14rem] items-center gap-1 truncate text-xs text-neutral-600 sm:inline-flex dark:text-neutral-400"
+          title={settings.workspaceRoot ? `Workspace: ${settings.workspaceRoot}` : "No workspace selected; file and command tools are off."}
+        >
+          <Folder size={13} aria-hidden="true" className="shrink-0" />
+          <span className="truncate">{settings.workspaceRoot ? workspaceName(settings.workspaceRoot) : "no workspace"}</span>
         </span>
         {current && history.length > 0 ? (
           <button
-            className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600 disabled:opacity-50"
+            className={HEADER_BUTTON}
             onClick={() => void handleContinueInNewChat(current.id)}
             disabled={busy || summarizing}
+            aria-label={summarizing ? "Summarizing…" : "Continue in new chat"}
             title="Start a fresh chat that carries a summary of this conversation. Resets the context window without losing the thread; this conversation is kept."
           >
-            {summarizing ? "Summarizing…" : "Continue in new chat"}
+            <Forward size={15} aria-hidden="true" />
+            <span className="hidden 2xl:inline">{summarizing ? "Summarizing…" : "Continue in new chat"}</span>
           </button>
         ) : null}
         {current && history.length > 0 ? (
-          <button
-            className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600 disabled:opacity-50"
-            onClick={() => clearSession(current.id)}
-            disabled={busy}
-            title="Clear this conversation: removes its messages but keeps it in the list."
-          >
-            Clear
-          </button>
+          confirmClear ? (
+            <button
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-red-700 px-2 font-medium text-white transition-colors duration-150 hover:bg-red-600"
+              onClick={() => {
+                setConfirmClear(false);
+                clearSession(current.id);
+                composerRef.current?.focus();
+              }}
+              onBlur={() => setConfirmClear(false)}
+              autoFocus
+              title="Click again to remove every message in this conversation."
+            >
+              <Eraser size={15} aria-hidden="true" />
+              Confirm clear
+            </button>
+          ) : (
+            <button
+              className={HEADER_BUTTON}
+              onClick={() => setConfirmClear(true)}
+              disabled={busy}
+              aria-label="Clear"
+              title="Clear this conversation: removes its messages but keeps it in the list. Asks once more first."
+            >
+              <Eraser size={15} aria-hidden="true" />
+              <span className="hidden 2xl:inline">Clear</span>
+            </button>
+          )
         ) : null}
         {current ? (
           <button
             type="button"
-            className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600"
+            className={HEADER_BUTTON}
             onClick={() => setWorkingStateOpen(true)}
+            aria-label={`Working state${current.workingState?.entries.length ? ` (${current.workingState.entries.length})` : ""}`}
             title="Invariants, protected paths, decisions, facts, and open questions for this conversation"
           >
-            State{current.workingState?.entries.length ? ` (${current.workingState.entries.length})` : ""}
+            <ListChecks size={15} aria-hidden="true" />
+            <span className="hidden 2xl:inline">Working state{current.workingState?.entries.length ? ` (${current.workingState.entries.length})` : ""}</span>
           </button>
         ) : null}
-        <button className="rounded-md bg-neutral-300 dark:bg-neutral-700 px-2 py-1 transition hover:bg-neutral-400 dark:hover:bg-neutral-600" onClick={() => onOpenSettings()}>
-          Settings
+        <button className={HEADER_BUTTON} onClick={() => onOpenSettings()} aria-label="Settings" title="Settings">
+          <SettingsIcon size={15} aria-hidden="true" />
+          <span className="hidden 2xl:inline">Settings</span>
         </button>
         {task?.artifacts?.length ? <button type="button" className="response-icon-button" title={`Open artifacts (${task.artifacts.length})`} aria-label="Open artifacts" aria-expanded={!!selectedArtifact} onClick={() => selectedArtifact ? setArtifactSelection(null) : openArtifact(task.artifacts![0].id)}><PanelRightOpen size={18} /></button> : null}
+        </div>
       </header>
 
-      <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6">
+      <div
+        ref={scrollRef}
+        role="main"
+        aria-label="Conversation"
+        className="flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6"
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          const atEnd = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+          followRef.current = atEnd;
+          if (atEnd) setShowJump(false);
+        }}
+      >
         {showWelcome ? (
           <WelcomeScreen
             onPick={(text) => send(text)}
@@ -1534,10 +1629,10 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             >
               <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 marker:hidden">
                 <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Carried-over context</span>
-                <span className="min-w-0 flex-1 truncate text-xs text-neutral-500 dark:text-neutral-400">
+                <span className="min-w-0 flex-1 truncate text-xs text-neutral-600 dark:text-neutral-400">
                   Summary of the previous chat, sent as the first message
                 </span>
-                <span className="text-[10px] text-neutral-400 transition-transform group-open:rotate-180" aria-hidden="true">▼</span>
+                <ChevronDown size={14} className="shrink-0 text-neutral-600 transition-transform duration-150 group-open:rotate-180 dark:text-neutral-400" aria-hidden="true" />
               </summary>
               <pre className="max-h-96 overflow-auto whitespace-pre-wrap border-t border-neutral-200/70 px-3 py-2 text-xs text-neutral-700 dark:border-neutral-700/70 dark:text-neutral-300">
                 {it.content}
@@ -1595,19 +1690,19 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                 </div>
               ) : null}
               {it.role === "assistant" && it.interrupted ? (
-                <span className="ml-1 text-xs italic text-neutral-500 dark:text-neutral-400">(interrupted)</span>
+                <span className="ml-1 text-xs italic text-neutral-600 dark:text-neutral-400">(interrupted)</span>
               ) : null}
               {it.role === "user" && it.historyIndex !== undefined && !busy ? (
-                <div className="mt-1 flex gap-2 text-[10px] text-emerald-200/50 opacity-0 transition group-hover:opacity-100">
+                <div className="-mx-1.5 mt-1 flex gap-1 text-xs text-emerald-900/80 opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100 dark:text-emerald-200/80">
                   <button
-                    className="hover:text-emerald-100"
+                    className="rounded px-1.5 py-0.5 hover:bg-emerald-600/15 hover:text-emerald-950 dark:hover:text-emerald-50"
                     onClick={() => editUserAt(it.historyIndex!)}
                     title="Edit this message in the composer. Later messages are replaced only when you send the edit."
                   >
                     Edit
                   </button>
                   <button
-                    className="hover:text-emerald-100"
+                    className="rounded px-1.5 py-0.5 hover:bg-emerald-600/15 hover:text-emerald-950 dark:hover:text-emerald-50"
                     onClick={() => regenerateAt(it.historyIndex!)}
                     title="Re-run this prompt to get a fresh reply, dropping everything after it."
                   >
@@ -1638,11 +1733,28 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
               {it.role === "assistant" && it.turnId ? <TurnDecisions turnId={it.turnId} onOpenSettings={onOpenSettings} /> : null}
               {it.role === "assistant" && it.turnId ? <TurnUndo turnId={it.turnId} /> : null}
             </div>
-          ) : <ToolCard key={i} tool={it} onApprove={approve} workspaceRoot={settings.workspaceRoot} onOpenSettings={onOpenSettings} onTrustEarlier={activeTurnSessionId ? trustEarlierContent : undefined} />
+          ) : (
+            // In the same column as the answers, so a turn reads top to bottom.
+            <div key={i} className="mx-auto w-full max-w-[52rem] sm:pl-11">
+              <ToolCard tool={it} onApprove={approve} workspaceRoot={settings.workspaceRoot} onOpenSettings={onOpenSettings} onTrustEarlier={activeTurnSessionId ? trustEarlierContent : undefined} />
+            </div>
+          )
           );
         }))}
       </div>
 
+      {showJump ? (
+        <div className="relative">
+          <button
+            type="button"
+            className="absolute -top-12 left-1/2 z-10 inline-flex h-8 -translate-x-1/2 items-center gap-1.5 rounded-full border border-neutral-300 bg-white px-3 text-xs font-medium text-neutral-800 shadow-md transition-colors duration-150 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:hover:bg-neutral-800"
+            onClick={jumpToLatest}
+          >
+            <ArrowDown size={14} aria-hidden="true" />
+            Jump to latest
+          </button>
+        </div>
+      ) : null}
       {task ? (
         <MissionMonitor
           task={task}
@@ -1739,14 +1851,14 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             </span>
           </div>
         ) : null}
-        {dictation.error ? <div className="mb-2 text-xs text-red-600 dark:text-red-400">{dictation.error}</div> : null}
+        {dictation.error ? <div className="mb-2 text-xs text-red-700 dark:text-red-400">{dictation.error}</div> : null}
         {pendingAttachmentReads > 0 ? (
           <div className="mb-2 text-xs text-neutral-600 dark:text-neutral-400">
             Attaching {pendingAttachmentReads} {pendingAttachmentReads === 1 ? "file" : "files"}...
           </div>
         ) : null}
         {attachments.length > 0 && settings.model && !isLikelyVisionModel(settings.model) ? (
-          <div className="mb-2 text-xs text-amber-600 dark:text-amber-400">The selected model may not support images.</div>
+          <div className="mb-2 text-xs text-amber-800 dark:text-amber-400">The selected model may not support images.</div>
         ) : null}
         {attachments.length > 0 ? (
           <div className="mb-2 flex flex-wrap gap-1.5">
@@ -1787,7 +1899,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                 <span className="max-w-52 truncate">{document.name}</span>
                 <button
                   type="button"
-                  className="text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white"
+                  className="text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white"
                   onClick={() => setDocuments((prev) => prev.filter((_, index) => index !== documentIndex))}
                   title={`Remove ${document.name}`}
                   aria-label={`Remove ${document.name}`}
@@ -1819,7 +1931,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                 onClick={() => selectSkill(skill)}
               >
                 <span className="shrink-0 font-mono text-sm text-emerald-700 dark:text-emerald-400">/{skill.name}</span>
-                <span className="min-w-0 truncate text-xs text-neutral-500 dark:text-neutral-400">{skill.description}</span>
+                <span className="min-w-0 truncate text-xs text-neutral-600 dark:text-neutral-400">{skill.description}</span>
               </button>
             ))}
           </div>
@@ -1827,6 +1939,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <div
             className="inline-flex rounded-md border border-neutral-300/70 bg-neutral-100 p-0.5 dark:border-neutral-700 dark:bg-neutral-900"
+            role="group"
             aria-label="Composer mode"
           >
             {(["chat", "mission"] as const).map((mode) => (
@@ -1837,7 +1950,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                 className={`rounded px-2.5 py-1 text-xs font-medium capitalize ${
                   composerMode === mode
                     ? "bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-white"
-                    : "text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white"
+                    : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white"
                 }`}
                 onClick={() => setComposerMode(mode)}
                 disabled={busy}
@@ -1849,7 +1962,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           {composerMode === "mission" ? (
             <>
               <div className="flex flex-wrap items-center gap-1.5" aria-label="Mission templates">
-                <span className="text-[11px] text-neutral-500 dark:text-neutral-400">Templates:</span>
+                <span className="text-[11px] text-neutral-600 dark:text-neutral-400">Templates:</span>
                 {(["coding", "research", "automation"] as const).map((templateId) => (
                   <button
                     key={templateId}
@@ -1914,9 +2027,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                     Policy-scoped
                   </button>
                 </div>
-                <fieldset className="mb-3">
+                <fieldset className="min-w-0 mb-3">
                   <legend className="mb-1 text-xs font-semibold text-neutral-700 dark:text-neutral-200">Capabilities</legend>
-                  {missionCapabilitiesLoading ? <span className="text-xs text-neutral-500">Loading capabilities...</span> : (
+                  {missionCapabilitiesLoading ? <span className="text-xs text-neutral-600">Loading capabilities...</span> : (
                     <div className="max-h-32 columns-2 overflow-y-auto">
                       {missionCapabilities.map((capability) => (
                         <label key={capability.id} className="flex break-inside-avoid items-center gap-1.5 py-0.5 text-xs">
@@ -1943,7 +2056,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                       ["actions", "Actions", "256"],
                       ["cost", "Cost USD", "100"],
                     ] as const).map(([key, label, max]) => (
-                      <label key={key} className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                      <label key={key} className="text-[11px] text-neutral-600 dark:text-neutral-400">
                         {label}
                         <input
                           aria-label={`Mission ${label}`}
@@ -1965,7 +2078,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           ) : null}
           {composerMode === "mission" ? (
             <>
-              <span className="text-xs text-neutral-500 dark:text-neutral-400">
+              <span className="text-xs text-neutral-600 dark:text-neutral-400">
                 {missionAuthority === "supervised" ? "Prompts before mutations" : "Native approval for bounded mutations"}
               </span>
               {missionIssues.length > 0 ? (

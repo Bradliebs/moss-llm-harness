@@ -5,6 +5,8 @@
 // All provider/model/permission values are persisted via the settings store, so
 // switching here takes effect on the next turn and survives a reload.
 
+import { X } from "lucide-react";
+import { ReadinessIcon } from "./ReadinessIcon";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
@@ -431,19 +433,19 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
           }
         }}
       >
-        <header className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 px-4 py-3">
           <h2 id="settings-heading" className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Settings</h2>
           <button
             ref={closeRef}
             type="button"
-            className="text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-neutral-600 transition-colors duration-150 hover:bg-neutral-200 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
             onClick={onClose}
             aria-label="Close settings"
             title="Close settings"
           >
-            ✕
+            <X size={18} aria-hidden="true" />
           </button>
-        </header>
+        </div>
 
         <div className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
           <label className="block">
@@ -451,22 +453,23 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <input
               type="search"
               aria-label="Search settings"
-              className="w-full rounded bg-neutral-200 px-3 py-2 text-sm dark:bg-neutral-800"
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)] dark:border-neutral-700 dark:bg-neutral-800"
               placeholder="Search settings"
               value={settingsSearch}
               onChange={(event) => setSettingsSearch(event.target.value)}
             />
           </label>
-          <nav className="mt-2 flex gap-1 overflow-x-auto pb-1" aria-label="Settings categories">
+          {/* Filters for the list below, wrapped so every category is visible at once. */}
+          <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label="Settings categories">
             {visibleCategories.map((category) => (
               <button
                 key={category.id}
                 type="button"
-                aria-current={activeCategory === category.id ? "page" : undefined}
-                className={`shrink-0 rounded px-2 py-1 text-xs ${
+                aria-pressed={activeCategory === category.id}
+                className={`h-7 rounded-full px-2.5 text-xs font-medium transition-colors duration-150 ${
                   activeCategory === category.id
                     ? "bg-emerald-700 text-white"
-                    : "bg-neutral-200 text-neutral-600 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
+                    : "bg-neutral-200 text-neutral-700 hover:bg-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
                 }`}
                 onClick={() => {
                   setActiveCategory(category.id);
@@ -476,13 +479,13 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 {category.label}
               </button>
             ))}
-          </nav>
+          </div>
         </div>
 
         <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-4 py-4 text-sm">
           <section className={sectionClass("readiness", "profiles connection diagnostics capability summary")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Readiness</h3>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               Choose a safe starting profile, then resolve any items that need attention.
             </p>
             <div className="grid grid-cols-2 gap-2">
@@ -499,22 +502,17 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                   onClick={() => updateSettings(readinessProfilePatch(profile.id, settings))}
                 >
                   <span className="block text-xs font-medium">{profile.label}</span>
-                  <span className="block text-[11px] text-neutral-500 dark:text-neutral-400">{profile.description}</span>
+                  <span className="block text-[11px] text-neutral-600 dark:text-neutral-400">{profile.description}</span>
                 </button>
               ))}
             </div>
             <div className="space-y-1" aria-label="Readiness summary">
               {readiness.map((item) => (
                 <div key={item.id} className="flex gap-2 rounded border border-neutral-200 bg-white px-2 py-1.5 dark:border-neutral-800 dark:bg-neutral-900">
-                  <span
-                    className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
-                      item.status === "ready" ? "bg-emerald-500" : item.status === "attention" ? "bg-amber-500" : "bg-neutral-400"
-                    }`}
-                    aria-hidden="true"
-                  />
+                  <ReadinessIcon status={item.status} className="mt-0.5" />
                   <span className="min-w-0">
                     <span className="block text-xs font-medium">{item.label}</span>
-                    <span className="block text-[11px] text-neutral-500 dark:text-neutral-400">{item.detail}</span>
+                    <span className="block text-[11px] text-neutral-600 dark:text-neutral-400">{item.detail}</span>
                   </span>
                 </div>
               ))}
@@ -580,7 +578,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Theme</span>
               <select
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                 value={settings.theme}
                 onChange={(e) =>
                   updateSettings({
@@ -601,7 +599,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Preset</span>
               <select
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                 value={settings.presetIndex}
                 onChange={(e) => void applyPreset(Number(e.target.value))}
               >
@@ -616,7 +614,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               <label className="block">
                 <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Base URL</span>
                 <input
-                  className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                  className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                   placeholder="Base URL"
                   value={settings.baseUrl}
                   onChange={(e) => updateSettings({ baseUrl: e.target.value })}
@@ -624,7 +622,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               </label>
             )}
             {copilot ? (
-              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              <p className="text-xs text-neutral-600 dark:text-neutral-400">
                 Uses your GitHub Copilot subscription through the official Copilot SDK, and each
                 prompt counts toward your Copilot usage. Moss signs in with the GitHub CLI
                 (<code>gh auth login</code>), or with a GitHub token entered below. Copilot only
@@ -635,7 +633,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">{copilot ? "GitHub token (optional)" : "API key (optional)"}</span>
               <input
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                 type="password"
                 aria-label={copilot ? "GitHub token" : "API key"}
                 placeholder={copilot ? "Empty: use the GitHub CLI sign-in" : "API key"}
@@ -652,7 +650,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               <div className="flex gap-2">
                 {models.length > 0 ? (
                   <select
-                    className="flex-1 rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    className="border border-neutral-300 dark:border-neutral-700 min-w-0 flex-1 rounded bg-white dark:bg-neutral-800 px-2 py-1"
                     value={settings.model}
                     onChange={(e) => updateSettings({ model: e.target.value })}
                   >
@@ -665,7 +663,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                   </select>
                 ) : (
                   <input
-                    className="flex-1 rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    className="border border-neutral-300 dark:border-neutral-700 min-w-0 flex-1 rounded bg-white dark:bg-neutral-800 px-2 py-1"
                     placeholder="Model"
                     value={settings.model}
                     onChange={(e) => updateSettings({ model: e.target.value })}
@@ -708,7 +706,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 type="number"
                 min={1}
                 max={64}
-                className="w-20 rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-xs"
+                className="border border-neutral-300 dark:border-neutral-700 w-20 rounded bg-white dark:bg-neutral-800 px-2 py-1 text-xs"
                 value={settings.maxToolRounds ?? 8}
                 disabled={!settings.enableTools}
                 onChange={(e) => updateSettings({
@@ -729,17 +727,19 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 onChange={(e) => updateSettings({ stallLimit: Math.min(20, Math.max(0, Math.floor(Number(e.target.value) || 0))) })}
               />
             </label>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               A round makes progress when it produces a new result or file change. Repeated calls, failures, and edits that undo
               earlier edits do not count. Moss warns the model after 3 stalled rounds and stops to ask you at this limit.
               Once web, MCP, browser, or desktop content enters a turn, every later change needs your approval, even with
               auto-approve on.
             </p>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               Read-only tools always run automatically. When auto-approve is off, tools that write
               files or run commands pause for your approval before each call. Turn it on to skip those
               prompts — the workspace sandbox still confines file access either way. Increase tool
-              rounds for long-running tasks; higher values can use more time and tokens.
+              rounds for long-running tasks; higher values can use more time and tokens. With a
+              workspace selected, a turn gets at least 16 rounds (20 with verification), since reading,
+              editing, and testing each take a round.
             </p>
           </section>
 
@@ -748,17 +748,17 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
           <section className={sectionClass("general", "custom instructions prompt")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Custom instructions</h3>
             <textarea
-              className="h-24 w-full resize-y rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+              className="border border-neutral-300 dark:border-neutral-700 h-24 w-full resize-y rounded bg-white dark:bg-neutral-800 px-2 py-1"
               placeholder="e.g. Always answer in British English and prefer functional style."
               maxLength={2000}
               value={settings.customInstructions ?? ""}
               onChange={(e) => updateSettings({ customInstructions: e.target.value })}
             />
-            <p className="text-right text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-right text-xs text-neutral-600 dark:text-neutral-400">
               {(settings.customInstructions ?? "").length} / 2000 chars {"\u00b7"} ~
               {Math.ceil((settings.customInstructions ?? "").length / 4)} tokens
             </p>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               Appended to Moss&apos;s base system prompt every turn, so you can set a persona or
               standing preferences. Because it is sent on every turn it costs context, so keep it
               short. The built-in safety rules are always kept and cannot be removed by this text.
@@ -768,7 +768,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
           <section className={sectionClass("general", "personality tone adaptive")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Personality</h3>
             <select
-              className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+              className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
               aria-label="Personality"
               value={settings.personalityId}
               onChange={(e) => updateSettings({ personalityId: e.target.value })}
@@ -779,7 +779,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 </option>
               ))}
             </select>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               {PERSONALITY_PRESETS.find((p) => p.id === settings.personalityId)?.description}
             </p>
             <label className="flex items-center gap-2 text-sm">
@@ -791,7 +791,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               />
               Adaptive tone
             </label>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               When on, Moss adapts its tone to what it remembers about your preferences, so the
               persona shifts as your durable memory grows. The selected personality is the starting
               point; remembered preferences win when they conflict.
@@ -803,7 +803,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Transcription base URL (optional)</span>
               <input
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                 placeholder="Falls back to the provider Base URL"
                 value={settings.sttBaseUrl ?? ""}
                 onChange={(e) => updateSettings({ sttBaseUrl: e.target.value })}
@@ -812,13 +812,13 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Transcription model</span>
               <input
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                 placeholder="whisper-1"
                 value={settings.sttModel ?? "whisper-1"}
                 onChange={(e) => updateSettings({ sttModel: e.target.value })}
               />
             </label>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               The mic button records audio and sends it to an OpenAI-compatible
               /audio/transcriptions endpoint (OpenAI, whisper.cpp, faster-whisper, LocalAI, …). The
               API key above is reused.
@@ -830,7 +830,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Send with</span>
               <select
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                 value={settings.emailProvider === "smtp" ? "smtp" : "resend"}
                 onChange={(e) => updateSettings({ emailProvider: e.target.value === "smtp" ? "smtp" : "resend" })}
               >
@@ -844,7 +844,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                   <label className="block flex-1">
                     <span className="mb-1 block text-neutral-600 dark:text-neutral-400">SMTP server</span>
                     <input
-                      className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                      className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                       placeholder="smtp.gmail.com"
                       value={settings.smtpHost ?? "smtp.gmail.com"}
                       onChange={(e) => updateSettings({ smtpHost: e.target.value })}
@@ -853,7 +853,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                   <label className="block w-24">
                     <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Port</span>
                     <input
-                      className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                      className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                       type="number"
                       min={1}
                       max={65535}
@@ -867,7 +867,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 <label className="block">
                   <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Email address</span>
                   <input
-                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                     type="email"
                     placeholder="you@gmail.com"
                     value={settings.smtpUser ?? ""}
@@ -877,7 +877,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 <label className="block">
                   <span className="mb-1 block text-neutral-600 dark:text-neutral-400">App password</span>
                   <input
-                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                     type="password"
                     placeholder="xxxx xxxx xxxx xxxx"
                     value={settings.smtpPass ?? ""}
@@ -888,13 +888,13 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 <label className="block">
                   <span className="mb-1 block text-neutral-600 dark:text-neutral-400">From name (optional)</span>
                   <input
-                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                     placeholder="Moss &lt;you@gmail.com&gt;"
                     value={settings.emailFrom ?? ""}
                     onChange={(e) => updateSettings({ emailFrom: e.target.value })}
                   />
                 </label>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                <p className="text-xs text-neutral-600 dark:text-neutral-400">
                   For Gmail, turn on 2-Step Verification, then create an app password under Google
                   Account &gt; Security &gt; App passwords. Your normal Gmail password will not work.
                   Mail goes out over TLS, and each send still asks for your approval first.
@@ -905,7 +905,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 <label className="block">
                   <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Resend API key</span>
                   <input
-                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                     type="password"
                     placeholder="re_..."
                     value={settings.emailApiKey ?? ""}
@@ -916,13 +916,13 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 <label className="block">
                   <span className="mb-1 block text-neutral-600 dark:text-neutral-400">From address</span>
                   <input
-                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                    className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                     placeholder="Moss &lt;noreply@yourdomain.com&gt;"
                     value={settings.emailFrom ?? ""}
                     onChange={(e) => updateSettings({ emailFrom: e.target.value })}
                   />
                 </label>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                <p className="text-xs text-neutral-600 dark:text-neutral-400">
                   The send_email tool delivers mail through Resend over HTTPS. Use a verified sender
                   domain; sends are still approval-gated before they go out.
                 </p>
@@ -945,7 +945,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               />
               <span>
                 Learn procedures from verified work
-                <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+                <span className="block text-xs text-neutral-600 dark:text-neutral-400">
                   A tool sequence that passes verification in three turns becomes a procedure the model can run by filling in
                   a few slots. Stored on this PC; review, trust, or delete them in the Library. Missions never use them.
                 </span>
@@ -964,7 +964,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               />
               Review the assistant's memory writes before saving
             </label>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               When on, the m_remember tool queues proposals here instead of saving them. Approve to
               commit a fact to durable memory, or reject to discard it.
             </p>
@@ -976,7 +976,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                     className="flex items-center gap-2 rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-xs"
                   >
                     <span className="flex-1">
-                      <span className="text-neutral-500">[{m.category}]</span> {m.fact}
+                      <span className="text-neutral-600">[{m.category}]</span> {m.fact}
                     </span>
                     <button
                       className="rounded bg-emerald-700 px-2 py-0.5 text-white"
@@ -1001,7 +1001,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               </ul>
             )}
             {pendingMemory.length === 0 && (settings.gatedMemory ?? false) && (
-              <p className="text-xs text-neutral-500 dark:text-neutral-400">No proposals waiting.</p>
+              <p className="text-xs text-neutral-600 dark:text-neutral-400">No proposals waiting.</p>
             )}
           </section>
 
@@ -1010,7 +1010,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="flex items-center gap-2">
               <span className="whitespace-nowrap">Injection scanning</span>
               <select
-                className="rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-xs"
+                className="border border-neutral-300 dark:border-neutral-700 rounded bg-white dark:bg-neutral-800 px-2 py-1 text-xs"
                 value={settings.injectionMode ?? "flag"}
                 onChange={(e) => updateSettings({ injectionMode: e.target.value as InjectionMode })}
               >
@@ -1019,7 +1019,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 <option value="block">Block high-confidence</option>
               </select>
             </label>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               Scans output from web, fetch, and MCP tools for prompt-injection phrasing. Flag warns
               and keeps the content; block withholds high-confidence hits from the model. Content is
               always wrapped as untrusted regardless of this setting.
@@ -1033,7 +1033,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               />
               <span>
                 Ask before changes that follow web, MCP, or browser content
-                <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+                <span className="block text-xs text-neutral-600 dark:text-neutral-400">
                   On by default. Once untrusted content enters a turn, every later change asks for approval, even with
                   auto-approve on, because a page or tool result could contain instructions written by someone else. Turn
                   this off to let auto-approve cover those changes too. Destructive commands and irreversible actions
@@ -1050,7 +1050,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               />
               <span>
                 Read web, MCP, and browser content through a quarantine reader
-                <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+                <span className="block text-xs text-neutral-600 dark:text-neutral-400">
                   A separate model call with no tools reads each untrusted result and passes on only a summary, facts,
                   exact quotes, and links found in the content. The model that can act never sees the raw text, so
                   instructions planted in a page cannot steer it. Uses the fast model when one is set; adds one model call
@@ -1071,7 +1071,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               />
               Show a confidence chip after each reply
             </label>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               A shadow label derived from what happened in the turn (tools run, failures, external
               content). It never changes the answer and makes no extra model calls.
             </p>
@@ -1090,19 +1090,19 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 type="number"
                 min={0}
                 step={0.5}
-                className="w-24 rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-xs"
+                className="border border-neutral-300 dark:border-neutral-700 w-24 rounded bg-white dark:bg-neutral-800 px-2 py-1 text-xs"
                 value={settings.dailyBudgetUsd || 0}
                 onChange={(e) => updateSettings({ dailyBudgetUsd: Math.max(0, Number(e.target.value) || 0) })}
               />
             </label>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               Soft cap on estimated spend per UTC day across cloud models. 0 disables it. Once the
               day's estimated cost reaches the cap, new requests are paused until tomorrow. Uses the
               same rates as the cost readout.
             </p>
           </section>
 
-          <section className={sectionClass("tools", "verification commands tests")}>
+          <section className={sectionClass("tools", "verification commands tests project instructions agents.md claude.md")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Verification</h3>
             <label className="flex items-center gap-2">
               <input
@@ -1115,15 +1115,31 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               Verify edits with commands
             </label>
             <textarea
-              className="h-20 w-full resize-y rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 font-mono text-xs"
+              className="border border-neutral-300 dark:border-neutral-700 h-20 w-full resize-y rounded bg-white dark:bg-neutral-800 px-2 py-1 font-mono text-xs"
               placeholder={"npm run typecheck\nnpm test"}
               value={settings.verifyCommands ?? ""}
               onChange={(e) => updateSettings({ verifyCommands: e.target.value })}
             />
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               One command per line, run in the workspace after Moss edits files. The pass/fail output
               is fed back so Moss can correct its own changes. Commands run fail-fast and only when a
               workspace is selected.
+            </p>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                className="accent-emerald-500"
+                checked={settings.projectInstructions ?? false}
+                disabled={!settings.enableTools}
+                onChange={(e) => updateSettings({ projectInstructions: e.target.checked })}
+              />
+              Use the project&apos;s instruction files
+            </label>
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
+              Adds the workspace&apos;s AGENTS.md, CLAUDE.md, or .github/copilot-instructions.md (up to 2,000
+              characters) to each turn as background on the project&apos;s conventions, such as how to build and
+              test. Turn this on only for repositories you trust: the files are written by whoever wrote the
+              repository, and they cannot change approvals or safety rules.
             </p>
           </section>
 
@@ -1132,7 +1148,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Embeddings base URL (optional)</span>
               <input
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                 placeholder="Falls back to the provider Base URL"
                 value={settings.embedBaseUrl ?? ""}
                 onChange={(e) => updateSettings({ embedBaseUrl: e.target.value })}
@@ -1141,7 +1157,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Embeddings model</span>
               <input
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                 placeholder="nomic-embed-text"
                 value={settings.embedModel ?? "nomic-embed-text"}
                 onChange={(e) => updateSettings({ embedModel: e.target.value })}
@@ -1155,8 +1171,8 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             >
               {indexing ? "Indexing…" : "Index workspace"}
             </button>
-            {indexMsg ? <p className="text-xs text-neutral-500 dark:text-neutral-400">{indexMsg}</p> : null}
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            {indexMsg ? <p className="text-xs text-neutral-600 dark:text-neutral-400">{indexMsg}</p> : null}
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               Builds a semantic index of the workspace's text files via an OpenAI-compatible
               /embeddings endpoint (Ollama's nomic-embed-text, OpenAI, …). The search_codebase tool
               then finds relevant code by meaning. Re-indexing only re-embeds changed files; binaries,
@@ -1169,7 +1185,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Token limit (optional)</span>
               <input
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                 type="number"
                 min={0}
                 placeholder="0 = off"
@@ -1177,7 +1193,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 onChange={(e) => updateSettings({ contextLimit: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
               />
             </label>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-xs text-neutral-600 dark:text-neutral-400">
               Set your model&apos;s context size to show a used/limit meter and summarize old turns before
               the limit is reached. Saved history stays unchanged. Left at 0, proactive compaction and
               the meter stay off; if the provider reports an overflow, Moss still compacts the
@@ -1189,7 +1205,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Model pricing</h3>
             {settings.model ? (
               <>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                <p className="text-xs text-neutral-600 dark:text-neutral-400">
                   USD per 1,000,000 tokens for <span className="text-neutral-700 dark:text-neutral-300">{settings.model}</span>.
                   Overrides the built-in estimate so the header cost is exact. Leave both at 0 to use the
                   built-in rate.
@@ -1198,7 +1214,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                   <label className="block flex-1">
                     <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Input $ / 1M</span>
                     <input
-                      className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                      className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                       type="number"
                       min={0}
                       step={0.01}
@@ -1215,7 +1231,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                   <label className="block flex-1">
                     <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Output $ / 1M</span>
                     <input
-                      className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1"
+                      className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                       type="number"
                       min={0}
                       step={0.01}
@@ -1232,7 +1248,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 </div>
               </>
             ) : (
-              <p className="text-xs text-neutral-500 dark:text-neutral-400">Pick a model above to set its pricing.</p>
+              <p className="text-xs text-neutral-600 dark:text-neutral-400">Pick a model above to set its pricing.</p>
             )}
           </section>
 
@@ -1244,7 +1260,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               </button>
             </div>
             {mcp.length === 0 ? (
-              <p className="text-xs text-neutral-500 dark:text-neutral-400">No MCP servers configured or connected.</p>
+              <p className="text-xs text-neutral-600 dark:text-neutral-400">No MCP servers configured or connected.</p>
             ) : (
               <ul className="space-y-1">
                 {mcp.map((s) => (
@@ -1292,7 +1308,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                         </label>
                       ) : null}
                       <span
-                        className={`text-xs ${s.connected ? "text-green-400" : "text-neutral-500 dark:text-neutral-400"}`}
+                        className={`text-xs ${s.connected ? "text-emerald-700 dark:text-emerald-400" : "text-neutral-600 dark:text-neutral-400"}`}
                         title={s.connected && s.tools && s.tools.length > 0 ? s.tools.join(", ") : undefined}
                       >
                         {pendingId === s.id
@@ -1323,7 +1339,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                         Edit
                       </button>
                       <button
-                        className="text-xs text-neutral-500 dark:text-neutral-400 hover:text-red-400"
+                        className="text-xs text-neutral-600 dark:text-neutral-400 hover:text-red-400"
                         aria-label={`Remove ${s.id}`}
                         disabled={pendingId === s.id}
                         onClick={() => void removeServer(s.id)}
@@ -1337,7 +1353,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             )}
             <div className="space-y-1 rounded bg-white dark:bg-neutral-900 px-2 py-2">
               <select
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-xs"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1 text-xs"
                 aria-label="New server type"
                 value={newType}
                 disabled={editingId !== null}
@@ -1351,7 +1367,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 <option value="http">http</option>
               </select>
               <input
-                className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-xs disabled:opacity-50"
+                className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1 text-xs disabled:opacity-50"
                 placeholder="server id"
                 aria-label="New server id"
                 value={newId}
@@ -1361,14 +1377,14 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               {newType === "stdio" ? (
                 <>
                   <input
-                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-xs"
+                    className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1 text-xs"
                     placeholder="command (e.g. npx)"
                     aria-label="New server command"
                     value={newCommand}
                     onChange={(e) => setNewCommand(e.target.value)}
                   />
                   <input
-                    className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-xs"
+                    className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1 text-xs"
                     placeholder="args (space-separated)"
                     aria-label="New server args"
                     value={newArgs}
@@ -1377,7 +1393,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                 </>
               ) : (
                 <input
-                  className="w-full rounded bg-neutral-200 dark:bg-neutral-800 px-2 py-1 text-xs"
+                  className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1 text-xs"
                   placeholder="url (e.g. https://host/mcp)"
                   aria-label="New server url"
                   value={newUrl}

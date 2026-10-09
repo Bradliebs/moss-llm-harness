@@ -255,6 +255,7 @@ export async function runMossCli(args: readonly string[], dependencies: RunCliDe
     buildSystemMessage({
       includeSkills: false,
       includeMemory: false,
+      includeCoding: options.tools,
       query: prompt,
       customInstructions: [HEADLESS_INSTRUCTIONS, options.instructions?.trim()].filter(Boolean).join("\n\n"),
     }),

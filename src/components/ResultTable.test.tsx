@@ -75,6 +75,14 @@ describe("ResultTable", () => {
     expect((screen.getByLabelText("Select row 3") as HTMLInputElement).checked).toBe(false);
   });
 
+  it("keeps a one-row table to sorting and export", () => {
+    render(<ResultTable><thead><tr><th>Check</th><th>Result</th></tr></thead><tbody><tr><td>node test.js</td><td>passed</td></tr></tbody></ResultTable>);
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(screen.queryByLabelText("Select row 1")).toBeNull();
+    expect(screen.getByRole("button", { name: "Export table as CSV" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sort by Result" })).toBeTruthy();
+  });
+
   it("escapes CSV cells and neutralizes spreadsheet formulas including headers", () => {
     expect(tableCsv(["=header", "Name"], [[' +SUM(1,2)', 'a"b\nc'], ["@formula", "plain"]])).toBe('"\'=header","Name"\r\n"\' +SUM(1,2)","a""b\nc"\r\n"\'@formula","plain"');
   });

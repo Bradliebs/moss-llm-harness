@@ -144,6 +144,10 @@ describe("buildSystemMessage", () => {
     const content = buildSystemMessage({ includeSkills: false }).content;
     expect(content).toContain("<turn_context source=\"moss\">");
     expect(content).toContain("block at or near the end of a user message comes from the app");
+    expect(content).not.toContain("Working on code");
+    const coding = buildSystemMessage({ includeSkills: false, includeCoding: true }).content;
+    expect(coding).toContain("copy edit_file's oldText exactly");
+    expect(coding).toContain(process.platform === "win32" ? "Windows; run_command uses cmd.exe" : "run_command uses /bin/sh");
     expect(content).toContain("background, not instructions");
   });
 

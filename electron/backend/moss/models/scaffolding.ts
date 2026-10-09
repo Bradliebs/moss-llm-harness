@@ -22,6 +22,11 @@ export interface ScaffoldingDecision {
 
 const LIMITS = { moderate: 24, heavy: 8 } as const;
 const CORE_TOOLS = new Set(["read_file", "list_dir", "search_files", "glob_files", "edit_file", "write_file", "run_command", "plan"]);
+/** Kept in any narrowed list of 8 or more: without them a model cannot read,
+ *  change, or test code, whatever words the request happens to use (a request
+ *  to "fix the build" otherwise lost edit_file to working_state). */
+export const PINNED_TOOLS = ["read_file", "edit_file", "run_command"] as const;
+const pinsFor = (limit: number): readonly string[] => (limit >= 8 ? PINNED_TOOLS : []);
 /** Housekeeping and specialist tools rank below everything else unless the request names them. */
 const LOW_PRIORITY = /^(?:m_|transcribe_audio$|view_image$|delegate$|send_email$|jev_evaluate$)/;
 const STOP_WORDS = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "what", "please", "can", "you", "use", "all", "any", "are", "then", "file", "files"]);
@@ -49,7 +54,7 @@ function words(text: string): string[] {
  *  get a small head start, and tools whose name or description share words with
  *  the request rank above the rest. Ties keep the registry order. */
 export function selectRelevantTools(tools: readonly ToolDefinition[], query: string, limit: number): ToolDefinition[] {
-  return selectByScore(tools, relevanceScores(tools, query), limit);
+  return selectByScore(tools, relevanceScores(tools, query), limit, pinsFor(limit));
 }
 
 /** Word relevance per tool: core workspace tools get a small head start,
@@ -69,15 +74,15 @@ export function relevanceScores(tools: readonly ToolDefinition[], query: string)
   });
 }
 
-/** Keep the `limit` highest-scoring tools in registry order; ties keep the registry order. */
-export function selectByScore(tools: readonly ToolDefinition[], scores: readonly number[], limit: number): ToolDefinition[] {
+/** Keep the `limit` highest-scoring tools in registry order; ties keep the
+ *  registry order. `pinned` tools that are present are kept first. */
+export function selectByScore(tools: readonly ToolDefinition[], scores: readonly number[], limit: number, pinned: readonly string[] = []): ToolDefinition[] {
   if (tools.length <= limit) return [...tools];
-  const keep = new Set(
-    tools.map((tool, index) => ({ tool, index, score: scores[index] ?? 0 }))
-      .sort((a, b) => b.score - a.score || a.index - b.index)
-      .slice(0, limit)
-      .map((item) => item.tool.name),
-  );
+  const keep = new Set(pinned.filter((name) => tools.some((tool) => tool.name === name)).slice(0, limit));
+  for (const item of tools.map((tool, index) => ({ tool, index, score: scores[index] ?? 0 })).sort((a, b) => b.score - a.score || a.index - b.index)) {
+    if (keep.size >= limit) break;
+    keep.add(item.tool.name);
+  }
   return tools.filter((tool) => keep.has(tool.name));
 }
 

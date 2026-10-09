@@ -11,7 +11,7 @@ describe("RichResponse", () => {
   it("activates Markdown table controls only after streaming and preserves safe cell rendering", () => {
     const openExternal = vi.fn();
     Object.assign(window, { moss: { shell: { openExternal } } });
-    const content = "| File | Count |\n| --- | --- |\n| **Beta** | 10 |\n| [Alpha](https://example.com) | 2 |";
+    const content = "| File | Count |\n| --- | --- |\n| **Beta** | 10 |\n| [Alpha](https://example.com) | 2 |\n| Gamma | 5 |";
     const { rerender } = render(<RichResponse content={content} streaming onCopy={vi.fn()} />);
     expect(screen.getByRole("table")).toBeTruthy();
     expect(screen.queryByRole("searchbox")).toBeNull();

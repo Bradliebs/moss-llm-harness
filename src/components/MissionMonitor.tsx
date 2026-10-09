@@ -86,38 +86,38 @@ export function MissionMonitor({
         <span className="font-semibold text-neutral-900 dark:text-neutral-100">Task</span>
         <span className={
           task.state === "completed"
-            ? "text-emerald-600 dark:text-emerald-400"
+            ? "text-emerald-700 dark:text-emerald-400"
             : task.state === "blocked" || task.state === "failed"
-              ? "text-red-600 dark:text-red-400"
+              ? "text-red-700 dark:text-red-400"
               : task.state === "paused" || task.state === "waiting_for_approval"
-                ? "text-amber-600 dark:text-amber-400"
-                : "text-sky-600 dark:text-sky-400"
+                ? "text-amber-800 dark:text-amber-400"
+                : "text-sky-700 dark:text-sky-400"
         }>
           {task.state.replaceAll("_", " ")}
         </span>
-        <span className="min-w-0 flex-1 truncate text-neutral-500 dark:text-neutral-400">
+        <span className="min-w-0 flex-1 truncate text-neutral-600 dark:text-neutral-400">
           {runningStep?.description ?? task.spec.objective}
         </span>
         {task.missionPlan ? (
-          <span className="tabular-nums text-neutral-500 dark:text-neutral-400">
+          <span className="tabular-nums text-neutral-600 dark:text-neutral-400">
             Plan r{task.missionPlan.revision} · {task.steps.filter((step) => step.state === "completed").length}/{task.steps.length} steps
           </span>
         ) : null}
         {runningStep?.mission ? (
-          <span className="text-neutral-500 dark:text-neutral-400">
+          <span className="text-neutral-600 dark:text-neutral-400">
             {runningStep.mission.workerRole} · {runningStep.mission.executionLane}
           </span>
         ) : null}
-        <span className="tabular-nums text-neutral-500 dark:text-neutral-400">
+        <span className="tabular-nums text-neutral-600 dark:text-neutral-400">
           {task.attempts.length} {task.attempts.length === 1 ? "attempt" : "attempts"} · {task.evidence.filter((item) => item.passed).length}/{task.spec.acceptanceCriteria.filter((item) => item.mandatory).length} evidence
         </span>
         {task.spec.budget?.maxActions ? (
-          <span className="tabular-nums text-neutral-500 dark:text-neutral-400">
+          <span className="tabular-nums text-neutral-600 dark:text-neutral-400">
             {actionCount}/{task.spec.budget.maxActions} actions
           </span>
         ) : null}
         {task.approval ? (
-          <span className="font-mono text-neutral-500 dark:text-neutral-400">
+          <span className="font-mono text-neutral-600 dark:text-neutral-400">
             {task.approval.toolName} {task.approval.status}
           </span>
         ) : null}
@@ -135,13 +135,13 @@ export function MissionMonitor({
           </button>
         ) : null}
         {!["completed", "failed", "cancelled"].includes(task.state) ? (
-          <button className="text-red-600 hover:text-red-500 dark:text-red-400" onClick={onCancel}>
+          <button className="text-red-700 hover:text-red-500 dark:text-red-400" onClick={onCancel}>
             Cancel
           </button>
         ) : null}
       </div>
       {task.spec.budget ? (
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-neutral-500 dark:text-neutral-400" aria-label="Remaining mission budget">
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-neutral-600 dark:text-neutral-400" aria-label="Remaining mission budget">
           {task.spec.budget.maxActions ? <span>{Math.max(0, task.spec.budget.maxActions - actionCount)} actions left</span> : null}
           {task.spec.budget.maxTokens ? <span>{formatTokens(Math.max(0, task.spec.budget.maxTokens - tokenCount))} tokens left</span> : null}
           {task.spec.budget.maxCostUsd ? <span>{formatUsd(Math.max(0, task.spec.budget.maxCostUsd - cost))} left</span> : null}
@@ -157,7 +157,7 @@ export function MissionMonitor({
       {task.blocker ? <p className="mt-1 whitespace-pre-wrap text-amber-700 dark:text-amber-300">{task.blocker.summary}</p> : null}
       {(task.missionPlan || task.evidence.length > 0 || (task.artifacts?.length ?? 0) > 0) ? (
         <details className="mt-1 border-t border-neutral-200 pt-1 dark:border-neutral-800">
-          <summary className="w-fit cursor-pointer select-none text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100">
+          <summary className="w-fit cursor-pointer select-none text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100">
             Mission details
           </summary>
           {task.missionPlan ? (
@@ -181,7 +181,7 @@ export function MissionMonitor({
                     <span className="shrink-0 tabular-nums text-neutral-400">{criterionEvidence.filter((item) => item.passed).length}/{criterionEvidence.length}</span>
                   </div>
                   {criterionEvidence.map((item) => (
-                    <p key={item.id} className={item.passed ? "truncate text-emerald-600 dark:text-emerald-400" : "truncate text-red-600 dark:text-red-400"}>
+                    <p key={item.id} className={item.passed ? "truncate text-emerald-700 dark:text-emerald-400" : "truncate text-red-700 dark:text-red-400"}>
                       {item.summary}
                     </p>
                   ))}
@@ -205,7 +205,7 @@ export function MissionMonitor({
       ) : null}
       {history.length > 0 ? (
         <details className="mt-1 border-t border-neutral-200 pt-1 dark:border-neutral-800">
-          <summary className="w-fit cursor-pointer select-none text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100">
+          <summary className="w-fit cursor-pointer select-none text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100">
             Timeline ({history.length})
           </summary>
           <ol className="mt-1 max-h-40 space-y-1 overflow-y-auto border-l border-neutral-300 pl-3 dark:border-neutral-700">

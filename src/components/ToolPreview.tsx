@@ -28,7 +28,7 @@ function DiffView({ lines, label }: { lines: DiffLine[]; label: string }): React
       <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-neutral-50 p-2 text-xs dark:bg-neutral-950">
         {compactDiff(lines).map((line, index) =>
           line.type === "gap" ? (
-            <div key={index} className="text-neutral-500 dark:text-neutral-400">… {line.count} unchanged line{line.count === 1 ? "" : "s"}</div>
+            <div key={index} className="text-neutral-600 dark:text-neutral-400">… {line.count} unchanged line{line.count === 1 ? "" : "s"}</div>
           ) : (
             <div
               key={index}
@@ -137,7 +137,7 @@ export function ToolPreview({
           <dt className="font-medium">Runs in</dt>
           <dd className="break-all">{workspaceRoot ?? "No workspace selected"}</dd>
           <dt className="font-medium">Time limit</dt>
-          <dd>60 seconds</dd>
+          <dd>{model.timeoutSeconds} seconds</dd>
         </dl>
       ) : null}
       {model.kind === "email" ? <EmailPreview to={model.to} subject={model.subject} body={model.body} {...(model.html ? { html: model.html } : {})} /> : null}

@@ -13,7 +13,9 @@ describe("describeToolCall", () => {
     expect(describeToolCall("edit_file", JSON.stringify({ path: "a.ts", oldText: "a", newText: "b", replaceAll: true })))
       .toEqual({ kind: "edit", path: "a.ts", oldText: "a", newText: "b", replaceAll: true });
     expect(describeToolCall("move_file", JSON.stringify({ from: "a", to: "b" }))).toEqual({ kind: "move", from: "a", to: "b" });
-    expect(describeToolCall("run_command", JSON.stringify({ command: "npm test" }))).toEqual({ kind: "command", command: "npm test" });
+    expect(describeToolCall("run_command", JSON.stringify({ command: "npm test" }))).toEqual({ kind: "command", command: "npm test", timeoutSeconds: 60 });
+    expect(describeToolCall("run_command", JSON.stringify({ command: "npm test", timeoutSeconds: 300 }))).toMatchObject({ timeoutSeconds: 300 });
+    expect(describeToolCall("run_command", JSON.stringify({ command: "npm test", timeoutSeconds: 9_999 }))).toMatchObject({ timeoutSeconds: 600 });
   });
 
   it("falls back to formatted JSON or raw text", () => {

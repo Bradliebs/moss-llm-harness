@@ -76,6 +76,7 @@ import {
 } from "../backend/moss/mcp/mcp-config";
 import { mcpManager } from "../backend/moss/mcp/mcp-manager";
 import { readWorkspacePreview, suggestVerificationCommands } from "../backend/moss/workspace/workspace-insights";
+import { readProjectInstructions } from "../backend/moss/workspace/project-instructions";
 import { CONTEXT_LEVELS, DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_TIMEOUT_SECONDS, runCapabilityProbes } from "../backend/moss/models/capability-probes";
 import { buildCapabilityProfile } from "../backend/moss/models/capability-profile";
 import { modelProfileStore } from "../backend/moss/models/model-profile-store";
@@ -139,10 +140,13 @@ const MAX_MISSION_BUDGET: Required<TaskBudget> = {
 const VOTE_SAMPLES = 3;
 const VOTE_MAX_MEDIAN_MS = 4_000;
 
-export function resolveMaxToolRounds(requested: number | undefined, verifyEnabled: boolean): number {
+/** Rounds for a turn: the setting, raised for coding in a workspace (reading,
+ *  editing, and testing take a round each, and small models make one call per
+ *  round), and raised again when verification runs, so the fix cycle has room. */
+export function resolveMaxToolRounds(requested: number | undefined, verifyEnabled: boolean, codingTurn = false): number {
   const configured = Number.isFinite(requested) ? Math.floor(requested as number) : DEFAULT_TOOL_ROUNDS;
-  const withVerificationRoom = verifyEnabled ? Math.max(12, configured) : configured;
-  return Math.min(MAX_TOOL_ROUNDS, Math.max(1, withVerificationRoom));
+  const floor = codingTurn ? (verifyEnabled ? 20 : 16) : verifyEnabled ? 12 : 1;
+  return Math.min(MAX_TOOL_ROUNDS, Math.max(1, floor, configured));
 }
 import { taskStore } from "../backend/moss/task/task-store";
 import { guardedIpc, requireTrustedSender } from "../window-guard";
@@ -915,7 +919,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
     const messages = hasSystem
       ? req.messages
-      : [buildSystemMessage({ includeSkills: enableTools, includeClarification: !req.taskSpec && !req.taskId, query: lastUser?.content ?? "", customInstructions: req.customInstructions, personalityId: req.personalityId, adaptiveTone: req.adaptiveTone }), ...req.messages];
+      : [buildSystemMessage({ includeSkills: enableTools, includeClarification: !req.taskSpec && !req.taskId, includeCoding: enableTools && Boolean(req.workspaceRoot), query: lastUser?.content ?? "", customInstructions: req.customInstructions, personalityId: req.personalityId, adaptiveTone: req.adaptiveTone }), ...req.messages];
     // Notes that depend on this request go in the turn context, not the system
     // message, so the system message stays the same from turn to turn.
     const turnContext: string[] = [];
@@ -925,6 +929,14 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       // Episodic memory: verified lessons from earlier runs that match this request.
       const lessons = renderLessons(await lessonStore.relevant(lastUser.content, 3, rankingEmbed ? (query, texts) => semanticIndex.similarities(query, texts, rankingEmbed, controller.signal) : undefined).catch(() => []));
       if (lessons) turnContext.push(lessons);
+    }
+    // Opt-in: the repository's AGENTS.md and similar files, as capped background.
+    if (req.projectInstructions && enableTools && req.workspaceRoot) {
+      const project = await readProjectInstructions(req.workspaceRoot).catch(() => undefined);
+      if (project?.section) {
+        turnContext.push(project.section);
+        decide({ kind: "context", summary: `Added project instructions from ${project.files.join(", ")}${project.truncated ? ", cut to 2,000 characters" : ""}.`, settings: "tools" });
+      }
     }
     const workingState = new WorkingStateStore(normalizeWorkingState(req.workingState));
     const stallLimit = typeof req.stallLimit === "number" && Number.isFinite(req.stallLimit) ? Math.max(0, Math.floor(req.stallLimit)) : undefined;
@@ -936,7 +948,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     void toolOutputStore.prune().catch(() => undefined);
     // Give the fix/verify cycle extra rounds to converge when verification runs.
     const verifyEnabled = req.verify?.enabled === true && (req.verify.commands?.length ?? 0) > 0;
-    const maxRounds = resolveMaxToolRounds(req.maxToolRounds, verifyEnabled);
+    const maxRounds = resolveMaxToolRounds(req.maxToolRounds, verifyEnabled, enableTools && Boolean(req.workspaceRoot));
     let attemptId: string | undefined;
     let acceptedCompletion: CompletionContext | undefined;
     const storedTask = durableTaskId ? await taskStore.get(durableTaskId) : undefined;

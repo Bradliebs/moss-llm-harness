@@ -40,7 +40,7 @@ export function ProceduresSection(): React.ReactElement | null {
         uses and are demoted after two failures in a row.
       </p>
       {procedures.length === 0 ? (
-        <p className="text-xs text-neutral-500 dark:text-neutral-400">None yet. They are learned from repeated, verified work.</p>
+        <p className="text-xs text-neutral-600 dark:text-neutral-400">None yet. They are learned from repeated, verified work.</p>
       ) : (
         <ul className="space-y-2 overflow-y-auto">
           {procedures.map((procedure) => (

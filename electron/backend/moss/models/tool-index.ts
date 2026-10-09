@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import type { EmbedConfig, ToolDefinition } from "../../../../common/types";
 import { embedTexts } from "../providers/embeddings";
 import type { Tool } from "../tools/types";
-import { relevanceScores, selectByScore, selectRelevantTools } from "./scaffolding";
+import { PINNED_TOOLS, relevanceScores, selectByScore, selectRelevantTools } from "./scaffolding";
 
 const EMBED_TIMEOUT_MS = 8_000;
 /** Weight of meaning relative to the word score, where a word in a tool's
@@ -112,7 +112,7 @@ export class SemanticIndex {
     const low = Math.min(...similarities);
     const span = Math.max(...similarities) - low || 1;
     const words = relevanceScores(tools, query);
-    return selectByScore(tools, words.map((score, index) => score + SEMANTIC_WEIGHT * ((similarities[index] - low) / span)), limit);
+    return selectByScore(tools, words.map((score, index) => score + SEMANTIC_WEIGHT * ((similarities[index] - low) / span)), limit, limit >= 8 ? PINNED_TOOLS : []);
   }
 }
 

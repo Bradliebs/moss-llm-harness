@@ -92,6 +92,23 @@ describe("planScaffolding", () => {
   });
 });
 
+describe("pinned coding tools", () => {
+  const registry = ["plan", "working_state", "read_file", "list_dir", "search_files", "glob_files", "write_file", "edit_file", "move_file", "run_command", "git_diff", "send_email", "search_codebase"]
+    .map((name) => ({ name, description: name === "send_email" ? "Send an email message" : name === "working_state" ? "Record a build decision" : name, parameters: {} }));
+
+  it("keeps read, edit, and run tools in an 8-tool list whatever the request says", () => {
+    for (const query of ["why does the build fail? run the tests and fix it", "summarize the email handling code and refactor it"]) {
+      const names = selectRelevantTools(registry, query, 8).map((tool) => tool.name);
+      expect(names).toHaveLength(8);
+      for (const pinned of ["read_file", "edit_file", "run_command"]) expect(names, query).toContain(pinned);
+    }
+  });
+
+  it("does not pin tools into a short find_tool ranking", () => {
+    expect(selectRelevantTools(registry, "send an email", 3).map((tool) => tool.name)).toContain("send_email");
+  });
+});
+
 describe("applyScaffoldingMessages", () => {
   it("extends copies of the system and latest user messages only", () => {
     const messages = [

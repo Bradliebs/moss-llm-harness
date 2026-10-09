@@ -98,7 +98,7 @@ describe("LibraryPanel — Memory", () => {
     render(<LibraryPanel onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText("delete me")).toBeDefined());
 
-    fireEvent.click(screen.getByText("✕"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete memory" }));
     expect(memory.delete).toHaveBeenCalledWith("m9");
   });
 
@@ -161,7 +161,7 @@ describe("LibraryPanel — Skills", () => {
     render(<LibraryPanel onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText("Remove me")).toBeDefined());
 
-    fireEvent.click(screen.getByText("✕"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete skill" }));
     expect(skills.delete).toHaveBeenCalledWith("s7");
   });
 

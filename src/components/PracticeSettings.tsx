@@ -104,12 +104,12 @@ export function PracticeSettings({ className }: { className: string }): React.Re
           </span>
         </span>
       </label>
-      <fieldset className="space-y-1">
+      <fieldset className="min-w-0 space-y-1">
         <legend className="mb-1 text-neutral-600 dark:text-neutral-400">Candidate models on this PC</legend>
         {choices.length === 0 ? <p className="text-xs text-neutral-600 dark:text-neutral-300">No local Ollama models found.</p> : null}
         <div className="flex flex-wrap gap-x-4 gap-y-1">
           {choices.map((model) => (
-            <label key={model} className="flex items-center gap-1.5 text-xs">
+            <label key={model} className="flex min-w-0 items-center gap-1.5 break-all text-xs">
               <input type="checkbox" className="accent-emerald-600" checked={config.candidates.includes(model)} onChange={(event) => toggleCandidate(model, event.target.checked)} />
               {model}
             </label>
@@ -124,7 +124,7 @@ export function PracticeSettings({ className }: { className: string }): React.Re
         ) : (
           <button
             type="button"
-            className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+            className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
             disabled={config.candidates.length === 0}
             onClick={() => void runNow()}
           >

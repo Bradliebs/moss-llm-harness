@@ -97,6 +97,66 @@ describe("run_command cancellation", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("keeps the end of long output, where test runners print their summary", async () => {
+    const pending = runCommandTool.execute({ command: "npm test" }, { workspaceRoot: process.cwd(), signal: new AbortController().signal });
+    for (let i = 0; i < 3_000; i++) child.stdout.emit("data", Buffer.from(`ok test ${i}\n`));
+    child.stdout.emit("data", Buffer.from("Tests: 1 failed, 2999 passed\n"));
+    child.emit("close", 1);
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    expect(result.content.startsWith("ok test 0")).toBe(true);
+    expect(result.content).toMatch(/\.\.\.\[\d+ characters omitted\]\.\.\./);
+    expect(result.content).toContain("Tests: 1 failed, 2999 passed");
+    expect(result.content.endsWith("[exit code 1]")).toBe(true);
+    expect(result.content.length).toBeLessThan(20_200);
+  });
+
+  it("reports a nonzero exit code even when the command printed output", async () => {
+    const pending = runCommandTool.execute({ command: "node x.js" }, { workspaceRoot: process.cwd(), signal: new AbortController().signal });
+    child.stdout.emit("data", Buffer.from("done\n"));
+    child.emit("close", 2);
+    await expect(pending).resolves.toEqual({ ok: false, content: "done\n[exit code 2]" });
+  });
+
+  it("honours a longer requested time limit, up to 600 seconds", async () => {
+    const result = vi.fn();
+    void runCommandTool.execute({ command: "npm test", timeoutSeconds: 120 }, { workspaceRoot: process.cwd(), signal: new AbortController().signal }).then(result);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(result).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    if (process.platform === "win32") killer.emit("close", 0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(result).toHaveBeenCalledWith(expect.objectContaining({ ok: false, content: expect.stringMatching(/timed out after 120 seconds/i) }));
+  });
+
+  it("keeps the output a command printed before it timed out", async () => {
+    const result = vi.fn();
+    void runCommandTool.execute({ command: "npm test" }, { workspaceRoot: process.cwd(), signal: new AbortController().signal }).then(result);
+    child.stdout.emit("data", Buffer.from("Running 40 tests\n"));
+    child.stderr.emit("data", Buffer.from("test 7 is slow\n"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    if (process.platform === "win32") killer.emit("close", 0);
+    await vi.advanceTimersByTimeAsync(0);
+    const content = (result.mock.calls[0][0] as { content: string }).content;
+    expect(content).toMatch(/^Running 40 tests\n\[stderr\]\ntest 7 is slow\n\[Command timed out after 60 seconds/);
+  });
+
+  it("closes stdin, keeps characters split across chunks, and runs Python in UTF-8", async () => {
+    const pending = runCommandTool.execute({ command: "echo" }, { workspaceRoot: process.cwd(), signal: new AbortController().signal });
+    const euro = Buffer.from("cost: €5\n");
+    child.stdout.emit("data", euro.subarray(0, 8));
+    child.stdout.emit("data", euro.subarray(8));
+    child.emit("close", 0);
+    await expect(pending).resolves.toEqual({ ok: true, content: "cost: €5" });
+    const options = vi.mocked(spawn).mock.calls[0][1] as unknown as { stdio: unknown[]; env: Record<string, string> };
+    expect(options.stdio[0]).toBe("ignore");
+    expect(options.env).toMatchObject({ PYTHONUTF8: "1", GIT_TERMINAL_PROMPT: "0" });
+  });
+
+  it("names the shell in its description", () => {
+    expect(runCommandTool.description).toContain(process.platform === "win32" ? "cmd.exe" : "/bin/sh");
+  });
+
   it.skipIf(process.platform !== "win32")("reports cleanup failure instead of claiming termination", async () => {
     const controller = new AbortController();
     const pending = runCommandTool.execute({ command: "server" }, { workspaceRoot: process.cwd(), signal: controller.signal });

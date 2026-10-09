@@ -1,4 +1,11 @@
+import { LoaderCircle, Mic, Paperclip, Rocket, SendHorizontal, Square, Zap } from "lucide-react";
 import { useRef, useState, type ClipboardEventHandler, type KeyboardEventHandler, type ReactNode, type RefObject } from "react";
+
+/** One height and shape for every composer action, with an icon before the text. */
+const ACTION = "inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 text-sm font-medium transition-colors duration-150";
+const SECONDARY = `${ACTION} border border-neutral-300 bg-white text-neutral-800 hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-700`;
+/** Disabled primary actions turn neutral rather than a washed-out green, so "unavailable" reads at a glance. */
+const PRIMARY = `${ACTION} bg-emerald-700 px-4 text-white shadow-sm hover:bg-emerald-800 disabled:bg-neutral-300 disabled:text-neutral-600 disabled:shadow-none dark:disabled:bg-neutral-800 dark:disabled:text-neutral-400`;
 
 interface ChatComposerProps {
   children?: ReactNode;
@@ -46,6 +53,14 @@ export function ChatComposer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
+  // Why Send cannot be used yet, shown where the eye already is.
+  const blocked = !modelSelected
+    ? "Choose a model in Settings to start."
+    : pendingAttachmentReads > 0
+      ? "Waiting for attachments to finish reading."
+      : launchBlocked
+        ? "Resolve the mission review items above to launch."
+        : "";
 
   return (
     <footer
@@ -73,10 +88,12 @@ export function ChatComposer({
         </div>
       ) : null}
       {children}
-      <div className="flex gap-2">
+      {!modelSelected && !busy ? <p className="mb-1.5 text-xs text-neutral-600 dark:text-neutral-400">{blocked}</p> : null}
+      <div className="flex items-end gap-2">
         <textarea
           ref={composerRef}
-          className="flex-1 resize-none rounded-xl border border-neutral-300/60 bg-neutral-200 px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-emerald-500/40 dark:border-neutral-700/60 dark:bg-neutral-800"
+          aria-label="Message"
+          className="min-w-0 flex-1 resize-none rounded-xl border border-neutral-300 bg-white px-3 py-2 text-[0.9375rem] leading-6 shadow-sm transition-colors duration-150 placeholder:text-neutral-500 focus:border-emerald-600 focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)] dark:border-neutral-700 dark:bg-neutral-900 dark:placeholder:text-neutral-400"
           rows={2}
           placeholder="Message…"
           value={value}
@@ -97,44 +114,55 @@ export function ChatComposer({
           }}
         />
         <button
-          className="rounded-xl bg-neutral-300 px-3 py-2 transition hover:bg-neutral-400 dark:bg-neutral-700 dark:hover:bg-neutral-600"
+          type="button"
+          className={SECONDARY}
           onClick={() => fileInputRef.current?.click()}
+          aria-label={`Attach${attachmentCount > 0 ? ` (${attachmentCount})` : ""}`}
           title="Attach an image, Word (.docx), PDF, or text file"
         >
-          Attach{attachmentCount > 0 ? ` (${attachmentCount})` : ""}
+          <Paperclip size={16} aria-hidden="true" />
+          <span className="hidden sm:inline">Attach{attachmentCount > 0 ? ` (${attachmentCount})` : ""}</span>
         </button>
         <button
-          className={`rounded-xl px-3 py-2 transition disabled:opacity-50 ${
-            dictationState === "recording"
-              ? "bg-red-700 hover:bg-red-600"
-              : "bg-neutral-300 hover:bg-neutral-400 dark:bg-neutral-700 dark:hover:bg-neutral-600"
-          }`}
+          type="button"
+          className={dictationState === "recording" ? `${ACTION} bg-red-700 text-white hover:bg-red-600` : SECONDARY}
           onClick={onToggleDictation}
           disabled={dictationState === "transcribing"}
+          aria-pressed={dictationState === "recording"}
+          aria-label={dictationState === "recording" ? "Recording" : dictationState === "transcribing" ? "Transcribing" : "Mic"}
           title="Dictate with Whisper"
         >
-          {dictationState === "recording" ? "Recording" : dictationState === "transcribing" ? "…" : "Mic"}
+          {dictationState === "transcribing"
+            ? <LoaderCircle size={16} className="animate-spin" aria-hidden="true" />
+            : <Mic size={16} aria-hidden="true" />}
+          <span className="hidden sm:inline">{dictationState === "recording" ? "Recording" : dictationState === "transcribing" ? "Transcribing" : "Mic"}</span>
         </button>
         {busy ? (
           <>
             <button
-              className="rounded-xl bg-emerald-700 px-4 py-2 font-medium text-white shadow transition hover:bg-emerald-600 disabled:opacity-50"
+              type="button"
+              className={PRIMARY}
               onClick={onSend}
               disabled={interruptQueued || !modelSelected || pendingAttachmentReads > 0 || !hasSendContent}
               title="Stop the current response and send this message"
             >
+              <Zap size={16} aria-hidden="true" />
               {interruptQueued ? "Queued" : "Interrupt"}
             </button>
-            <button className="rounded-xl bg-red-700 px-4 py-2 font-medium text-white transition hover:bg-red-600" onClick={onAbort}>
+            <button type="button" className={`${ACTION} bg-red-700 px-4 text-white hover:bg-red-600`} onClick={onAbort}>
+              <Square size={14} fill="currentColor" aria-hidden="true" />
               Stop
             </button>
           </>
         ) : (
           <button
-            className="rounded-xl bg-emerald-700 px-4 py-2 font-medium text-white shadow transition hover:bg-emerald-600 disabled:opacity-50"
+            type="button"
+            className={PRIMARY}
             onClick={onSend}
             disabled={!modelSelected || pendingAttachmentReads > 0 || launchBlocked}
+            title={blocked || undefined}
           >
+            {mode === "mission" ? <Rocket size={16} aria-hidden="true" /> : <SendHorizontal size={16} aria-hidden="true" />}
             {mode === "mission" ? "Launch" : "Send"}
           </button>
         )}

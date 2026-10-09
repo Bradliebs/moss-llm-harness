@@ -19,7 +19,7 @@ function props() {
 describe("ArtifactWorkspace", () => {
   it("provides table controls without enabling links or images in artifacts", async () => {
     const input = props();
-    input.loadArtifact.mockResolvedValue({ ...artifact, content: '| File | Count |\n| --- | --- |\n| [Beta](https://example.com) | 10 |\n| Alpha | 2 |' });
+    input.loadArtifact.mockResolvedValue({ ...artifact, content: '| File | Count |\n| --- | --- |\n| [Beta](https://example.com) | 10 |\n| Alpha | 2 |\n| Gamma | 5 |' });
     const { container } = render(<ArtifactWorkspace {...input} />);
     fireEvent.click(await screen.findByRole("button", { name: "Sort by Count" }));
     expect(screen.getAllByRole("row")[1].textContent).toContain("Alpha");

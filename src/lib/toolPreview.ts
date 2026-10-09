@@ -10,7 +10,7 @@ export type ToolPreviewModel =
   | { kind: "write"; path: string; content: string }
   | { kind: "edit"; path: string; oldText: string; newText: string; replaceAll: boolean }
   | { kind: "move"; from: string; to: string }
-  | { kind: "command"; command: string }
+  | { kind: "command"; command: string; timeoutSeconds: number }
   | { kind: "email"; to: string[]; subject: string; body: string; html?: string }
   | { kind: "generic"; formatted: string };
 
@@ -37,7 +37,12 @@ export function describeToolCall(name: string, args: string): ToolPreviewModel {
   if (name === "move_file" && text("from") !== null && text("to") !== null) {
     return { kind: "move", from: text("from")!, to: text("to")! };
   }
-  if (name === "run_command" && text("command") !== null) return { kind: "command", command: text("command")! };
+  if (name === "run_command" && text("command") !== null) {
+    // Mirrors the shell tool: default 60 seconds, at most 600.
+    const requested = Number(parsed?.timeoutSeconds);
+    const timeoutSeconds = Number.isFinite(requested) && requested > 0 ? Math.min(600, Math.ceil(requested)) : 60;
+    return { kind: "command", command: text("command")!, timeoutSeconds };
+  }
   if (name === "send_email" && parsed) {
     const rawTo = parsed.to;
     const to = (Array.isArray(rawTo) ? rawTo.filter((item): item is string => typeof item === "string") : typeof rawTo === "string" ? rawTo.split(",") : [])

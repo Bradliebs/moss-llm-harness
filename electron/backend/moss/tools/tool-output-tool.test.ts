@@ -30,6 +30,15 @@ describe("read_tool_output", () => {
     expect(search.content).toContain("4: needle two");
   });
 
+  it("sizes a page to what the model sees of one result, and reports the real range", async () => {
+    const record = await store.save({ callId: "c1", toolName: "run_command", external: false, content: "x".repeat(30_000) });
+    const tool = createReadToolOutputTool(store);
+    const small = await tool.execute({ id: record.id }, { workspaceRoot: "", signal: new AbortController().signal, maxResultChars: 3_000 });
+    expect(small.content).toContain("[characters 0-2600 of 30000]");
+    const asked = await tool.execute({ id: record.id, limit: 50_000 }, { workspaceRoot: "", signal: new AbortController().signal });
+    expect(asked.content).toContain("[characters 0-11600 of 30000]");
+  });
+
   it("preserves the external-content boundary on retrieval", async () => {
     const record = await store.save({ callId: "c1", toolName: "fetch_url", external: true, content: "remote text" });
     const result = await createReadToolOutputTool(store).execute({ id: record.id }, { workspaceRoot: "", signal: new AbortController().signal });
