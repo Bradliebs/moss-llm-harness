@@ -25,6 +25,13 @@ describe("skill-parse", () => {
     expect(parsed?.disableModelInvocation).toBe(true);
   });
 
+  it("unquotes YAML scalars in either quote style", () => {
+    const single = parseSkillMarkdown("---\nname: 'agency-code-reviewer'\ndescription: 'Reviews code; it''s strict about C:\\paths'\n---\nBody");
+    expect(single?.description).toBe("Reviews code; it's strict about C:\\paths");
+    const double = parseSkillMarkdown("---\nname: \"x\"\ndescription: \"Say \\\"hi\\\" to C:\\\\temp\"\n---\nBody");
+    expect(double?.description).toBe("Say \"hi\" to C:\\temp");
+  });
+
   it("returns null without frontmatter or name", () => {
     expect(parseSkillMarkdown("no frontmatter here")).toBeNull();
     expect(parseSkillMarkdown(`---\ndescription: "x"\n---\nbody`)).toBeNull();

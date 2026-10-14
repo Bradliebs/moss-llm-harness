@@ -1028,6 +1028,35 @@ skips existing skill IDs, and leaves imported skills disabled until you review
 and enable them. Supporting text files are available to enabled skills through
 the skill-resource tool without granting access outside the skill directory.
 
+#### Agent persona collections
+
+Persona collections written for other tools, such as
+[agency-agents](https://github.com/msitarzewski/agency-agents), import once they
+are converted to Agent Skills folders. For agency-agents, run
+`./scripts/convert.sh --tool osaurus` (Git Bash or WSL on Windows), then import
+the `integrations/osaurus` folder; all 282 personas import and arrive disabled.
+They are long and general, so weigh the cost before enabling them:
+
+* Each enabled skill adds its name and description to every request, about 65
+  tokens each for these personas.
+* A loaded skill is a tool result, limited like any other to about 8 KB (a
+  fifth of a smaller context window). Most of these personas are longer, so
+  the model sees the start and end, and reads the middle with
+  `read_tool_output`.
+* To keep a skill out of every prompt but still available when you ask for it,
+  add `disable-model-invocation: true` to its frontmatter before importing,
+  enable it in the Library, and start a message with `/` and its name.
+* Imported skills start trusted, as they come from you; read one before
+  enabling it. Approvals still apply to anything it asks the model to do.
+
+In an October 2026 check, `qwen3.5:9b` reviewed a short file with three planted
+bugs, two runs per setup, and the differences were within run-to-run noise.
+Without skills it found 2 and 3. With ten relevant personas enabled it found 1
+and 2 and never loaded one. With the Code Reviewer persona in the prompt it
+found 2 and 2. Starting the message with `/agency-code-reviewer` found 3 and 3,
+but the model loaded the skill in only one of those runs. Moss does not ship
+these personas.
+
 Adaptive tone uses remembered preferences to adjust wording, formality, and
 detail without replacing the selected personality or built-in safety guidance.
 

@@ -14,8 +14,11 @@ export interface ParsedSkill {
   disableModelInvocation: boolean;
 }
 
+/** Unquote a YAML scalar. In single quotes the only escape is a doubled quote
+ *  (`it''s`); double quotes use backslash escapes. */
 function stripYamlQuotes(v: string): string {
-  if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1).replace(/''/g, "'");
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
     return v.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
   }
   return v;
