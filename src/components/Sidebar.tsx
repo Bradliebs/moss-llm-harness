@@ -76,7 +76,11 @@ export function Sidebar({ busy, open = false, onClose, onOpenSettings, onOpenLib
   const collapsed = settings.sidebarCollapsed === true && !open;
 
   const filter = query.trim().toLowerCase();
-  const visible = sortSessionsForDisplay(filter ? sessions.filter((s) => s.title.toLowerCase().includes(filter)) : sessions);
+  // Titles and what was said (not tool output), so a conversation can be found by its content.
+  const matches = (s: (typeof sessions)[number]): boolean =>
+    s.title.toLowerCase().includes(filter)
+    || s.messages.some((m) => (m.role === "user" || m.role === "assistant") && m.content.toLowerCase().includes(filter));
+  const visible = sortSessionsForDisplay(filter ? sessions.filter(matches) : sessions);
   const selectedSessions = sessions.filter((s) => selected.has(s.id));
   const selectedHasActiveRun = selectedSessions.some((s) => busy && isRunActive(s.taskId ? runsByTask.get(s.taskId) : undefined));
 

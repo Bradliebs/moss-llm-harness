@@ -45,8 +45,10 @@ describe("working state", () => {
     expect(state.entries[1].rationale).toBe("bundled");
     sessions.removeWorkingStateEntry(id, state.entries[1].id);
     expect(sessions.getSessionWorkingState(id)!.entries).toHaveLength(1);
+    sessions.setSessionWorkspace(id, "C:\\work\\proj");
     const next = sessions.continueInNewSession(id)!;
     expect(sessions.getSessionWorkingState(next)!.entries[0].text).toBe("config/**");
+    expect(sessions.getSessionWorkspace(next)).toBe("C:\\work\\proj");
   });
 });
 

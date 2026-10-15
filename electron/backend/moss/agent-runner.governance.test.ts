@@ -305,6 +305,35 @@ describe("provenance across turns and tools", () => {
     expect(result).toContain("may have been cut off");
   });
 
+  it("forwards reasoning live and keeps it on the saved reply, never sending it back", async () => {
+    const requests: ChatRequest[] = [];
+    const { events } = await run(scripted([
+      [{ type: "reasoning-delta", text: "Need to read " }, { type: "reasoning-delta", text: "the file." }, call("r", "read_file", {})],
+      [{ type: "text-delta", text: "Done." }],
+    ], requests), [fakeTool("read_file", "x")]);
+    expect(events.filter((event) => event.type === "reasoning-delta").map((event) => (event as { text: string }).text).join("")).toBe("Need to read the file.");
+    const done = events.find((event) => event.type === "turn-complete") as Extract<MossEvent, { type: "turn-complete" }>;
+    const firstReply = done.messages.find((message) => message.role === "assistant")!;
+    expect(firstReply.reasoning).toBe("Need to read the file.");
+    expect(typeof firstReply.reasoningMs).toBe("number");
+  });
+
+  it("asks the provider to skip thinking when told to", async () => {
+    const requests: ChatRequest[] = [];
+    await run(scripted([[{ type: "text-delta", text: "391" }]], requests), [], { reasoning: "none" });
+    expect(requests[0].reasoning).toBe("none");
+    const plain: ChatRequest[] = [];
+    await run(scripted([[{ type: "text-delta", text: "391" }]], plain), []);
+    expect(plain[0].reasoning).toBeUndefined();
+  });
+
+  it("records a failed tool call on the saved tool message", async () => {
+    const failing = fakeTool("run_command", "FAIL\n[exit code 1]", false);
+    const { events } = await run(scripted([[call("t", "run_command", { command: "node test.js" })], [{ type: "text-delta", text: "It fails." }]]), [failing], { autoApprove: true });
+    const done = events.find((event) => event.type === "turn-complete") as Extract<MossEvent, { type: "turn-complete" }>;
+    expect(done.messages.find((message) => message.role === "tool")).toMatchObject({ failed: true });
+  });
+
   it("caps each tool result at a fifth of a small context window", async () => {
     const requests: ChatRequest[] = [];
     const huge = fakeTool("read_file", Array.from({ length: 2_000 }, (_, i) => `line ${i} of text`).join("\n"));

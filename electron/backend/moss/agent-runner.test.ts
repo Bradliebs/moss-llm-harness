@@ -491,6 +491,38 @@ describe("runTurn", () => {
     expect(events.filter((event) => !TRACE_EVENT_TYPES.has(event.type)).map((event) => event.type)).toEqual(["text-delta", "turn-aborted"]);
     const delta = events.find((event): event is Extract<MossEvent, { type: "text-delta" }> => event.type === "text-delta")!;
     expect(delta.text).toBe("one");
+    // The text that already streamed in is kept, marked as cut short.
+    const aborted = events.find((event): event is Extract<MossEvent, { type: "turn-aborted" }> => event.type === "turn-aborted")!;
+    expect(aborted.messages).toEqual([{ role: "assistant", content: "one", interrupted: true }]);
+  });
+
+  it("keeps a partial reply when the stream throws after Stop", async () => {
+    const controller = new AbortController();
+    const provider: ChatProvider = {
+      kind: "test",
+      async *streamChat(): AsyncIterable<ProviderStreamEvent> {
+        yield { type: "text-delta", text: "partial" };
+        controller.abort();
+        throw new DOMException("aborted", "AbortError");
+      },
+      async listModels() {
+        return [];
+      },
+    };
+    const events: MossEvent[] = [];
+    await runTurn({
+      provider,
+      model: "test-model",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+      toolRegistry: new Map(),
+      workspaceRoot: "/work",
+      signal: controller.signal,
+      onEvent: (e) => events.push(e),
+      requestApproval: async () => ({ approved: true }),
+    });
+    const aborted = events.find((event): event is Extract<MossEvent, { type: "turn-aborted" }> => event.type === "turn-aborted")!;
+    expect(aborted.messages).toEqual([{ role: "assistant", content: "partial", interrupted: true }]);
   });
 
   it("executes every tool call in a multi-call round, in order", async () => {
@@ -633,6 +665,27 @@ describe("runTurn", () => {
     expect(notice.message).toContain("retrying");
     const complete = h.events.at(-1) as Extract<MossEvent, { type: "turn-complete" }>;
     expect(complete.messages).toEqual([{ role: "assistant", content: "recovered" }]);
+  });
+
+  it("tells the renderer to drop reasoning from a call that is retried", async () => {
+    let attempts = 0;
+    const provider: ChatProvider = {
+      kind: "test",
+      async *streamChat(): AsyncIterable<ProviderStreamEvent> {
+        attempts += 1;
+        yield { type: "reasoning-delta", text: `thought ${attempts}` };
+        if (attempts === 1) throw new Error("transient");
+        yield { type: "text-delta", text: "recovered" };
+      },
+      async listModels() {
+        return [];
+      },
+    };
+    const h = await run(provider, []);
+
+    expect(types(h)).toEqual(["reasoning-delta", "notice", "reasoning-reset", "reasoning-delta", "text-delta", "turn-complete"]);
+    const complete = h.events.at(-1) as Extract<MossEvent, { type: "turn-complete" }>;
+    expect(complete.messages[0]).toMatchObject({ content: "recovered", reasoning: "thought 2" });
   });
 
   it("compacts and retries once when the provider reports context overflow before output", async () => {

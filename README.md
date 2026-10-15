@@ -192,7 +192,8 @@ persists conversations locally, restores the selected conversation after a
 reload, and derives a title from the first user message.
 
 Use the left sidebar to create, search, select, rename, pin, export, copy, or
-delete conversations. Deleting one conversation asks once more: select the
+delete conversations. Search matches titles and the text of your messages and
+the replies. Deleting one conversation asks once more: select the
 trash icon, then **Delete?**. Pinned conversations stay at the top of the list.
 Choose **Select conversations** to export several conversations into one Markdown file
 or delete them together after a confirmation. Collapse the sidebar to a narrow
@@ -204,13 +205,28 @@ conversation's history.
 Select **Edit** on an earlier message to load it into the composer. The original
 conversation is unchanged until you send the edit, which replaces that message
 and everything after it. **Cancel edit** or `Esc` restores the empty composer.
+`Up` in an empty message box brings back your last message to edit and resend.
+
+**Regenerate** on the latest reply runs its prompt again. On an earlier
+exchange it also removes the exchanges after it, so it asks first and says how
+many. A message that never got a reply (Moss closed, or the call failed) shows
+**Retry**. **Stop** keeps the reply as far as it got, marked as interrupted.
+
+Each conversation remembers the workspace folder its tools last used. Reopen it
+after switching folders and a banner offers **Switch back** or **Keep the
+current folder**, so tools do not quietly work in a different project.
+
+Your message is saved as soon as you send it. If Moss cannot save conversations
+or settings (for example, storage is full), a red warning stays above the
+message box until a save works again.
 
 The chat header names the open conversation. Its actions are icon buttons
 with tooltips (text labels appear in wide windows): **Continue in new chat**,
 **Clear**, **Working state**, and **Settings**. **Clear** removes messages from
 the selected conversation while keeping its entry, after a second click on
 **Confirm clear**. **Continue in new chat** creates a separate conversation with
-a bounded summary of the current context and leaves the original unchanged.
+a bounded summary of the current context and the same workspace folder, and
+leaves the original unchanged.
 
 The conversation follows new output while you are at the end. Scroll up to read
 and it stays put; **Jump to latest** returns to the end.
@@ -779,7 +795,10 @@ or time budget reaches 80 percent, before the mission blocks on exhaustion.
 When a turn changes files, Moss creates a checkpoint. The response footer lists
 each changed file and whether the turn created or modified it. **Undo turn**
 asks for confirmation, then restores modified files and deletes created ones
-while the checkpoint remains available.
+while the checkpoint remains available. Only changes made by file tools are
+tracked; side effects of commands are not. Moss notes each file's content when
+the turn ends. A file changed after that, by a later turn or by you, is left as
+it is and reported, and stays in the checkpoint so undo can be tried again.
 
 ### Durable approvals and task history
 
@@ -1254,7 +1273,24 @@ uses a curated set of lazily loaded Shiki grammars.
 
 The response surface supports headings, nested lists, task lists, tables,
 blockquotes, inline code, highlighted code blocks, copy controls, regeneration,
-checkpoint reversion, token details, and a streaming indicator. User messages
+checkpoint reversion, token details, and a streaming indicator.
+
+While a turn runs, a status row says what Moss is waiting on ("Waiting for
+qwen3.5:9b · 12 s", or "Writing a write_file call · 4 s" while the model streams
+a tool call), so long pauses from local models are visible. Thinking models
+(qwen3 on Ollama, or servers that send `reasoning_content`) show their reasoning
+live in a **Thinking** block that becomes "Thought for N s" when the answer
+starts. Up to the last 6,000 characters are saved with the reply; they are never
+sent back to the model. To get faster replies, turn thinking off under
+**Settings > Models > Thinking (reasoning models)** or with the composer's **Thinking** button, which
+appears once a conversation's model has thought. Moss then sends
+`reasoning_effort: "none"`, and retries without it on servers that reject it.
+
+Tool cards have readable headings that follow the call's state: "Wants to run
+npm test" while it waits for approval, "Running", "Ran", "Not allowed to" after
+a denial, and "Tried to" when it failed. File edits show their diff even when
+they were approved automatically, and a failed call stays marked as failed when
+you reopen the conversation. User messages
 remain compact bubbles while assistant responses use a wider document layout;
 tool cards sit in the same column as the answer they lead to. A tool waiting for
 approval has an amber outline and full-size **Approve** and **Deny** buttons.

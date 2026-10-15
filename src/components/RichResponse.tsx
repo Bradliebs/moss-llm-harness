@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react";
-import { Children, isValidElement, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { Children, isValidElement, memo, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -141,8 +141,19 @@ function markdownComponents(onCopy: (text: string) => void, streaming: boolean):
   };
 }
 
-export function RichResponse({ content, streaming = false, onCopy }: RichResponseProps): ReactElement {
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeSanitize];
+
+/** Re-renders only when its text or streaming state changes: while one answer
+ *  streams, earlier answers are not parsed again on every token. `onCopy` is
+ *  left out on purpose: callers pass a stable function. */
+export const RichResponse = memo(RichResponseView, (prev, next) => prev.content === next.content && prev.streaming === next.streaming);
+
+function RichResponseView({ content, streaming = false, onCopy }: RichResponseProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null);
+  // The markdown component map must keep its identity across renders, or React
+  // treats every code block as a new component and remounts it on each token.
+  const components = useMemo(() => markdownComponents(onCopy, streaming), [onCopy, streaming]);
   const [selectionCopy, setSelectionCopy] = useState<SelectionCopyState | null>(null);
 
   useEffect(() => {
@@ -182,9 +193,9 @@ export function RichResponse({ content, streaming = false, onCopy }: RichRespons
   return (
     <div ref={rootRef} className={`rich-response${streaming ? " is-streaming" : ""}`} data-testid="rich-response">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeSanitize]}
-        components={markdownComponents(onCopy, streaming)}
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        components={components}
       >
         {content}
       </ReactMarkdown>

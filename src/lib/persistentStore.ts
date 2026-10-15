@@ -14,6 +14,14 @@ export interface PersistentStore<T> {
   use(): T;
 }
 
+/** Told after every save whether it worked, so the app can warn while saves
+ *  fail (instead of losing changes silently on the next restart) and clear the
+ *  warning once they work again. */
+let persistResult: ((key: string, ok: boolean) => void) | undefined;
+export function onPersistResult(handler: ((key: string, ok: boolean) => void) | undefined): void {
+  persistResult = handler;
+}
+
 export function createPersistentStore<T>(key: string, fallback: T, toPersist: (value: T) => T = (value) => value): PersistentStore<T> {
   let value = load();
   const listeners = new Set<() => void>();
@@ -32,8 +40,11 @@ export function createPersistentStore<T>(key: string, fallback: T, toPersist: (v
     try {
       localStorage.setItem(key, JSON.stringify(toPersist(value)));
     } catch {
-      // storage full or unavailable — keep the in-memory value, drop persistence
+      // Storage full or unavailable: keep the in-memory value and report it.
+      persistResult?.(key, false);
+      return;
     }
+    persistResult?.(key, true);
   }
 
   function set(next: T): void {

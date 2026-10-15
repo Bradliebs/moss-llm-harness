@@ -1,4 +1,4 @@
-import { LoaderCircle, Mic, Paperclip, Rocket, SendHorizontal, Square, Zap } from "lucide-react";
+import { Brain, LoaderCircle, Mic, Paperclip, Rocket, SendHorizontal, Square, Zap } from "lucide-react";
 import { useRef, useState, type ClipboardEventHandler, type KeyboardEventHandler, type ReactNode, type RefObject } from "react";
 
 /** One height and shape for every composer action, with an icon before the text. */
@@ -21,6 +21,10 @@ interface ChatComposerProps {
   busy: boolean;
   interruptQueued: boolean;
   modelSelected: boolean;
+  /** a turn is running in another conversation */
+  activeElsewhere?: boolean;
+  /** the model's thinking switch, when the model is known to think */
+  thinking?: { on: boolean; onToggle: () => void };
   pendingAttachmentReads: number;
   hasSendContent: boolean;
   launchBlocked: boolean;
@@ -43,6 +47,8 @@ export function ChatComposer({
   busy,
   interruptQueued,
   modelSelected,
+  activeElsewhere = false,
+  thinking,
   pendingAttachmentReads,
   hasSendContent,
   launchBlocked,
@@ -54,7 +60,9 @@ export function ChatComposer({
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
   // Why Send cannot be used yet, shown where the eye already is.
-  const blocked = !modelSelected
+  const blocked = activeElsewhere
+    ? "Another conversation is still running; open it to stop it, or wait for it to finish."
+    : !modelSelected
     ? "Choose a model in Settings to start."
     : pendingAttachmentReads > 0
       ? "Waiting for attachments to finish reading."
@@ -88,12 +96,12 @@ export function ChatComposer({
         </div>
       ) : null}
       {children}
-      {!modelSelected && !busy ? <p className="mb-1.5 text-xs text-neutral-600 dark:text-neutral-400">{blocked}</p> : null}
+      {!modelSelected && !busy && !activeElsewhere ? <p className="mb-1.5 text-xs text-neutral-600 dark:text-neutral-400">{blocked}</p> : null}
       <div className="flex items-end gap-2">
         <textarea
           ref={composerRef}
           aria-label="Message"
-          className="min-w-0 flex-1 resize-none rounded-xl border border-neutral-300 bg-white px-3 py-2 text-[0.9375rem] leading-6 shadow-sm transition-colors duration-150 placeholder:text-neutral-500 focus:border-emerald-600 focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)] dark:border-neutral-700 dark:bg-neutral-900 dark:placeholder:text-neutral-400"
+          className="max-h-56 min-h-[4rem] min-w-0 flex-1 resize-none rounded-xl border [field-sizing:content] border-neutral-300 bg-white px-3 py-2 text-[0.9375rem] leading-6 shadow-sm transition-colors duration-150 placeholder:text-neutral-500 focus:border-emerald-600 focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)] dark:border-neutral-700 dark:bg-neutral-900 dark:placeholder:text-neutral-400"
           rows={2}
           placeholder="Message…"
           value={value}
@@ -137,6 +145,19 @@ export function ChatComposer({
             : <Mic size={16} aria-hidden="true" />}
           <span className="hidden sm:inline">{dictationState === "recording" ? "Recording" : dictationState === "transcribing" ? "Transcribing" : "Mic"}</span>
         </button>
+        {thinking ? (
+          <button
+            type="button"
+            className={SECONDARY}
+            onClick={thinking.onToggle}
+            aria-pressed={thinking.on}
+            aria-label="Thinking"
+            title={thinking.on ? "The model thinks before answering (slower, often better on hard problems). Click to turn off for faster replies." : "Thinking is off for faster replies. Click to let the model think first."}
+          >
+            <Brain size={16} className={thinking.on ? "text-emerald-700 dark:text-emerald-400" : "opacity-50"} aria-hidden="true" />
+            <span className="hidden sm:inline">{thinking.on ? "Thinking" : "No thinking"}</span>
+          </button>
+        ) : null}
         {busy ? (
           <>
             <button

@@ -50,10 +50,15 @@ function sse(...chunks: object[]): string {
 
 const req: ChatRequest = { model: "m", messages: [{ role: "user", content: "hi" }] };
 
-async function collect(provider: OpenAiCompatibleProvider) {
+async function collectAll(provider: OpenAiCompatibleProvider) {
   const events = [];
   for await (const e of provider.streamChat(req, new AbortController().signal)) events.push(e);
   return events;
+}
+
+/** Events without the "started writing a tool call" progress signal. */
+async function collect(provider: OpenAiCompatibleProvider) {
+  return (await collectAll(provider)).filter((event) => event.type !== "tool-call-start");
 }
 
 afterEach(() => {
@@ -61,6 +66,37 @@ afterEach(() => {
 });
 
 describe("OpenAiCompatibleProvider.streamChat", () => {
+  it("never sends saved reasoning back to the model", async () => {
+    stubStream(sse());
+    const withReasoning: ChatRequest = { model: "m", messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "391", reasoning: "SECRET-CHAIN" }, { role: "user", content: "and?" }] };
+    for await (const event of new OpenAiCompatibleProvider("http://x/v1").streamChat(withReasoning, new AbortController().signal)) void event;
+    expect(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body)).not.toContain("SECRET-CHAIN");
+  });
+
+  it("says once when the model starts writing a tool call", async () => {
+    stubStream(sse(
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "write_file", arguments: "{\"pa" } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "th\":\"a\"}" } }] } }] },
+    ));
+    const events = await collectAll(new OpenAiCompatibleProvider("http://x/v1"));
+    expect(events.filter((event) => event.type === "tool-call-start")).toEqual([{ type: "tool-call-start", name: "write_file" }]);
+    expect(events.find((event) => event.type === "tool-call")).toMatchObject({ toolCall: { name: "write_file", arguments: "{\"path\":\"a\"}" } });
+  });
+
+  it("streams a thinking model's reasoning separately from its answer", async () => {
+    stubStream(sse(
+      { choices: [{ delta: { role: "assistant", content: "", reasoning: "Thinking" } }] },
+      { choices: [{ delta: { content: "", reasoning_content: " hard" } }] },
+      { choices: [{ delta: { content: "391" } }] },
+    ));
+    const events = await collect(new OpenAiCompatibleProvider("http://x/v1"));
+    expect(events.filter((event) => event.type !== "usage")).toEqual([
+      { type: "reasoning-delta", text: "Thinking" },
+      { type: "reasoning-delta", text: " hard" },
+      { type: "text-delta", text: "391" },
+    ]);
+  });
+
   it("requests token usage in the streaming response", async () => {
     stubStream(sse());
 

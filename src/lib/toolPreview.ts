@@ -122,3 +122,49 @@ export function diffStats(lines: DiffLine[]): { added: number; removed: number }
     removed: lines.filter((line) => line.type === "remove").length,
   };
 }
+
+/** Where a tool card is in its life, for the tense of its heading. */
+export type ToolCallPhase = "approval" | "running" | "done" | "denied" | "error";
+
+/** A short, readable heading for a tool card ("Read math.js", "Ran npm test",
+ *  "Wants to run npm test"), or null for tools without one, which keep their
+ *  raw name and arguments. */
+export function summarizeToolCall(name: string, args: string, phase: ToolCallPhase = "done"): { action: string; target: string } | null {
+  let parsed: Record<string, unknown> = {};
+  try {
+    const value: unknown = JSON.parse(args || "{}");
+    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const text = (key: string): string => (typeof parsed[key] === "string" ? (parsed[key] as string) : "");
+  // done/doing/plain forms: "Ran", "Running", "run".
+  const verb = (done: string, doing: string, plain: string): string => {
+    switch (phase) {
+      case "running": return doing;
+      case "approval": return `Wants to ${plain}`;
+      case "denied": return `Not allowed to ${plain}`;
+      case "error": return `Tried to ${plain}`;
+      default: return done;
+    }
+  };
+  switch (name) {
+    case "read_file": {
+      const range = parsed.startLine !== undefined || parsed.endLine !== undefined ? ` (lines ${parsed.startLine ?? 1}–${parsed.endLine ?? "end"})` : "";
+      return text("path") ? { action: verb("Read", "Reading", "read"), target: `${text("path")}${range}` } : null;
+    }
+    case "write_file": return text("path") ? { action: verb("Wrote", "Writing", "write"), target: text("path") } : null;
+    case "edit_file": return text("path") ? { action: verb("Edited", "Editing", "edit"), target: text("path") } : null;
+    case "move_file": return text("from") && text("to") ? { action: verb("Moved", "Moving", "move"), target: `${text("from")} → ${text("to")}` } : null;
+    case "list_dir": return { action: verb("Listed", "Listing", "list"), target: text("path") || "." };
+    case "glob_files": return text("pattern") ? { action: verb("Found files", "Finding files", "find files"), target: text("pattern") } : null;
+    case "search_files": return text("query") ? { action: verb("Searched for", "Searching for", "search for"), target: text("query") } : null;
+    case "search_codebase": return text("query") ? { action: verb("Searched the code for", "Searching the code for", "search the code for"), target: text("query") } : null;
+    case "run_command": return text("command") ? { action: verb("Ran", "Running", "run"), target: text("command") } : null;
+    case "git_status": return { action: verb("Checked", "Checking", "check"), target: "git status" };
+    case "git_diff": return { action: verb("Viewed", "Viewing", "view"), target: `git diff${text("path") ? ` ${text("path")}` : ""}` };
+    case "fetch_url": return text("url") ? { action: verb("Fetched", "Fetching", "fetch"), target: text("url") } : null;
+    case "web_search": return text("query") ? { action: verb("Searched the web for", "Searching the web for", "search the web for"), target: text("query") } : null;
+    default: return null;
+  }
+}

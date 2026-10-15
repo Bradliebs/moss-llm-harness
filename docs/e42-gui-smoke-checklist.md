@@ -236,8 +236,9 @@ still required before closing end-to-end dictation acceptance.
    - Confirm a read-only/allow-listed tool (e.g. read_file) does NOT show "auto".
 
 6. **Abort mid-turn**
-   - Start a long generation and click Stop. Confirm the turn ends with "Aborted"
-     and the Send button returns.
+   - Start a long generation and click Stop. Confirm the turn ends with "Aborted",
+     the Send button returns, and the text that had streamed in stays, marked
+     as interrupted.
 
 7. **Dictation (if a Whisper endpoint is configured)**
    - Click Mic, speak, stop. Confirm transcribed text lands in the input box.
@@ -331,6 +332,9 @@ still required before closing end-to-end dictation acceptance.
       is labelled **Create**. Confirm a command approval shows its working folder.
     - After the turn, expand the changed-file list, select **Undo turn**, choose
       **Keep changes** once, then confirm the undo and verify the files revert.
+    - Repeat with a turn that edits a file, edit that file yourself, then select
+      **Undo turn**. Confirm your edit stays and the file is reported as changed
+      after the turn.
     - Ask for a browser visit to a domain outside the allow-list. Confirm the
       tool card names the allow-list rule and **Open settings** opens Automation.
     - Select a model that does not exist and send a message. Confirm the error
@@ -564,6 +568,23 @@ still required before closing end-to-end dictation acceptance.
       in Settings.
     - With Windows animation effects off, confirm hover and panel changes do
       not animate.
+
+29. **Chat while developing**
+    - With a thinking model (for example qwen3.5:9b on Ollama), ask a coding
+      question. Confirm a "Waiting for <model> · N s" row appears, then a live
+      **Thinking** block that becomes "Thought for N s" when the answer starts.
+    - Select the composer's **Thinking** button so it reads **No thinking**,
+      ask again, and confirm no Thinking block appears and the reply is faster.
+      Turn it back on.
+    - Ask for a file edit with auto-approve on. Confirm the tool card reads
+      "Edited <path>" and shows a diff; with auto-approve off, confirm a pending
+      command reads "Wants to run <command>".
+    - On an earlier exchange, select **Regenerate**. Confirm it asks how many
+      later exchanges it will remove before doing anything.
+    - Switch the workspace folder, reopen an older conversation that used tools,
+      and confirm the banner offers **Switch back** and **Keep the current
+      folder**.
+    - Press `Up` in an empty message box and confirm your last message returns.
 
 ## Pass criteria
 

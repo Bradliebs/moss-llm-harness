@@ -34,6 +34,47 @@ describe("CheckpointStore", () => {
     expect(readFileSync(file, "utf8")).toBe("original");
   });
 
+  it("leaves a file that changed after the turn instead of overwriting newer work", async () => {
+    const changedLater = join(dir, "a.txt");
+    const untouched = join(dir, "b.txt");
+    writeFileSync(changedLater, "original", "utf8");
+    writeFileSync(untouched, "b0", "utf8");
+    const rec = store.recorder("t1");
+    await rec.record(changedLater, "a.txt");
+    await rec.record(untouched, "b.txt");
+    writeFileSync(changedLater, "turn 1", "utf8");
+    writeFileSync(untouched, "b1", "utf8");
+    await store.seal("t1");
+    writeFileSync(changedLater, "turn 2 or the user", "utf8"); // edited after the turn
+
+    const result = await store.revert("t1");
+    expect(result.reverted).toBe(1);
+    expect(result.errors).toEqual(["a.txt: changed after this turn, so it was left as it is"]);
+    expect(readFileSync(changedLater, "utf8")).toBe("turn 2 or the user");
+    expect(readFileSync(untouched, "utf8")).toBe("b0");
+
+    // The skipped file stays undoable: once the later edit is gone, undo works.
+    expect(await store.list("t1")).toEqual([{ path: "a.txt", existed: true }]);
+    writeFileSync(changedLater, "turn 1", "utf8");
+    expect(await store.revert("t1")).toEqual({ reverted: 1, errors: [] });
+    expect(readFileSync(changedLater, "utf8")).toBe("original");
+    expect(await store.list("t1")).toEqual([]);
+  });
+
+  it("does not bring back a manifest when a seal races a revert", async () => {
+    const file = join(dir, "a.txt");
+    writeFileSync(file, "original", "utf8");
+    await store.recorder("t1").record(file, "a.txt");
+    writeFileSync(file, "turn 1", "utf8");
+
+    const sealing = store.seal("t1");
+    const reverting = store.revert("t1");
+    await Promise.all([sealing, reverting]);
+
+    expect(readFileSync(file, "utf8")).toBe("original");
+    expect(await new CheckpointStore(dir).list("t1")).toEqual([]);
+  });
+
   it("deletes a file the turn created when reverting", async () => {
     const file = join(dir, "new.txt");
     const rec = store.recorder("t1");

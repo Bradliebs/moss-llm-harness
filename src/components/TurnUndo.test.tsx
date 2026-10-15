@@ -39,13 +39,16 @@ describe("TurnUndo", () => {
     expect(revert).toHaveBeenCalledWith("turn-1");
   });
 
-  it("reports partial failures", async () => {
+  it("reports partial failures and lists only the files still to undo", async () => {
     mockCheckpoint(vi.fn(async () => ({ reverted: 1, errors: ["new.md: locked"] })));
+    const list = vi.mocked(window.moss.checkpoint.list);
     render(<TurnUndo turnId="turn-1" />);
     await waitFor(() => screen.getByRole("button", { name: "Undo turn" }));
+    list.mockResolvedValueOnce([{ path: "new.md", existed: false }]);
     fireEvent.click(screen.getByRole("button", { name: "Undo turn" }));
     fireEvent.click(screen.getByRole("button", { name: "Undo changes" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("new.md: locked"));
+    await waitFor(() => expect(screen.getByText("1 file changed")).toBeDefined());
   });
 
   it("renders nothing when the turn changed no files", async () => {

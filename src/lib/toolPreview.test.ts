@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { compactDiff, describeToolCall, diffStats, lineDiff } from "./toolPreview";
+import { compactDiff, describeToolCall, diffStats, lineDiff, summarizeToolCall } from "./toolPreview";
 
 describe("describeToolCall", () => {
   it("shows an email's recipients, subject, and body", () => {
@@ -47,5 +47,24 @@ describe("lineDiff", () => {
     const compact = compactDiff(lineDiff(before, after)!, 1);
     expect(compact[0]).toEqual({ type: "gap", count: 9 });
     expect(compact.at(-1)).toEqual({ type: "gap", count: 8 });
+  });
+});
+
+describe("summarizeToolCall", () => {
+  it("gives readable headings for common tools, present tense while running", () => {
+    expect(summarizeToolCall("read_file", '{"path":"src/math.js"}')).toEqual({ action: "Read", target: "src/math.js" });
+    expect(summarizeToolCall("read_file", '{"path":"big.ts","startLine":40,"endLine":80}')).toEqual({ action: "Read", target: "big.ts (lines 40–80)" });
+    expect(summarizeToolCall("run_command", '{"command":"npm test"}', "running")).toEqual({ action: "Running", target: "npm test" });
+    expect(summarizeToolCall("run_command", '{"command":"rm -rf build"}', "approval")).toEqual({ action: "Wants to run", target: "rm -rf build" });
+    expect(summarizeToolCall("write_file", '{"path":"a.ts"}', "denied")).toEqual({ action: "Not allowed to write", target: "a.ts" });
+    expect(summarizeToolCall("read_file", '{"path":"gone.ts"}', "error")).toEqual({ action: "Tried to read", target: "gone.ts" });
+    expect(summarizeToolCall("edit_file", '{"path":"a.ts","oldText":"x","newText":"y"}')).toEqual({ action: "Edited", target: "a.ts" });
+    expect(summarizeToolCall("list_dir", "{}")).toEqual({ action: "Listed", target: "." });
+  });
+
+  it("returns null for unknown tools, missing arguments, or broken JSON", () => {
+    expect(summarizeToolCall("mcp__x__y", "{}")).toBeNull();
+    expect(summarizeToolCall("read_file", "{}")).toBeNull();
+    expect(summarizeToolCall("read_file", "{not json")).toBeNull();
   });
 });

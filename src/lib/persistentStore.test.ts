@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createPersistentStore } from "./persistentStore";
+import { createPersistentStore, onPersistResult } from "./persistentStore";
 
 function makeLocalStorage() {
   const map = new Map<string, string>();
@@ -79,8 +79,13 @@ describe("createPersistentStore", () => {
         throw new Error("storage full");
       },
     });
+    const results: string[] = [];
+    onPersistResult((key, ok) => results.push(`${key}:${ok}`));
     const store = createPersistentStore("k.throw", 0);
     expect(() => store.set(3)).not.toThrow();
     expect(store.get()).toBe(3);
+    // The failure is reported, so the app can warn instead of losing changes silently.
+    expect(results).toEqual(["k.throw:false"]);
+    onPersistResult(undefined);
   });
 });

@@ -61,6 +61,20 @@ describe("Sidebar", () => {
     expect(screen.getByText("Second chat")).toBeDefined();
   });
 
+  it("finds conversations by what was said, not only by title", () => {
+    vi.mocked(sessions.useSessions).mockReturnValue({
+      sessions: [
+        { id: "a", title: "First chat", messages: [{ role: "user", content: "How do I rotate the API key?" }], createdAt: 0, updatedAt: 0 },
+        { id: "b", title: "Second chat", messages: [{ role: "tool", content: "rotate", toolCallId: "t" }], createdAt: 0, updatedAt: 0 },
+      ],
+      currentId: "a",
+    });
+    render(<Sidebar busy={false} onOpenSettings={noop} onOpenLibrary={noop} />);
+    fireEvent.change(screen.getByLabelText("Search conversations"), { target: { value: "rotate" } });
+    expect(screen.getByText("First chat")).toBeDefined();
+    expect(screen.queryByText("Second chat")).toBeNull();
+  });
+
   it("creates a new conversation on the New chat button", () => {
     const onClose = vi.fn();
     render(<Sidebar busy={false} open onClose={onClose} onOpenSettings={noop} onOpenLibrary={noop} />);

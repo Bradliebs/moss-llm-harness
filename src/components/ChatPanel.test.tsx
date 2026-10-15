@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentMessage, ChatEventPayload, MossEvent, TaskSnapshot, TaskState } from "@common/types";
 
+import { createPersistentStore } from "../lib/persistentStore";
 import { ChatPanel } from "./ChatPanel";
 
 const mockExtractPdfText = vi.hoisted(() => vi.fn());
@@ -27,6 +28,7 @@ vi.mock("../lib/attachments", async (importOriginal) => ({
 }));
 
 const mockSetSessionMessages = vi.fn();
+const mockSetSessionWorkspace = vi.fn();
 const mockClearSession = vi.fn();
 const mockContinueInNewSession = vi.fn();
 const mockSummarize = vi.fn();
@@ -119,6 +121,7 @@ vi.mock("../lib/sessions", () => ({
   setSessionTrustedThrough: (...args: unknown[]) => mockSetSessionTrustedThrough(...args),
   selectSession: (...args: unknown[]) => mockSelectSession(...args),
   setSessionPersonality: vi.fn(),
+  setSessionWorkspace: (...args: unknown[]) => mockSetSessionWorkspace(...args),
   setSessionMessages: (...args: unknown[]) => mockSetSessionMessages(...args),
   setSessionTitle: vi.fn(),
   setSessionTaskId: (...args: unknown[]) => mockSetSessionTaskId(...args),
@@ -429,6 +432,23 @@ describe("ChatPanel", () => {
     );
   });
 
+  it("keeps a failed-save warning through the turn until a save works again", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    const store = createPersistentStore("moss.sessions", 0);
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    act(() => store.set(1));
+    // Turn status updates (here, the turn finishing) must not hide it.
+    emit(turnId, { type: "turn-complete", messages: [{ role: "assistant", content: "done" }] });
+    expect(screen.getByRole("alert").textContent).toContain("could not save its conversations");
+
+    setItem.mockRestore();
+    act(() => store.set(2));
+    expect(screen.queryByText(/could not save/)).toBeNull();
+  });
+
   it("renders a terminal task snapshot that arrives after turn-complete", () => {
     render(<Harness />);
     const turnId = startTurn();
@@ -634,6 +654,65 @@ describe("ChatPanel", () => {
     fireEvent.click(screen.getByText("Mission details"));
     expect(screen.getByText("Focused tests passed")).toBeDefined();
     expect(screen.getByLabelText("Mission artifacts").textContent).toContain("Verified source update");
+  });
+
+  it("shows a finished edit as a diff", () => {
+    mockSession.value = {
+      id: "s1",
+      title: "New chat",
+      messages: [
+        { role: "user", content: "fix it" },
+        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "edit_file", arguments: JSON.stringify({ path: "math.js", oldText: "return a - b;", newText: "return a + b;" }) }] },
+        { role: "tool", toolCallId: "c1", content: "Replaced 1 occurrence in math.js at line 2", failed: false },
+        { role: "assistant", content: "Fixed." },
+      ],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    render(<Harness />);
+    const card = Array.from(document.querySelectorAll("details")).find((details) => details.querySelector("summary")?.textContent?.includes("Edited math.js")) as HTMLDetailsElement;
+    expect(card).toBeDefined();
+    expect(card.textContent).toContain("return a - b;");
+    expect(card.textContent).toContain("return a + b;");
+  });
+
+  it("shows a saved tool failure as an error, not done", () => {
+    mockSession.value = {
+      id: "s1",
+      title: "New chat",
+      messages: [
+        { role: "user", content: "run the tests" },
+        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "run_command", arguments: "{\"command\":\"node test.js\"}" }, { id: "c2", name: "read_file", arguments: "{}" }] },
+        { role: "tool", toolCallId: "c1", content: "FAIL\n[exit code 1]", failed: true },
+        { role: "tool", toolCallId: "c2", content: "ok" },
+        { role: "assistant", content: "It fails." },
+      ],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    render(<Harness />);
+    const cards = Array.from(document.querySelectorAll("details > summary")).map((summary) => summary.textContent ?? "");
+    expect(cards.find((text) => text.includes("node test.js"))).toContain("error");
+    expect(cards.find((text) => text.includes("read_file"))).toContain("done");
+  });
+
+  it("recognises a failure in history saved before failures were recorded", () => {
+    mockSession.value = {
+      id: "s1",
+      title: "New chat",
+      messages: [
+        { role: "user", content: "run it" },
+        { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "run_command", arguments: "{\"command\":\"npm test\"}" }, { id: "c2", name: "write_file", arguments: "{\"path\":\"a\"}" }] },
+        { role: "tool", toolCallId: "c1", content: "1 failing\n[exit code 1]" },
+        { role: "tool", toolCallId: "c2", content: "User denied: write_file" },
+        { role: "assistant", content: "Stopped." },
+      ],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    render(<Harness />);
+    const cards = Array.from(document.querySelectorAll("details > summary")).map((summary) => summary.textContent ?? "");
+    expect(cards.filter((text) => text.includes("error"))).toHaveLength(2);
   });
 
   it("stamps a per-turn token subtotal on the final reply of a multi-round turn", () => {
@@ -863,6 +942,26 @@ describe("ChatPanel", () => {
     const payload = vi.mocked(window.moss.chat.send).mock.calls[0][0];
     expect(payload.messages).toHaveLength(3);
     expect(payload.messages.at(-1)).toEqual({ role: "user", content: "second question" });
+  });
+
+  it("asks before regenerating an earlier reply that later messages follow", () => {
+    mockSession.value = {
+      id: "s1",
+      title: "New chat",
+      messages: [
+        { role: "user", content: "first question" },
+        { role: "assistant", content: "first answer" },
+        { role: "user", content: "second question" },
+        { role: "assistant", content: "second answer" },
+      ],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    render(<Harness />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Regenerate response" })[0]);
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate and remove 1 later exchange?" }));
+    expect(vi.mocked(window.moss.chat.send).mock.calls[0][0].messages).toEqual([{ role: "user", content: "first question" }]);
   });
 
   it("renders bold inline markdown as a strong element", () => {
@@ -1427,6 +1526,116 @@ describe("ChatPanel", () => {
     expect(screen.getByText("Hello")).toBeDefined();
   });
 
+  it("shows what a turn is waiting on, then live thinking, then how long it thought", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    expect(screen.getByText(/^Waiting for /)).toBeDefined();
+    emit(turnId, { type: "reasoning-delta", text: "First check the file.\nThen fix the sum." });
+    expect(screen.queryByText(/^Waiting for /)).toBeNull();
+    expect(screen.getByText(/^Thinking · \d+ s$/)).toBeDefined();
+    expect(screen.getByText("Then fix the sum.")).toBeDefined();
+    emit(turnId, { type: "text-delta", text: "Fixed." });
+    expect(screen.getByText(/^Thought for \d+ s$/)).toBeDefined();
+    expect(screen.getByText("Fixed.")).toBeDefined();
+  });
+
+  it("offers a thinking switch in the composer once the model has thought", async () => {
+    const { updateSettings } = await import("../lib/settings");
+    mockSession.value = {
+      id: "s1",
+      title: "New chat",
+      messages: [
+        { role: "user", content: "sum?" },
+        { role: "assistant", content: "391", reasoning: "17 times 23.", reasoningMs: 1_000 },
+      ],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    render(<Harness />);
+    const toggle = screen.getByRole("button", { name: "Thinking" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(toggle);
+    expect(updateSettings).toHaveBeenCalledWith({ thinking: "off" });
+  });
+
+  it("drops the live thinking of a model call that is retried", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "reasoning-delta", text: "First attempt reasoning" });
+    emit(turnId, { type: "reasoning-reset" });
+    emit(turnId, { type: "reasoning-delta", text: "Second attempt reasoning" });
+    expect(screen.queryByText(/First attempt/)).toBeNull();
+    expect(screen.getAllByText("Second attempt reasoning").length).toBeGreaterThan(0);
+  });
+
+  it("says which tool call the model is writing while its arguments stream", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "tool-call-start", name: "write_file" });
+    expect(screen.getByText(/^Writing a write_file call · \d+ s$/)).toBeDefined();
+    emit(turnId, { type: "tool-call", callId: "c1", name: "write_file", arguments: "{\"path\":\"a.txt\"}" });
+    expect(screen.queryByText(/^Writing a write_file call/)).toBeNull();
+  });
+
+  it("does not send on Enter while an input method is composing, and recalls the last message on Up", () => {
+    mockSession.value = { id: "s1", title: "New chat", messages: [{ role: "user", content: "earlier request" }, { role: "assistant", content: "ok" }], createdAt: 0, updatedAt: 0 };
+    render(<Harness />);
+    const box = screen.getByPlaceholderText("Message…") as HTMLTextAreaElement;
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    expect(box.value).toBe("earlier request");
+    fireEvent.change(box, { target: { value: "日本" } });
+    fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(box, { key: "Enter", keyCode: 229 });
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(window.moss.chat.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns when a chat is reopened after its workspace changed, and offers to switch back", async () => {
+    const { updateSettings } = await import("../lib/settings");
+    mockSettings.workspaceRoot = "C:\\work\\proj-b";
+    mockSession.value = { id: "s1", title: "Old chat", messages: [{ role: "user", content: "fix it" }], workspaceRoot: "C:\\work\\proj-a", createdAt: 0, updatedAt: 0 };
+    render(<Harness />);
+    const banner = screen.getByText(/This chat worked in/).closest("div")!;
+    expect(banner.textContent).toContain("proj-a");
+    expect(banner.textContent).toContain("proj-b");
+    fireEvent.click(screen.getByRole("button", { name: "Switch back to proj-a" }));
+    expect(updateSettings).toHaveBeenCalledWith({ workspaceRoot: "C:\\work\\proj-a" });
+    fireEvent.click(screen.getByRole("button", { name: "Keep the current folder" }));
+    expect(mockSetSessionWorkspace).toHaveBeenCalledWith("s1", "C:\\work\\proj-b");
+  });
+
+  it("offers to retry a message that never got a reply", () => {
+    mockSession.value = { id: "s1", title: "Old chat", messages: [{ role: "user", content: "fix it" }], createdAt: 0, updatedAt: 0 };
+    render(<Harness />);
+    expect(screen.getByText("No reply to this message.")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(vi.mocked(window.moss.chat.send).mock.calls[0][0].messages).toEqual([{ role: "user", content: "fix it" }]);
+  });
+
+  it("treats the same folder written differently as unchanged", () => {
+    mockSettings.workspaceRoot = "c:/Work/Proj-A/";
+    mockSession.value = { id: "s1", title: "Old chat", messages: [{ role: "user", content: "fix it" }], workspaceRoot: "C:\\work\\proj-a", createdAt: 0, updatedAt: 0 };
+    render(<Harness />);
+    expect(screen.queryByText(/This chat worked in/)).toBeNull();
+  });
+
+  it("shows saved reasoning collapsed above the reply", () => {
+    mockSession.value = {
+      id: "s1",
+      title: "New chat",
+      messages: [
+        { role: "user", content: "sum?" },
+        { role: "assistant", content: "391", reasoning: "17 times 23 is 391.", reasoningMs: 4_200 },
+      ],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    render(<Harness />);
+    expect(screen.getByText("Thought for 4 s")).toBeDefined();
+    expect(screen.getByText("17 times 23 is 391.").closest("details")?.open).toBe(false);
+  });
+
   it("renders streamed deltas as markdown, not literal text", () => {
     render(<Harness />);
     const turnId = startTurn();
@@ -1493,9 +1702,12 @@ describe("ChatPanel", () => {
     };
 
     render(<Harness />);
-    const card = screen.getByText("web_search").closest("details") as HTMLDetailsElement;
+    // The card reads as a sentence; the tool name stays with the raw arguments.
+    const card = screen.getByText("news").closest("details") as HTMLDetailsElement;
+    expect(card.querySelector("summary")?.textContent).toContain("Searched the web for news");
     expect(card.open).toBe(false);
-    fireEvent.click(screen.getByText("web_search"));
+    fireEvent.click(screen.getByText("news"));
+    expect(screen.getByText("web_search arguments")).toBeDefined();
     expect(card.open).toBe(true);
     expect(screen.getByText("result body")).toBeDefined();
   });
@@ -1713,10 +1925,12 @@ describe("ChatPanel", () => {
     const turnId = startTurn();
     emit(turnId, { type: "turn-complete", messages: [{ role: "assistant", content: "done" }] });
 
-    expect(mockSetSessionMessages).toHaveBeenCalledTimes(1);
-    expect(mockSetSessionMessages.mock.calls[0][0]).toBe("s1");
+    // The request is saved when it is sent, then the turn's messages when it ends.
+    expect(mockSetSessionMessages).toHaveBeenCalledTimes(2);
+    expect(mockSetSessionMessages.mock.calls[0]).toEqual(["s1", [{ role: "user", content: "hi there" }]]);
+    expect(mockSetSessionMessages.mock.calls[1][0]).toBe("s1");
     // The committed history must keep the user message, not just the reply.
-    expect(mockSetSessionMessages.mock.calls[0][1]).toEqual([
+    expect(mockSetSessionMessages.mock.calls[1][1]).toEqual([
       { role: "user", content: "hi there" },
       { role: "assistant", content: "done" },
     ]);
@@ -1771,8 +1985,8 @@ describe("ChatPanel", () => {
     rerender(<Harness />);
 
     expect(screen.queryByText(status)).toBeNull();
-    expect(mockSetSessionMessages).toHaveBeenCalledTimes(1);
-    expect(mockSetSessionMessages.mock.calls[0][0]).toBe("s1");
+    expect(mockSetSessionMessages).toHaveBeenCalledTimes(2);
+    expect(mockSetSessionMessages.mock.calls.every((call) => call[0] === "s1")).toBe(true);
     expect(window.moss.chat.send).toHaveBeenCalledTimes(1);
   });
 
@@ -1908,8 +2122,11 @@ describe("ChatPanel", () => {
       updatedAt: 0,
     };
     render(<Harness />);
-    // Two user bubbles -> two Regenerate buttons; the first re-runs from index 0.
+    // Two user bubbles -> two Regenerate buttons; the first re-runs from index 0,
+    // which removes the later exchange, so it asks first.
     fireEvent.click(screen.getAllByText("Regenerate")[0]);
+    expect(window.moss.chat.send).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate and remove 1 later exchange?" }));
     const req = (window.moss.chat.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(req.messages).toEqual([{ role: "user", content: "first" }]);
   });

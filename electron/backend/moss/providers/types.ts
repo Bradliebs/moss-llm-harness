@@ -19,6 +19,10 @@ export interface ChatRequest {
  *  renderer-facing `MossEvent` stream and the tool-execution loop. */
 export type ProviderStreamEvent =
   | { type: "text-delta"; text: string }
+  /** a thinking model's reasoning, shown to the user but never sent back to a model */
+  | { type: "reasoning-delta"; text: string }
+  /** the model has started writing a tool call (its arguments are still streaming) */
+  | { type: "tool-call-start"; name: string }
   | { type: "tool-call"; toolCall: { id: string; name: string; arguments: string } }
   | { type: "usage"; usage: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number } };
 

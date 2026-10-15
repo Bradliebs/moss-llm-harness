@@ -295,6 +295,12 @@ describe("SettingsPanel", () => {
     expect(settings.updateSettings).toHaveBeenCalledWith({ enableTools: false });
   });
 
+  it("turns thinking off for reasoning models", () => {
+    render(<SettingsPanel onClose={() => {}} />);
+    fireEvent.change(screen.getByRole("combobox", { name: /Thinking \(reasoning models\)/ }), { target: { value: "off" } });
+    expect(settings.updateSettings).toHaveBeenCalledWith({ thinking: "off" });
+  });
+
   it("turns on the project instruction files", () => {
     render(<SettingsPanel onClose={() => {}} />);
     fireEvent.click(screen.getByRole("checkbox", { name: /Use the project.s instruction files/ }));

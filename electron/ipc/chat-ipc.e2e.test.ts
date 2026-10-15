@@ -20,7 +20,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IPC } from "../../common/ipc-contract";
 import type { ChatEventPayload, ChatStartRequest, ModelPerformanceEntry, Procedure } from "../../common/types";
-import type { ChatProvider, ProviderStreamEvent } from "../backend/moss/providers/types";
+import type { ChatProvider, ChatRequest, ProviderStreamEvent } from "../backend/moss/providers/types";
 
 // Recording ipcMain so the test can invoke the registered channel handlers.
 const recorded = vi.hoisted(() => ({
@@ -160,6 +160,21 @@ describe("chat IPC turn (e2e)", () => {
     vi.spyOn(procedureStore, "recordOutcome").mockResolvedValue(undefined);
     offeredProcedures.length = 0;
     registerChatIpc();
+  });
+
+  it("asks the provider to skip thinking when the user turned it off", async () => {
+    const seen: ChatRequest[] = [];
+    mockProviderRef.current = {
+      kind: "test",
+      async *streamChat(chatRequest: ChatRequest): AsyncIterable<ProviderStreamEvent> {
+        seen.push(chatRequest);
+        yield { type: "text-delta", text: "391" };
+      },
+      listModels: async () => [],
+    };
+    recorded.on.get(IPC.chatStart)!(fakeEvent([]), request({ thinking: "off" }));
+    await tick();
+    expect(seen[0]?.reasoning).toBe("none");
   });
 
   it("streams a text turn back over IPC, every event tagged with the turn id", async () => {

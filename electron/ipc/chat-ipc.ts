@@ -705,7 +705,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     observeForEscalation?.(mossEvent);
     if (
       !firstResponseRecorded
-      && ["text-delta", "tool-call", "notice", "task-state"].includes(mossEvent.type)
+      && ["text-delta", "reasoning-delta", "tool-call", "notice", "task-state"].includes(mossEvent.type)
     ) {
       firstResponseRecorded = true;
       void productDiagnostics.record("first-response", { durationMs: Date.now() - startedAt, mission });
@@ -1150,6 +1150,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
     await runTurn({
       provider,
       model: req.config.model,
+      ...(req.thinking === "off" ? { reasoning: "none" as const } : {}),
       // The reminder goes after the turn context, at the very end.
       messages: applyScaffoldingMessages(messages, { ...scaffolding, userReminder: undefined }),
       ...(scaffolding.userReminder ? { userReminder: scaffolding.userReminder } : {}),
@@ -1254,6 +1255,9 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       terminalEvent = { type: "turn-error", source: "harness-orchestration", messages: terminalEvent?.messages ?? [],
         message: `Automation cleanup failed: ${cleanupFailures.map((result) => String(result.reason)).join("; ")}` };
     }
+    // Note what the turn left in each file it changed before the renderer can
+    // offer undo, so undo can spot later edits.
+    if (terminalEvent && req.workspaceRoot) await checkpointStore.seal(req.turnId);
     if (terminalEvent && !rendererUnavailable && !event.sender.isDestroyed()) {
       event.sender.send(IPC.chatEvent, { turnId: req.turnId, event: terminalEvent });
     }

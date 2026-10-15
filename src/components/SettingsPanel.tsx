@@ -594,7 +594,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
           </section>
 
           <SetupAssistant className={sectionClass("models", "set up this pc setup assistant ollama gpu vram detect recommend")} />
-          <section className={sectionClass("models", "provider model api key preset base url")}>
+          <section className={sectionClass("models", "provider model api key preset base url thinking reasoning")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Provider</h3>
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Preset</span>
@@ -676,6 +676,21 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
                   Load
                 </button>
               </div>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Thinking (reasoning models)</span>
+              <select
+                className="w-full rounded border border-neutral-300 bg-white px-2 py-1 dark:border-neutral-700 dark:bg-neutral-800"
+                value={settings.thinking ?? "auto"}
+                onChange={(e) => updateSettings({ thinking: e.target.value as "auto" | "off" })}
+              >
+                <option value="auto">Model default</option>
+                <option value="off">Off: answer without thinking first</option>
+              </select>
+              <span className="mt-1 block text-xs text-neutral-600 dark:text-neutral-400">
+                Models such as qwen3.5 think before every reply; turning it off can make replies several times faster on a
+                local model, sometimes at the cost of accuracy on harder tasks. Servers that do not support this ignore it.
+              </span>
             </label>
           </section>
 

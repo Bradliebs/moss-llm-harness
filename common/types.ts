@@ -434,6 +434,11 @@ export interface AgentMessage {
    *  notes). Replayed on later turns so the model sees the same text and the
    *  provider's prompt cache still matches. Never shown to the user. */
   modelContent?: string;
+  /** a thinking model's reasoning for this round, kept for display only (the
+   *  end of it when long); providers never send it back to a model */
+  reasoning?: string;
+  /** how long the model reasoned before answering or calling a tool */
+  reasoningMs?: number;
   /** on tool results that carry third-party content their tool name does not
    *  reveal (a subagent report); never sent to a provider */
   untrustedSources?: string[];
@@ -449,6 +454,9 @@ export interface AgentMessage {
    *  tool ran so an audit can show how long each call took. Absent on history
    *  saved before durations were tracked. */
   durationMs?: number;
+  /** whether the tool call failed, so a reloaded tool card shows the failure;
+   *  absent on history saved before this was recorded */
+  failed?: boolean;
   /** present on an assistant turn cut off by an error mid-stream; persisted so
    *  reloaded history shows it was interrupted rather than a complete reply */
   interrupted?: boolean;
@@ -514,6 +522,12 @@ export interface ToolDefinition {
 /** Normalized turn events emitted by the agent runner to the renderer. */
 export type MossEvent =
   | { type: "text-delta"; text: string }
+  /** a thinking model's reasoning as it streams; display only */
+  | { type: "reasoning-delta"; text: string }
+  /** A retried model call: drop the reasoning shown so far for this call. */
+  | { type: "reasoning-reset" }
+  /** the model is writing a call to this tool; the call itself follows */
+  | { type: "tool-call-start"; name: string }
   | { type: "token-usage"; usage: TokenUsage }
   | { type: "round-start"; round: number; toolsEnabled: boolean }
   | { type: "round-end"; round: number; toolCallCount: number; finish: "tools" | "complete" | "rejected" | "error" }
@@ -570,6 +584,8 @@ export interface ChatStartRequest {
   /** when true and a workspace is selected, the workspace's AGENTS.md, CLAUDE.md,
    *  or .github/copilot-instructions.md is added to the turn context as background */
   projectInstructions?: boolean;
+  /** "off" asks reasoning models to answer without a thinking phase */
+  thinking?: "auto" | "off";
   /** speech-to-text config for the transcribe_audio tool */
   stt?: SttConfig;
   /** email config for the send_email tool */

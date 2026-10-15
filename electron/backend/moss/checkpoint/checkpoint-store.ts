@@ -9,7 +9,8 @@
 // works after an app restart. Recording is best-effort: a snapshot failure is
 // logged and never propagated, so it cannot break the write it guards.
 
-import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -33,6 +34,35 @@ interface FileSnapshot {
   existed: boolean;
   /** pre-image contents, present only when existed is true */
   content: string;
+  /** sha256 of the file when the turn ended (null: it did not exist then);
+   *  absent until the turn settles, and on manifests saved before this existed */
+  afterHash?: string | null;
+}
+
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+async function currentHash(absPath: string): Promise<string | null> {
+  try {
+    return sha256(await readFile(absPath, "utf8"));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+/** Files larger than this are not hashed when a turn ends, so a huge file
+ *  cannot hold up "turn complete"; undo then restores them without the
+ *  changed-since check. */
+const SEAL_HASH_MAX_BYTES = 8 * 1024 * 1024;
+
+async function sealHash(absPath: string): Promise<string | null | undefined> {
+  try {
+    if ((await stat(absPath)).size > SEAL_HASH_MAX_BYTES) return undefined;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return undefined;
+  }
+  return currentHash(absPath).catch(() => undefined);
 }
 
 interface TurnCheckpoint {
@@ -55,6 +85,19 @@ function safeId(turnId: string): string {
 
 export class CheckpointStore {
   private cache = new Map<string, TurnCheckpoint>();
+  /** Seal and revert for one turn run one at a time, so a late seal cannot
+   *  write back a manifest that a revert just changed or removed. */
+  private queues = new Map<string, Promise<unknown>>();
+
+  private serial<T>(turnId: string, run: () => Promise<T>): Promise<T> {
+    const next = (this.queues.get(turnId) ?? Promise.resolve()).then(run, run);
+    const settled = next.catch(() => undefined);
+    this.queues.set(turnId, settled);
+    void settled.then(() => {
+      if (this.queues.get(turnId) === settled) this.queues.delete(turnId);
+    });
+    return next;
+  }
 
   /** baseDir override exists for tests; production uses Electron userData. */
   constructor(private readonly baseDir?: string) {}
@@ -123,15 +166,48 @@ export class CheckpointStore {
     return turn.files.map((f) => ({ path: f.relPath, existed: f.existed }));
   }
 
-  /** Restore every recorded pre-image, then discard the manifest so a turn
-   *  cannot be reverted twice. Per-file failures are collected, not thrown. */
-  async revert(turnId: string): Promise<CheckpointRevertResult> {
+  /** Note each changed file's content when the turn ends, so a later undo can
+   *  tell whether something else has changed it since. */
+  seal(turnId: string): Promise<void> {
+    return this.serial(turnId, () => this.sealNow(turnId));
+  }
+
+  private async sealNow(turnId: string): Promise<void> {
+    try {
+      const turn = await this.loadTurn(turnId);
+      if (!turn || turn.files.length === 0) return;
+      const hashes = await Promise.all(turn.files.map((f) => sealHash(f.absPath)));
+      turn.files.forEach((f, index) => {
+        if (hashes[index] !== undefined) f.afterHash = hashes[index];
+      });
+      await this.saveTurn(turn);
+    } catch (err) {
+      log.error("failed to seal checkpoint", err);
+    }
+  }
+
+  /** Restore every recorded pre-image and drop it from the manifest so a file
+   *  cannot be reverted twice. A file that changed after the turn (a later
+   *  turn, or the user's own editing) is left as it is and reported, so undo
+   *  never destroys newer work; it stays in the manifest so undo can be tried
+   *  again later. Per-file failures are collected, not thrown. */
+  revert(turnId: string): Promise<CheckpointRevertResult> {
+    return this.serial(turnId, () => this.revertNow(turnId));
+  }
+
+  private async revertNow(turnId: string): Promise<CheckpointRevertResult> {
     const turn = await this.loadTurn(turnId);
     if (!turn || turn.files.length === 0) return { reverted: 0, errors: [] };
     let reverted = 0;
     const errors: string[] = [];
+    const remaining: FileSnapshot[] = [];
     for (const f of turn.files) {
       try {
+        if (f.afterHash !== undefined && (await currentHash(f.absPath)) !== f.afterHash) {
+          errors.push(`${f.relPath}: changed after this turn, so it was left as it is`);
+          remaining.push(f);
+          continue;
+        }
         if (f.existed) {
           await mkdir(dirname(f.absPath), { recursive: true });
           await writeFile(f.absPath, f.content, "utf8");
@@ -143,10 +219,16 @@ export class CheckpointStore {
         reverted++;
       } catch (err) {
         errors.push(`${f.relPath}: ${err instanceof Error ? err.message : String(err)}`);
+        remaining.push(f);
       }
     }
-    this.cache.delete(turnId);
-    await rm(this.file(turnId), { force: true }).catch(() => undefined);
+    if (remaining.length > 0) {
+      turn.files = remaining;
+      await this.saveTurn(turn).catch((err) => log.error("failed to update checkpoint", err));
+    } else {
+      this.cache.delete(turnId);
+      await rm(this.file(turnId), { force: true }).catch(() => undefined);
+    }
     return { reverted, errors };
   }
 

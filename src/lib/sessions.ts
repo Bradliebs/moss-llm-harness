@@ -18,6 +18,9 @@ export interface Session {
   updatedAt: string;
   /** per-chat personality override; undefined inherits the global default */
   personalityId?: string;
+  /** the workspace folder this chat's tools worked in, so reopening it after
+   *  switching projects can warn before tools run somewhere else */
+  workspaceRoot?: string;
   taskId?: string;
   /** pinned conversations sort above the rest of the list */
   pinned?: boolean;
@@ -83,6 +86,20 @@ export function getSessionPersonality(id: string): string | undefined {
 /** Read a session's current title outside of render. */
 export function getSessionTitle(id: string): string | undefined {
   return sessionsState.get().sessions.find((s) => s.id === id)?.title;
+}
+
+export function getSessionWorkspace(id: string): string | undefined {
+  return sessionsState.get().sessions.find((session) => session.id === id)?.workspaceRoot;
+}
+
+/** Remember the folder a conversation's tools worked in, so switching folders
+ *  later can be pointed out. */
+export function setSessionWorkspace(id: string, workspaceRoot: string | undefined): void {
+  if (sessionsState.get().sessions.find((session) => session.id === id)?.workspaceRoot === workspaceRoot) return;
+  sessionsState.update((prev) => ({
+    ...prev,
+    sessions: prev.sessions.map((s) => (s.id === id ? { ...s, workspaceRoot } : s)),
+  }));
 }
 
 /** Set a session's personality override, or clear it (undefined) to inherit the
@@ -372,6 +389,7 @@ export function continueInNewSession(id: string, modelSummary?: string): string 
         createdAt: now,
         updatedAt: now,
         ...(source.personalityId ? { personalityId: source.personalityId } : {}),
+        ...(source.workspaceRoot ? { workspaceRoot: source.workspaceRoot } : {}),
         // Working state is authoritative and must survive the handoff intact.
         ...(source.workingState?.entries.length ? { workingState: structuredClone(source.workingState) } : {}),
       },

@@ -1,7 +1,8 @@
 // src/components/ChatPanel.tsx
 
+import { onPersistResult } from "../lib/persistentStore";
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Check, ChevronDown, Copy, Eraser, FileText, Folder, Forward, ListChecks, Menu, PanelRightOpen, RefreshCw, Settings as SettingsIcon, X } from "lucide-react";
+import { ArrowDown, Brain, Check, ChevronDown, LoaderCircle, Copy, Eraser, FileText, Folder, Forward, ListChecks, Menu, PanelRightOpen, RefreshCw, Settings as SettingsIcon, X } from "lucide-react";
 
 import type { AgentMessage, ApprovalProvenance, ChatEventPayload, ConfidenceMode, DocumentAttachment, MissionCapabilityDescriptor, MissionLaunchPolicy, Skill, TaskBudget, TaskHistoryEntry, TaskSnapshot, TaskSpec, TokenUsage } from "@common/types";
 import { PERSONALITY_PRESETS } from "@common/personalities";
@@ -30,6 +31,7 @@ import {
   sessionToolAudit,
   setSessionMessages,
   setSessionPersonality,
+  setSessionWorkspace,
   setSessionTaskId,
   setSessionTitle,
   setSessionTrustedThrough,
@@ -49,6 +51,7 @@ import { criticSetup, MissionContractEditor, missionContractIssues, type Mission
 import { RichResponse } from "./RichResponse";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { ToolActivity } from "./ToolActivity";
+import { summarizeToolCall } from "../lib/toolPreview";
 import { ToolPreview } from "./ToolPreview";
 import { TurnDecisions } from "./TurnDecisions";
 import { TurnUndo } from "./TurnUndo";
@@ -111,7 +114,46 @@ interface MessageView {
   handoff?: boolean;
 }
 
-type ViewItem = MessageView | ToolView;
+/** A thinking model's reasoning: live while it streams, then "Thought for N s". */
+interface ThinkingView {
+  kind: "thinking";
+  text: string;
+  /** set while live */
+  startedAt?: number;
+  /** set once the model moves on to answering or calling a tool */
+  durationMs?: number;
+}
+
+type ViewItem = MessageView | ToolView | ThinkingView;
+
+/** Mark a still-open thinking block as finished. */
+function closeThinking(items: ViewItem[]): ViewItem[] {
+  const last = items[items.length - 1];
+  if (!last || last.kind !== "thinking" || last.durationMs !== undefined) return items;
+  return [...items.slice(0, -1), { ...last, durationMs: Date.now() - (last.startedAt ?? Date.now()) }];
+}
+
+function ThinkingBlock({ item, now }: { item: ThinkingView; now: number }): React.ReactElement {
+  const live = item.durationMs === undefined;
+  const seconds = Math.max(1, Math.round((live ? now - (item.startedAt ?? now) : item.durationMs ?? 0) / 1000));
+  const preview = live ? item.text.trim().split("\n").filter((line) => line.trim()).at(-1) ?? "" : "";
+  return (
+    // Finished thinking is a quiet one-line row so it does not crowd the tool cards.
+    <details className={`group w-full animate-fade-in text-sm ${live ? "rounded-lg border border-neutral-300/60 bg-white/60 dark:border-neutral-700/60 dark:bg-neutral-900/60" : "rounded-md open:border open:border-neutral-300/60 open:bg-white/60 dark:open:border-neutral-700/60 dark:open:bg-neutral-900/60"}`}>
+      <summary className={`flex cursor-pointer list-none items-center gap-2 marker:hidden ${live ? "px-3 py-2" : "px-3 py-0.5"}`} title="The model's reasoning before it answers. To skip this phase, set Thinking to Off in Settings > Models.">
+        {live
+          ? <LoaderCircle size={14} className="shrink-0 animate-spin text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+          : <Brain size={14} className="shrink-0 text-neutral-600 dark:text-neutral-400" aria-hidden="true" />}
+        <span className="shrink-0 text-xs font-medium text-neutral-700 dark:text-neutral-300">{live ? `Thinking · ${seconds} s` : `Thought for ${seconds} s`}</span>
+        <span className="min-w-0 flex-1 truncate text-xs italic text-neutral-600 dark:text-neutral-400">{preview}</span>
+        <ChevronDown size={14} className="shrink-0 text-neutral-600 transition-transform duration-150 group-open:rotate-180 dark:text-neutral-400" aria-hidden="true" />
+      </summary>
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-neutral-200/70 px-3 py-2 font-sans text-xs leading-relaxed text-neutral-700 dark:border-neutral-700/70 dark:text-neutral-300">
+        {item.text.trim()}
+      </pre>
+    </details>
+  );
+}
 
 interface MissionLaunch {
   spec: TaskSpec;
@@ -142,6 +184,7 @@ function ToolCard({
   const [approvalComment, setApprovalComment] = useState("");
   const active = tool.status === "running" || tool.status === "approval";
   const failure = tool.status === "error" || tool.status === "done" ? explainToolFailure(tool.result) : null;
+  const summary = summarizeToolCall(tool.name, tool.args, tool.status);
 
   useEffect(() => {
     if (detailsRef.current) detailsRef.current.open = active;
@@ -161,10 +204,18 @@ function ToolCard({
         className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 marker:hidden"
         title={`${tool.name}(${tool.args})`}
       >
-        <span className="font-mono text-xs text-emerald-700 dark:text-emerald-300">{tool.name}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-neutral-600 dark:text-neutral-400">
-          {tool.args}
-        </span>
+        {summary ? (
+          <span className="min-w-0 flex-1 truncate text-xs text-neutral-800 dark:text-neutral-200">
+            {summary.action} <code className="font-mono text-emerald-800 dark:text-emerald-300">{summary.target}</code>
+          </span>
+        ) : (
+          <>
+            <span className="font-mono text-xs text-emerald-700 dark:text-emerald-300">{tool.name}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-xs text-neutral-600 dark:text-neutral-400">
+              {tool.args}
+            </span>
+          </>
+        )}
         {tool.autoApproved ? (
           <span
             className="rounded-full border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 font-sans text-[10px] font-medium text-amber-700 dark:text-amber-300"
@@ -213,9 +264,20 @@ function ToolCard({
               </pre>
             </details>
           </>
+        ) : tool.name === "edit_file" && tool.status !== "error" ? (
+          // The change itself, as a diff, like the approval preview shows it.
+          <>
+            <ToolPreview name={tool.name} args={tool.args} workspaceRoot={workspaceRoot} />
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[10px] text-neutral-600 dark:text-neutral-300">Raw arguments</summary>
+              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">
+                {tool.args}
+              </pre>
+            </details>
+          </>
         ) : (
           <>
-            <div className="text-[10px] font-medium uppercase text-neutral-600 dark:text-neutral-400">Arguments</div>
+            <div className="text-[10px] font-medium uppercase text-neutral-600 dark:text-neutral-400">{summary ? `${tool.name} arguments` : "Arguments"}</div>
             <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-2 text-xs text-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">
               {tool.args}
             </pre>
@@ -295,8 +357,11 @@ function formatTokens(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-function ResponseActions({ content, onRegenerate }: { content: string; onRegenerate?: () => void }): React.ReactElement {
+/** `laterExchanges`: exchanges after this one that regenerating removes; when
+ *  any, the first click asks and the second regenerates. */
+function ResponseActions({ content, onRegenerate, laterExchanges = 0 }: { content: string; onRegenerate?: () => void; laterExchanges?: number }): React.ReactElement {
   const [copied, setCopied] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -319,8 +384,23 @@ function ResponseActions({ content, onRegenerate }: { content: string; onRegener
       >
         {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
       </button>
-      {onRegenerate ? (
-        <button type="button" aria-label="Regenerate response" title="Regenerate response" onClick={onRegenerate}>
+      {onRegenerate && confirming ? (
+        <button
+          type="button"
+          className="!w-auto rounded-md !bg-red-700 px-2 text-xs font-medium !text-white hover:!bg-red-800"
+          onClick={() => { setConfirming(false); onRegenerate(); }}
+          onBlur={() => setConfirming(false)}
+          autoFocus
+        >
+          Regenerate and remove {exchanges(laterExchanges)}?
+        </button>
+      ) : onRegenerate ? (
+        <button
+          type="button"
+          aria-label="Regenerate response"
+          title={laterExchanges > 0 ? `Regenerate response (removes the ${exchanges(laterExchanges)}; asks first)` : "Regenerate response"}
+          onClick={() => (laterExchanges > 0 ? setConfirming(true) : onRegenerate())}
+        >
           <RefreshCw size={14} aria-hidden="true" />
         </button>
       ) : null}
@@ -371,12 +451,25 @@ function markLastAssistantInterrupted(messages: AgentMessage[]): AgentMessage[] 
   return messages.map((m, i) => (i === lastAssistant ? { ...m, interrupted: true } : m));
 }
 
+/** Exchanges (your later messages and their replies) after the one that
+ *  starts at `userIndex`: what regenerating it removes. */
+function laterThan(history: readonly AgentMessage[], userIndex: number): number {
+  return history.filter((message, index) => index > userIndex && message.role === "user").length;
+}
+
+const exchanges = (count: number): string => `${count} later exchange${count === 1 ? "" : "s"}`;
+
+/** For tool results saved before failures were recorded: the clear signs of one. */
+function looksFailed(content: string): boolean {
+  return /\[exit code \d+\]\s*$/.test(content) || /^User denied: /.test(content) || /^Tool '[^']+' timed out after/.test(content);
+}
+
 function messagesToItems(messages: AgentMessage[]): ViewItem[] {
   const items: ViewItem[] = [];
-  const toolResults = new Map<string, { content: string; autoApproved?: boolean }>();
+  const toolResults = new Map<string, { content: string; autoApproved?: boolean; failed?: boolean }>();
   for (const m of messages) {
     if (m.role === "tool" && m.toolCallId) {
-      toolResults.set(m.toolCallId, { content: m.content, autoApproved: m.autoApproved });
+      toolResults.set(m.toolCallId, { content: m.content, autoApproved: m.autoApproved, failed: m.failed });
     }
   }
   // A turn spans a user message and the assistant/tool messages that answer it.
@@ -410,6 +503,7 @@ function messagesToItems(messages: AgentMessage[]): ViewItem[] {
       items.push({ kind: "message", role: "user", content: m.content, images: m.images, documents: m.documents, historyIndex: mi, handoff: m.handoff });
     } else if (m.role === "assistant") {
       if (m.turnId) turnId = m.turnId;
+      if (m.reasoning) items.push({ kind: "thinking", text: m.reasoning, durationMs: m.reasoningMs ?? 0 });
       if (m.usage) {
         turnInput += m.usage.inputTokens ?? 0;
         turnOutput += m.usage.outputTokens ?? 0;
@@ -436,7 +530,7 @@ function messagesToItems(messages: AgentMessage[]): ViewItem[] {
           callId: tc.id,
           name: tc.name,
           args: tc.arguments,
-          status: "done",
+          status: tr?.failed ?? (tr ? looksFailed(tr.content) : false) ? "error" : "done",
           result: tr?.content,
           autoApproved: tr?.autoApproved,
         });
@@ -460,6 +554,17 @@ const HEADER_BUTTON =
   "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-neutral-300 px-2 text-neutral-700 transition-colors duration-150 hover:bg-neutral-200 hover:text-neutral-900 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-white";
 
 /** The last folder of a workspace path, which is what tells workspaces apart. */
+/** Whether two folder paths name the same folder, ignoring a trailing
+ *  separator, slash direction, and (on Windows-style paths) letter case. */
+function samePath(a: string, b: string | null | undefined): boolean {
+  if (!b) return false;
+  const norm = (path: string): string => {
+    const trimmed = path.replace(/[\\/]+$/, "").replace(/\\/g, "/");
+    return /^[a-zA-Z]:/.test(trimmed) || path.includes("\\") ? trimmed.toLowerCase() : trimmed;
+  };
+  return norm(a) === norm(b);
+}
+
 function workspaceName(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 }
@@ -566,13 +671,68 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const skillMenuOpen = !skillMenuDismissed && slashMatch !== null && matchingSkills.length > 0;
   const slashActive = slashMatch !== null;
 
+  // A save that fails (storage full) would otherwise lose recent changes on
+  // restart. The warning has its own state so turn status updates cannot hide
+  // it; it clears once that store saves again.
+  const [persistErrorKey, setPersistErrorKey] = useState<string | null>(null);
+  useEffect(() => {
+    onPersistResult((key, ok) => setPersistErrorKey((prev) => (ok ? (prev === key ? null : prev) : key)));
+    return () => onPersistResult(undefined);
+  }, []);
+  // While a turn runs: a once-a-second clock for elapsed times, and when the
+  // model last showed any sign of life.
+  const [now, setNow] = useState(0);
+  const [lastEventAt, setLastEventAt] = useState(0);
+  // The tool call the model is writing, while its arguments stream in.
+  const [preparingTool, setPreparingTool] = useState<string | null>(null);
+  useEffect(() => {
+    setPreparingTool(null);
+    if (!busy) return;
+    const started = Date.now();
+    setLastEventAt(started);
+    setNow(started);
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [busy]);
+  // Clearing a conversation takes a second click on the same button.
+  const [confirmClear, setConfirmClear] = useState(false);
+  // Regenerating an earlier prompt removes what follows it, so it asks first.
+  const [confirmRegenerateAt, setConfirmRegenerateAt] = useState<number | null>(null);
   // Follow new output only while the reader is at the end; scrolling up to read
   // stops it, and a "Jump to latest" button appears instead. Sending a message
   // or opening another conversation always goes to the end.
-  // Clearing a conversation takes a second click on the same button.
-  const [confirmClear, setConfirmClear] = useState(false);
   const followRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
+  // Content can grow after it renders (code highlighting, a file list that
+  // loads later), so a size change also keeps the end in view while following.
+  // Growth right after a click or key press is the reader opening something,
+  // which stays where it is.
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    let actedAt = 0;
+    const acted = (): void => {
+      actedAt = performance.now();
+    };
+    element.addEventListener("pointerdown", acted);
+    element.addEventListener("keydown", acted);
+    const resize = new ResizeObserver(() => {
+      if (followRef.current && performance.now() - actedAt > 600) element.scrollTop = element.scrollHeight;
+    });
+    const watch = (): void => {
+      resize.disconnect();
+      for (const child of Array.from(element.children)) resize.observe(child);
+    };
+    watch();
+    const mutation = new MutationObserver(watch);
+    mutation.observe(element, { childList: true });
+    return () => {
+      element.removeEventListener("pointerdown", acted);
+      element.removeEventListener("keydown", acted);
+      resize.disconnect();
+      mutation.disconnect();
+    };
+  }, []);
   useEffect(() => {
     if (pendingUser) followRef.current = true;
   }, [pendingUser]);
@@ -742,6 +902,9 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
 
   function handleEvent(payload: ChatEventPayload): void {
     const ev = payload.event;
+    setLastEventAt(Date.now());
+    if (ev.type === "tool-call-start") setPreparingTool(ev.name);
+    else if (ev.type !== "token-usage" && ev.type !== "harness-decision") setPreparingTool(null);
     if (ev.type === "task-state") {
       const sessionId = taskSessionRef.current;
       if (sessionId) setSessionTaskId(sessionId, ev.task.id);
@@ -750,9 +913,22 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         notifyBackground("Mission blocked", () => `${conversationLabel(sessionId)}: ${ev.task.blocker?.summary ?? "Needs your attention"}`, sessionId);
       }
       if (["completed", "failed", "cancelled"].includes(ev.task.state)) taskTurnIdRef.current = null;
+    } else if (ev.type === "reasoning-reset") {
+      setActivity((prev) => {
+        const last = prev[prev.length - 1];
+        return last && last.kind === "thinking" && last.durationMs === undefined ? prev.slice(0, -1) : prev;
+      });
+    } else if (ev.type === "reasoning-delta") {
+      setActivity((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.kind === "thinking" && last.durationMs === undefined) {
+          return [...prev.slice(0, -1), { ...last, text: last.text + ev.text }];
+        }
+        return [...prev, { kind: "thinking", text: ev.text, startedAt: Date.now() }];
+      });
     } else if (ev.type === "text-delta") {
       setActivity((prev) => {
-        const next = [...prev];
+        const next = [...closeThinking(prev)];
         const last = next[next.length - 1];
         if (last && last.kind === "message" && last.role === "assistant") {
           next[next.length - 1] = { ...last, content: last.content + ev.text };
@@ -763,7 +939,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       });
     } else if (ev.type === "tool-call") {
       setActivity((prev) => [
-        ...prev,
+        ...closeThinking(prev),
         { kind: "tool", callId: ev.callId, name: ev.name, args: ev.arguments, status: "running" },
       ]);
     } else if (ev.type === "tool-approval-request") {
@@ -873,6 +1049,12 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     turnBaseRef.current = base;
     turnPendingUserRef.current = userMsg;
     setPendingUser(userMsg);
+    // Save the request now, so quitting or a crash mid-turn does not lose it;
+    // the turn's messages are added when it ends.
+    setSessionMessages(sessionId, [...base, userMsg]);
+    // Remember which folder this chat's tools work in (the banner above the
+    // composer has already pointed out a change).
+    if (activeSettings.enableTools && activeSettings.workspaceRoot) setSessionWorkspace(sessionId, activeSettings.workspaceRoot);
     setActivity([]);
     setBusy(true);
     setStatus("");
@@ -904,6 +1086,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       personalityId: getSessionPersonality(sessionId) ?? activeSettings.personalityId,
       adaptiveTone: activeSettings.adaptiveTone,
       projectInstructions: activeSettings.projectInstructions,
+      thinking: activeSettings.thinking,
       stt: {
         baseUrl: (activeSettings.sttBaseUrl || activeSettings.baseUrl || "").trim(),
         apiKey: activeSettings.apiKey || undefined,
@@ -1162,6 +1345,11 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
 
   /** Re-run the user turn at the given history index, dropping that turn's
    *  reply (and any tool messages) so the model answers the same prompt again. */
+  function confirmRegenerate(userIndex: number): void {
+    setConfirmRegenerateAt(null);
+    regenerateAt(userIndex);
+  }
+
   function regenerateAt(userIndex: number): void {
     if (busy || !settings.model) return;
     const sessionId = current?.id;
@@ -1371,15 +1559,35 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     );
   }
 
+  // A chat reopened after switching projects would run its tools somewhere new.
+  const workspaceMoved = !busy && settings.enableTools && !!current?.workspaceRoot && !samePath(current.workspaceRoot, settings.workspaceRoot);
+  // Rebuilt only when the saved history changes, not on every streamed token.
+  const historyItems = useMemo(() => messagesToItems(history), [history]);
   const turnActiveElsewhere = busy && !!activeTurnSessionId && activeTurnSessionId !== current?.id;
   const ownsActiveTurn = !busy || activeTurnSessionId === current?.id;
   const items: ViewItem[] = [
-    ...messagesToItems(history),
-    ...(ownsActiveTurn && pendingUser ? [{ kind: "message", role: "user", content: pendingUser.content, images: pendingUser.images, documents: pendingUser.documents } as MessageView] : []),
+    ...historyItems,
+    ...(ownsActiveTurn && pendingUser && history[history.length - 1] !== pendingUser ? [{ kind: "message", role: "user", content: pendingUser.content, images: pendingUser.images, documents: pendingUser.documents } as MessageView] : []),
     ...(ownsActiveTurn ? activity : []),
   ];
 
   const showWelcome = items.length === 0;
+  // Between visible steps (before the first token, after a tool result), say
+  // what the turn is waiting on instead of showing nothing.
+  const lastItem = items[items.length - 1];
+  const visiblyWorking = !!lastItem && (
+    (lastItem.kind === "message" && lastItem.role === "assistant")
+    || (lastItem.kind === "thinking" && lastItem.durationMs === undefined)
+    || (lastItem.kind === "tool" && (lastItem.status === "running" || lastItem.status === "approval"))
+  );
+  // Only offered once this chat has shown the model thinking (or it is off), so
+  // models that never think do not get a switch that does nothing.
+  const showThinkingToggle = settings.thinking === "off" || history.some((message) => !!message.reasoning) || activity.some((item) => item.kind === "thinking");
+  // With routing or escalation set up, another model may be answering.
+  const waitingFor = settings.fastModel || settings.escalationModel || settings.fastRoute || settings.escalationRoute ? "the model" : settings.model || "the model";
+  const waitingSeconds = busy && ownsActiveTurn && (preparingTool !== null || !visiblyWorking)
+    ? Math.max(0, Math.round((now - lastEventAt) / 1000))
+    : null;
   const selectedArtifact = artifactSelection?.sessionId === current?.id && artifactSelection?.taskId === task?.id
     ? task?.artifacts?.find((artifact) => artifact.id === artifactSelection?.id)
     : undefined;
@@ -1425,14 +1633,17 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             ))}
           </select>
         ) : (
+          // Without a loaded model list, still name the model in use rather than
+          // suggest that nothing is set up.
           <button
             className={HEADER_BUTTON}
-            onClick={() => onOpenSettings()}
+            onClick={() => onOpenSettings("models")}
+            title={settings.model ? "Change the model or provider in Settings" : undefined}
           >
-            Set up provider…
+            {settings.model || "Set up provider…"}
+            {settings.model ? <ChevronDown size={14} aria-hidden="true" /> : null}
           </button>
         )}
-        {settings.model && models.length === 0 ? <span className="text-xs text-neutral-600 dark:text-neutral-400">{settings.model}</span> : null}
         {current ? (
           <select
             className="hidden w-40 rounded-md border border-neutral-300 dark:border-neutral-700/60 bg-white dark:bg-neutral-800 px-2 py-1 transition focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)] sm:block"
@@ -1660,7 +1871,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                   key={`${current?.id}:${i}`}
                   content={it.content}
                   streaming={busy && i === items.length - 1}
-                  onCopy={(text) => copyToClipboard(text)}
+                  onCopy={copyToClipboard}
                 />
               ) : it.content}
               {it.role === "user" && it.images && it.images.length > 0 ? (
@@ -1701,13 +1912,24 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                   >
                     Edit
                   </button>
-                  <button
-                    className="rounded px-1.5 py-0.5 hover:bg-emerald-600/15 hover:text-emerald-950 dark:hover:text-emerald-50"
-                    onClick={() => regenerateAt(it.historyIndex!)}
-                    title="Re-run this prompt to get a fresh reply, dropping everything after it."
-                  >
-                    Regenerate
-                  </button>
+                  {confirmRegenerateAt === it.historyIndex ? (
+                    <button
+                      className="rounded bg-red-700 px-1.5 py-0.5 font-medium text-white hover:bg-red-800"
+                      onClick={() => confirmRegenerate(it.historyIndex!)}
+                      onBlur={() => setConfirmRegenerateAt(null)}
+                      autoFocus
+                    >
+                      Regenerate and remove {exchanges(laterThan(history, it.historyIndex))}?
+                    </button>
+                  ) : (
+                    <button
+                      className="rounded px-1.5 py-0.5 hover:bg-emerald-600/15 hover:text-emerald-950 dark:hover:text-emerald-50"
+                      onClick={() => (laterThan(history, it.historyIndex!) > 0 ? setConfirmRegenerateAt(it.historyIndex!) : regenerateAt(it.historyIndex!))}
+                      title="Re-run this prompt to get a fresh reply, dropping everything after it. Asks first when later exchanges would be removed."
+                    >
+                      Regenerate
+                    </button>
+                  )}
                 </div>
               ) : null}
               {it.role === "assistant" && it.content ? (
@@ -1715,6 +1937,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                   <ResponseActions
                     content={it.content}
                     onRegenerate={it.sourceUserIndex !== undefined && !busy ? () => regenerateAt(it.sourceUserIndex!) : undefined}
+                    laterExchanges={it.sourceUserIndex !== undefined ? laterThan(history, it.sourceUserIndex) : 0}
                   />
                   <div className="response-usage">
                     {it.usage && (it.usage.inputTokens || it.usage.outputTokens) ? (
@@ -1733,6 +1956,10 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
               {it.role === "assistant" && it.turnId ? <TurnDecisions turnId={it.turnId} onOpenSettings={onOpenSettings} /> : null}
               {it.role === "assistant" && it.turnId ? <TurnUndo turnId={it.turnId} /> : null}
             </div>
+          ) : it.kind === "thinking" ? (
+            <div key={i} className="mx-auto w-full max-w-[52rem] sm:pl-11">
+              <ThinkingBlock item={it} now={now} />
+            </div>
           ) : (
             // In the same column as the answers, so a turn reads top to bottom.
             <div key={i} className="mx-auto w-full max-w-[52rem] sm:pl-11">
@@ -1741,6 +1968,26 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           )
           );
         }))}
+        {!busy && history.at(-1)?.role === "user" ? (
+          // A turn that ended without any reply (Moss closed, or the call failed).
+          <div className="mx-auto flex w-full max-w-[52rem] items-center gap-2 text-xs text-neutral-600 sm:pl-11 dark:text-neutral-400">
+            No reply to this message.
+            <button
+              type="button"
+              className="rounded border border-neutral-300 px-2 py-0.5 font-medium text-neutral-800 hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-100 dark:hover:bg-neutral-800"
+              disabled={!settings.model}
+              onClick={() => regenerateAt(history.length - 1)}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {waitingSeconds !== null ? (
+          <div className="mx-auto flex w-full max-w-[52rem] items-center gap-2 text-xs text-neutral-600 sm:pl-11 dark:text-neutral-400" role="status">
+            <LoaderCircle size={14} className="animate-spin text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+            {preparingTool ? `Writing a ${preparingTool} call` : `Waiting for ${waitingFor}`} · {waitingSeconds} s
+          </div>
+        ) : null}
       </div>
 
       {showJump ? (
@@ -1752,6 +1999,25 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           >
             <ArrowDown size={14} aria-hidden="true" />
             Jump to latest
+          </button>
+        </div>
+      ) : null}
+      {persistErrorKey ? (
+        <div className="mx-4 mb-2 rounded-md border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs text-red-900 dark:text-red-100" role="alert">
+          Moss could not save its {persistErrorKey === "moss.sessions" ? "conversations" : persistErrorKey === "moss.settings" ? "settings" : "data"}; changes since then will be lost when Moss closes. Export important conversations and delete large ones to free space.
+        </div>
+      ) : null}
+      {workspaceMoved && current?.workspaceRoot ? (
+        <div className="mx-4 mb-2 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200" role="status">
+          <span className="min-w-0 flex-1">
+            This chat worked in <code title={current.workspaceRoot}>{workspaceName(current.workspaceRoot)}</code>; tools now use{" "}
+            <code title={settings.workspaceRoot ?? ""}>{settings.workspaceRoot ? workspaceName(settings.workspaceRoot) : "no folder"}</code>.
+          </span>
+          <button type="button" className="rounded border border-amber-600/50 px-2 py-0.5 font-medium hover:bg-amber-500/20" onClick={() => updateSettings({ workspaceRoot: current.workspaceRoot ?? null })}>
+            Switch back to {workspaceName(current.workspaceRoot)}
+          </button>
+          <button type="button" className="rounded px-2 py-0.5 underline hover:no-underline" onClick={() => setSessionWorkspace(current.id, settings.workspaceRoot ?? undefined)}>
+            Keep the current folder
           </button>
         </div>
       ) : null}
@@ -1793,6 +2059,17 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
             cancelEdit();
             return;
           }
+          // Up in an empty box brings back the last message to edit and resend.
+          if (event.key === "ArrowUp" && !input && !busy) {
+            const last = [...history].reverse().find((message) => message.role === "user");
+            if (last?.content) {
+              event.preventDefault();
+              setInput(last.content);
+            }
+            return;
+          }
+          // Enter while an input method is composing (Chinese, Japanese, Korean) confirms the text, not the message.
+          if (event.key === "Enter" && (event.nativeEvent.isComposing || event.keyCode === 229)) return;
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             if (skillMenuOpen) {
@@ -1816,6 +2093,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         busy={busy && ownsActiveTurn}
         interruptQueued={interruptQueued}
         modelSelected={!!settings.model && !turnActiveElsewhere}
+        activeElsewhere={turnActiveElsewhere}
+        thinking={showThinkingToggle ? { on: settings.thinking !== "off", onToggle: () => updateSettings({ thinking: settings.thinking === "off" ? "auto" : "off" }) } : undefined}
         pendingAttachmentReads={pendingAttachmentReads}
         hasSendContent={!!input.trim() || attachments.length > 0 || documents.length > 0}
         launchBlocked={composerMode === "mission" && (

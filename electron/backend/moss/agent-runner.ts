@@ -104,6 +104,8 @@ export interface RunTurnOptions {
   maxRounds?: number;
   /** Provider output-token ceiling for each model round. */
   maxOutputTokens?: number;
+  /** "none" asks a reasoning model to answer without a thinking phase */
+  reasoning?: "none";
   /** base backoff for stream-failure retries (ms); overridable for tests. */
   streamRetryBaseMs?: number;
   /** Override for declared cooperative tool deadlines; used by tests and
@@ -415,10 +417,17 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
       // been shown, a retry would duplicate it, so we let the error propagate.
       let transientAttempts = 0;
       let overflowRecoveryAttempted = false;
+      let roundReasoning = "";
+      let reasoningStartedAt = 0;
+      let reasoningEndedAt = 0;
       for (;;) {
         failureSource = "provider-model";
         pendingText = "";
         calls = [];
+        // A retry streams its reasoning again from the start.
+        if (roundReasoning) onEvent({ type: "reasoning-reset" });
+        roundReasoning = "";
+        reasoningStartedAt = 0;
         let usageIn = 0;
         let usageOut = 0;
         let usageCached = 0;
@@ -430,11 +439,19 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
             messages: conversation,
             tools: roundTools,
             ...(opts.maxOutputTokens ? { maxTokens: opts.maxOutputTokens } : {}),
+            ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
           }, signal)) {
             if (signal.aborted) break;
             if (ev.type === "text-delta") {
               pendingText += ev.text;
               onEvent({ type: "text-delta", text: ev.text });
+            } else if (ev.type === "reasoning-delta") {
+              if (!reasoningStartedAt) reasoningStartedAt = Date.now();
+              reasoningEndedAt = Date.now();
+              roundReasoning += ev.text;
+              onEvent({ type: "reasoning-delta", text: ev.text });
+            } else if (ev.type === "tool-call-start") {
+              onEvent({ type: "tool-call-start", name: ev.name });
             } else if (ev.type === "tool-call") {
               calls.push({ id: ev.toolCall.id, name: ev.toolCall.name, arguments: ev.toolCall.arguments });
             } else if (ev.type === "usage") {
@@ -488,6 +505,16 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
       }
 
       if (signal.aborted) {
+        // Keep what the user already watched stream in, marked as cut short.
+        // (Reasoning alone is not kept: an empty reply is invalid to send back.)
+        if (pendingText.trim()) {
+          newMessages.push({
+            role: "assistant",
+            content: pendingText,
+            interrupted: true,
+            ...(roundReasoning.trim() ? { reasoning: keptReasoning(roundReasoning), reasoningMs: reasoningEndedAt - reasoningStartedAt } : {}),
+          });
+        }
         onEvent({ type: "turn-aborted", messages: newMessages });
         return;
       }
@@ -551,6 +578,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         role: "assistant",
         content: repairedFromText ? "" : pendingText,
         ...(calls.length > 0 ? { toolCalls: calls } : {}),
+        ...(roundReasoning.trim() ? { reasoning: keptReasoning(roundReasoning), reasoningMs: reasoningEndedAt - reasoningStartedAt } : {}),
         ...(roundUsage ? { usage: roundUsage } : {}),
         ...(opts.turnId ? { turnId: opts.turnId } : {}),
       };
@@ -672,6 +700,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
           ...(autoApproved ? { autoApproved: true } : {}),
           ...(risk ? { risk } : {}),
           durationMs,
+          failed: !result.ok,
           ...(result.untrustedSources?.length ? { untrustedSources: result.untrustedSources } : {}),
         };
         newMessages.push(toolMsg);
@@ -814,6 +843,8 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
     onEvent({ type: "turn-error", message: `Stopped after ${maxRounds} tool rounds`, messages: newMessages, source: "harness-orchestration" });
   } catch (err) {
     if (signal.aborted) {
+      // Keep what the user already watched stream in, marked as cut short.
+      if (pendingText.trim()) newMessages.push({ role: "assistant", content: pendingText, interrupted: true });
       onEvent({ type: "turn-aborted", messages: newMessages });
       return;
     }
@@ -831,6 +862,13 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
   } finally {
     opts.onUntrustedSources?.(guards.provenance.untrustedSources);
   }
+}
+
+/** Reasoning kept on a saved message: the end of it, where a model reaches its conclusion. */
+const MAX_KEPT_REASONING = 6_000;
+function keptReasoning(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length > MAX_KEPT_REASONING ? `…${trimmed.slice(-MAX_KEPT_REASONING)}` : trimmed;
 }
 
 const TURN_CONTEXT_TAG = "turn_context";

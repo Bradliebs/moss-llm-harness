@@ -1,8 +1,9 @@
 // src/components/TurnUndo.tsx
 //
 // Lists the workspace files a completed turn changed and lets the user undo
-// them after an explicit confirmation. A turn's checkpoint is consumed by the
-// revert, so the control is removed once it succeeds.
+// them after an explicit confirmation. Restored files leave the checkpoint;
+// files that could not be restored stay listed, and the control is removed
+// once every file is restored.
 
 import { useEffect, useState } from "react";
 import { Undo2 } from "lucide-react";
@@ -43,7 +44,9 @@ export function TurnUndo({ turnId }: { turnId: string }): React.ReactElement | n
       const undone = `Undid changes to ${result.reverted} file${result.reverted === 1 ? "" : "s"}`;
       if (result.errors.length > 0) {
         setState("error");
-        setMessage(`${undone}; ${result.errors.length} could not be restored: ${result.errors.join("; ")}`);
+        setMessage(`${undone}; ${result.errors.length} not restored: ${result.errors.join("; ")}`);
+        // Only the files left in the checkpoint can still be undone.
+        setFiles((await bridge.list(turnId).catch(() => null)) ?? files);
       } else {
         setState("reverted");
         setMessage(undone);
@@ -58,7 +61,7 @@ export function TurnUndo({ turnId }: { turnId: string }): React.ReactElement | n
   return (
     <div className="mt-1.5 text-[11px] text-neutral-600 dark:text-neutral-300">
       <details>
-        <summary className="inline cursor-pointer" title="Files this turn created or modified in the workspace.">{label}</summary>
+        <summary className="inline cursor-pointer" title="Files this turn created or changed with Moss's file tools. Changes made by commands (formatters, installs) are not tracked and are not undone.">{label}</summary>
         <ul className="mt-1 space-y-0.5 pl-3" aria-label="Changed files">
           {files.map((file) => (
             <li key={file.path}>
@@ -70,7 +73,7 @@ export function TurnUndo({ turnId }: { turnId: string }): React.ReactElement | n
       </details>
       {state === "confirming" ? (
         <span className="ml-2 inline-flex flex-wrap items-center gap-2" role="group" aria-label="Confirm undo">
-          <span>Restore {files.length === 1 ? "this file" : `these ${files.length} files`} to their state before the turn?</span>
+          <span>Restore {files.length === 1 ? "this file" : `these ${files.length} files`} to their state before the turn? A file changed since then is left as it is.</span>
           <button type="button" className="rounded-md bg-amber-700 px-1.5 py-0.5 font-medium text-white hover:bg-amber-600" onClick={() => void revert()}>
             Undo changes
           </button>

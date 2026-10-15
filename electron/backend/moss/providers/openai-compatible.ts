@@ -20,7 +20,8 @@ interface OAToolCallDelta {
 
 interface OAStreamChunk {
   choices?: Array<{
-    delta?: { content?: string; tool_calls?: OAToolCallDelta[] };
+    /** reasoning: Ollama; reasoning_content: vLLM, DeepSeek, and others */
+    delta?: { content?: string; reasoning?: string; reasoning_content?: string; tool_calls?: OAToolCallDelta[] };
     finish_reason?: string | null;
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
@@ -122,7 +123,7 @@ export class OpenAiCompatibleProvider implements ChatProvider {
     // the request is still valid without it.
     if (res.status === 400 && reasoning !== undefined) {
       const detail = await safeText(res);
-      if (/reasoning/i.test(detail)) res = await send(false);
+      if (/reasoning|think/i.test(detail)) res = await send(false);
       else throw new ProviderError(`OpenAI-compatible request failed: HTTP 400 ${detail}`, 400);
     }
     if (!res.ok || !res.body) {
@@ -162,6 +163,8 @@ export class OpenAiCompatibleProvider implements ChatProvider {
       }
       const choice = json.choices?.[0];
       const delta = choice?.delta;
+      const reasoning = delta?.reasoning ?? delta?.reasoning_content;
+      if (typeof reasoning === "string" && reasoning) yield { type: "reasoning-delta", text: reasoning };
       if (delta?.content) yield { type: "text-delta", text: delta.content };
       if (delta?.tool_calls) {
         for (const d of delta.tool_calls) {
@@ -178,6 +181,7 @@ export class OpenAiCompatibleProvider implements ChatProvider {
             cur.id = d.id;
             toolsById.set(d.id, cur);
           }
+          if (d.function?.name && !cur.name) yield { type: "tool-call-start", name: d.function.name };
           if (d.function?.name) cur.name = d.function.name;
           if (d.function?.arguments) cur.args += d.function.arguments;
           toolsByIndex.set(idx, cur);
