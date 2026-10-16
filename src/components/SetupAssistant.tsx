@@ -7,6 +7,7 @@ import { CircleCheck, CircleDashed, CircleX, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 
 import type { SetupDetectionRequest } from "@common/types";
+import { isLocalRoute } from "@common/routes";
 
 import { buildSetupProposal, patchForProvider, type SetupAction, type SetupProposal } from "../lib/setupProposal";
 import { applyPreset, PROVIDER_PRESETS, settingsStore, updateSettings, useSettings, type MossSettings } from "../lib/settings";
@@ -40,7 +41,8 @@ export function SetupAssistant({ className }: { className: string }): React.Reac
         ollamaBaseUrl,
         cloud: PROVIDER_PRESETS.filter((preset) => preset.id !== "ollama" && preset.id !== "custom")
           .map((preset) => ({ presetId: preset.id, kind: preset.kind, baseUrl: presetBaseUrl(settings, preset.id) }))
-          .filter((preset) => preset.baseUrl),
+          // Cloud escalation must reach a remote model; a server on this PC (Strata) is not one.
+          .filter((preset) => preset.baseUrl && !isLocalRoute(preset.baseUrl, "")),
       };
       const [detection, profiles, performance] = await Promise.all([
         bridge.setup!.detect(request),

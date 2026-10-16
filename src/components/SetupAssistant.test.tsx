@@ -15,6 +15,7 @@ vi.mock("../lib/settings", () => ({
     { id: "ollama", label: "Ollama", kind: "openai-compatible", baseUrl: "http://localhost:11434/v1" },
     { id: "anthropic", label: "Anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com" },
     { id: "custom", label: "Custom", kind: "openai-compatible", baseUrl: "" },
+    { id: "strata", label: "Strata", kind: "openai-compatible", baseUrl: "http://127.0.0.1:8080/v1" },
   ],
   useSettings: () => state.settings,
   settingsStore: { get: () => state.settings },

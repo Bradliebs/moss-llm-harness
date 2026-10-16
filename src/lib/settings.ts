@@ -28,6 +28,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: "custom", label: "Custom", kind: "openai-compatible", baseUrl: "" },
   // Appended: settings store the preset by index, so existing choices must not shift.
   { id: "github-copilot", label: "GitHub Copilot", kind: "github-copilot", baseUrl: "https://api.githubcopilot.com" },
+  // A large MoE model served on this PC (github.com/Niko1221/Strata).
+  { id: "strata", label: "Strata", kind: "openai-compatible", baseUrl: "http://127.0.0.1:8080/v1" },
 ];
 
 export type ReadinessProfileId = "chat" | "coding" | "research" | "desktop" | "custom";

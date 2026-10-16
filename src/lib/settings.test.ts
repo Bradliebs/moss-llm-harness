@@ -96,6 +96,7 @@ describe("applyPreset", () => {
     ["OpenRouter", "https://openrouter.ai/api/v1"],
     ["Mistral", "https://api.mistral.ai/v1"],
     ["xAI (Grok)", "https://api.x.ai/v1"],
+    ["Strata", "http://127.0.0.1:8080/v1"],
   ])("applies the %s OpenAI-compatible preset", (label, baseUrl) => {
     const idx = PROVIDER_PRESETS.findIndex((p) => p.label === label);
     applyPreset(idx);
@@ -111,6 +112,11 @@ describe("applyPreset", () => {
     expect(s.kind).toBe("anthropic");
     expect(s.baseUrl).toBe("https://api.anthropic.com");
     expect(modelsStore.get()).toEqual([]);
+  });
+
+  it("keeps saved preset indexes stable by adding presets at the end", () => {
+    // Settings store the preset by index, so earlier entries must not move.
+    expect(PROVIDER_PRESETS.map((preset) => preset.id)).toEqual(["ollama", "openai", "anthropic", "openrouter", "mistral", "xai", "custom", "github-copilot", "strata"]);
   });
 
   it("ignores an out-of-range index", () => {

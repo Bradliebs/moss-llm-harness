@@ -315,10 +315,37 @@ disposable Electron profile without model calls.
 | OpenAI | OpenAI-compatible | `https://api.openai.com/v1` | Required |
 | Anthropic | Anthropic | `https://api.anthropic.com` | Required |
 | GitHub Copilot | GitHub Copilot | Not needed | Optional GitHub token; otherwise your GitHub CLI sign-in |
+| Strata | OpenAI-compatible | `http://127.0.0.1:8080/v1` | Only if you started Strata with `--api-key` |
 | Custom | OpenAI-compatible | User supplied | Provider dependent |
 
 Custom OpenAI-compatible servers must expose model listing and chat completion
 endpoints compatible with `/models` and `/chat/completions`.
+
+### Strata (a large local model)
+
+[Strata](https://github.com/Niko1221/Strata) is a separate, free inference
+engine. It runs one large mixture-of-experts model (Qwen3.8-Flash-Next) on a
+gaming PC by keeping the most-used experts on the graphics card and the rest
+in RAM. Moss does not install or start it: run Strata's own installer, keep its
+window open, then choose **Strata** under **Settings > Models > Provider** and
+select **Load**. Moss uses it like any other model on this PC, so workspace
+context stays local.
+
+* **Will it fit?** Strata asks for 12 GB of VRAM (8 GB runs, slowly), RAM for
+  the size you pick (32 GB for the Coder size, 48 GB for IQ2_XS or Q2_0), and
+  about 80 GB of disk. Its own benchmark (`BENCH.bat`) measures your PC.
+* **Thinking.** Strata thinks at a high level unless asked otherwise. Moss's
+  **Thinking** switch sends `reasoning_effort: "none"`, which Strata accepts;
+  turn thinking off for quick questions.
+* **One request at a time.** Strata answers requests in turn by default, so
+  Moss's background calls (summaries, a fast model, the critic) wait behind the
+  chat when they also point at Strata.
+* **Embeddings.** Strata has no embeddings endpoint, and an empty
+  **Settings > Knowledge > Embeddings base URL** uses the chat provider. Set it
+  to Ollama (`http://localhost:11434/v1`); otherwise `search_codebase` cannot
+  run and tool ranking falls back to matching words.
+* **With Ollama on one graphics card.** Both use the GPU, so on an 8 GB card
+  run one at a time rather than routing between them.
 
 ### GitHub Copilot
 
@@ -366,7 +393,9 @@ provider with a saved API key, then proposes a complete setup:
 * **Fast model:** a smaller local model for summaries and read-only subagents.
   If your chat model stays on a cloud provider, it is set up as an Ollama route.
 * **Escalation:** a strong model on a cloud provider you have a key for, or an
-  Ollama cloud model, with a note that escalated turns leave this PC.
+  Ollama cloud model, with a note that escalated turns leave this PC. Servers on
+  this PC or your network (such as Strata) are never offered as cloud
+  escalation.
 * **Ranking by meaning:** `nomic-embed-text` on this PC, downloaded if missing.
 * **Profiling** of the chosen models, and a **context-window check** that
   creates a correctly sized variant when needed.

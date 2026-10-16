@@ -517,6 +517,11 @@ still required before closing end-to-end dictation acceptance.
       and an edit: confirm the edit asks for approval as usual and the answer
       streams in. Enter a wrong token and confirm **Load** explains the sign-in
       problem.
+    - If Strata is installed and running, choose **Strata** under **Settings >
+      Models > Provider**, select **Load**, and confirm its model appears. Ask a
+      question with thinking on and confirm the Thinking block streams; turn
+      thinking off and confirm it does not. Set **Embeddings base URL** to
+      Ollama and confirm `search_codebase` still works.
     - Read a web page, then select **I have reviewed the earlier content** on
       the next approval card. Confirm that card still asks, and that changes in
       your next message no longer do.
