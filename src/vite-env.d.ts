@@ -104,10 +104,20 @@ declare global {
         pick: () => Promise<string | null>;
         preview?: (root: string, path: string) => Promise<WorkspaceFilePreview>;
         suggestVerification?: (root: string) => Promise<VerificationSuggestion[]>;
+        /** opens an HTML file inside the workspace in the OS browser; false when refused */
+        openInBrowser?: (root: string, path: string) => Promise<boolean>;
+        /** a loopback URL that serves an HTML file inside the workspace; null when refused */
+        previewUrl?: (root: string, path: string) => Promise<string | null>;
       };
       window?: {
         focus: () => Promise<void>;
+      };      /** Moss in a web browser on this PC; absent in older builds */
+      webAccess?: {
+        get: () => Promise<{ enabled: boolean; url?: string; error?: string }>;
+        /** settings: the window's saved settings, given to a browser opening Moss for the first time */
+        set: (enabled: boolean, settings?: string) => Promise<{ enabled: boolean; url?: string; error?: string }>;
       };
+
       model?: {
         probe: (request: ModelProbeRequest) => Promise<ModelCapabilityProfile>;
         cancelProbe: () => Promise<void>;

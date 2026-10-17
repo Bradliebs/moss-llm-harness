@@ -5,6 +5,7 @@ import { basename, dirname, join, relative, sep } from "node:path";
 
 import { resolveInWorkspace } from "./path-guard";
 import { type LineMatches, RegexLineMatcher } from "./regex-worker";
+import { syntaxNote } from "./syntax-check";
 
 /** How long a regular-expression search may run before it is stopped. */
 const REGEX_BUDGET_MS = 5_000;
@@ -45,6 +46,62 @@ function nearMiss(text: string, oldText: string): string {
   const shown = lines.slice(hits[0], hits[0] + span).join("\n").slice(0, 1_500);
   const where = hits.slice(0, 5).map((index) => index + 1).join(", ");
   return ` Its first line appears at line ${where}, but the text there differs (indentation, spacing, or the following lines). The file has at line ${hits[0] + 1}:\n${shown}`;
+}
+
+/** Unmistakable regular-expression syntax; plain brackets or parentheses
+ *  (`items[0]`, `if (x)`) are ordinary code text. */
+const REGEX_SIGNAL = /\||\\[sdwbSDW]|\.\*|\.\+|\[\^|\(\?:/;
+
+function isValidRegex(source: string): boolean {
+  try {
+    new RegExp(source, "i");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The one place where `oldText` matches whole lines of `text` once trailing
+ *  spaces, or else indentation, are ignored; undefined when none or several. */
+function matchByLines(text: string, oldText: string): { actual: string; how: string; reindent?: (value: string) => string } | undefined {
+  const oldLines = oldText.replace(/\r\n/g, "\n").split("\n");
+  while (oldLines.length > 1 && !oldLines[oldLines.length - 1].trim()) oldLines.pop();
+  if (!oldLines.some((line) => line.trim())) return undefined;
+  const lines: Array<{ text: string; start: number; end: number }> = [];
+  const breaks = /\r?\n/g;
+  let position = 0;
+  for (let found = breaks.exec(text); found; found = breaks.exec(text)) {
+    lines.push({ text: text.slice(position, found.index), start: position, end: found.index });
+    position = found.index + found[0].length;
+  }
+  lines.push({ text: text.slice(position), start: position, end: text.length });
+  const forms: Array<[string, (line: string) => string]> = [["trailing spaces", (line) => line.trimEnd()], ["indentation", (line) => line.trim()]];
+  for (const [how, normalize] of forms) {
+    const wanted = oldLines.map(normalize);
+    const hits: number[] = [];
+    for (let index = 0; index + wanted.length <= lines.length && hits.length < 2; index++) {
+      if (wanted.every((line, offset) => normalize(lines[index + offset].text) === line)) hits.push(index);
+    }
+    if (hits.length !== 1) continue;
+    const [first] = hits;
+    const actual = text.slice(lines[first].start, lines[first + wanted.length - 1].end);
+    if (how !== "indentation") return { actual, how };
+    const sample = oldLines.findIndex((line) => line.trim());
+    const from = /^\s*/.exec(oldLines[sample])![0];
+    const to = /^\s*/.exec(lines[first + sample].text)![0];
+    // Only a uniform shift: if the snippet's lines are indented differently
+    // from each other than the file's are, the block structure (which Python
+    // depends on) cannot be carried over safely.
+    const uniform = oldLines.every((line, offset) => !line.trim()
+      || (line.startsWith(from) && lines[first + offset].text.trimEnd() === `${to}${line.slice(from.length)}`.trimEnd()));
+    if (!uniform) return undefined;
+    return {
+      actual,
+      how,
+      ...(from === to ? {} : { reindent: (value: string) => value.split("\n").map((line) => (line.trim() && line.startsWith(from) ? to + line.slice(from.length) : line)).join("\n") }),
+    };
+  }
+  return undefined;
 }
 
 /** Count literal (non-regex) occurrences of `needle` in `haystack`. */
@@ -159,7 +216,7 @@ export const writeFileTool: Tool = {
     // Saying how much a file shrank lets a model notice it dropped part of it.
     const lineCount = (text: string): number => text.split(/\r?\n/).length;
     const overwrote = existing !== undefined ? ` (replaced ${lineCount(existing)} lines with ${lineCount(content)})` : "";
-    return { ok: true, content: `Wrote ${content.length} bytes to ${args.path}${overwrote}` };
+    return { ok: true, content: `Wrote ${content.length} bytes to ${args.path}${overwrote}${syntaxNote(String(args.path ?? ""), content, existing)}` };
   },
 };
 
@@ -210,6 +267,20 @@ export const editFileTool: Tool = {
         count = found;
       }
     }
+    // Small models often get the whitespace wrong (trailing spaces, or a whole
+    // snippet indented one level too deep). When exactly one place in the file
+    // matches line by line once that is ignored, edit that place.
+    let matchedHow = "";
+    if (count === 0 && !replaceAll) {
+      const loose = matchByLines(text, oldText);
+      if (loose) {
+        if (/\n\s*$/.test(oldText) && !/\n$/.test(loose.actual)) newText = newText.replace(/\r?\n$/, "");
+        oldText = loose.actual;
+        newText = loose.reindent ? loose.reindent(newText) : newText;
+        count = 1;
+        matchedHow = ` (matched ignoring ${loose.how})`;
+      }
+    }
     // Lines a model writes with \n take a CRLF file's line ending, so the file
     // does not end up mixed; text that already has \r\n is kept as written.
     if (eolOf(text) === "\r\n" && !newText.includes("\r\n")) newText = withEol(newText, "\r\n");
@@ -228,7 +299,7 @@ export const editFileTool: Tool = {
     await writeFile(abs, updated, "utf8");
     const n = replaceAll ? count : 1;
     const line = text.slice(0, text.indexOf(oldText)).split("\n").length;
-    return { ok: true, content: `Replaced ${n} occurrence${n === 1 ? "" : "s"} in ${args.path}${n === 1 ? ` at line ${line}` : ""}` };
+    return { ok: true, content: `Replaced ${n} occurrence${n === 1 ? "" : "s"} in ${args.path}${n === 1 ? ` at line ${line}` : ""}${matchedHow}${syntaxNote(String(args.path ?? ""), updated, text)}` };
   },
 };
 
@@ -255,21 +326,12 @@ export const searchFilesTool: Tool = {
     if (!query.trim()) return { ok: false, content: "query is required" };
     const searchRoot = resolveInWorkspace(ctx.workspaceRoot, String(args.path ?? ".") || ".");
     const maxResults = clampInt(args.maxResults, 100, 1, 1000);
-    let match: (lines: string[]) => LineMatches | Promise<LineMatches>;
-    let regex: RegexLineMatcher | undefined;
     if (args.regex === true) {
       try {
         new RegExp(query, "i");
       } catch (error) {
         return { ok: false, content: `Invalid regular expression: ${(error as Error).message}` };
       }
-      // A slow pattern runs out its time in a worker instead of freezing the app.
-      regex = new RegexLineMatcher(query, "i", REGEX_BUDGET_MS);
-      const matcher = regex;
-      match = (lines) => matcher.match(lines.map((line) => (line.length > 2_000 ? line.slice(0, 2_000) : line)));
-    } else {
-      const needle = query.toLowerCase();
-      match = (lines) => lines.flatMap((line, index) => (line.toLowerCase().includes(needle) ? [index] : []));
     }
     const include = typeof args.include === "string" && args.include.trim() ? args.include.trim() : "";
     const includeTest = include ? globToRegExp(include.startsWith("./") ? include.slice(2) : include) : undefined;
@@ -279,22 +341,46 @@ export const searchFilesTool: Tool = {
       return includeTest ? includeTest.test(include.includes("/") ? rel : basename(abs)) : !NOISE_FILES.test(rel);
     };
 
-    const matches: string[] = [];
-    let timedOut = false;
-    try {
-      timedOut = await collectMatches(searchRoot, ctx, match, fileFilter, matches, maxResults);
-    } finally {
-      regex?.close();
+    const search = async (asRegex: boolean): Promise<{ matches: string[]; timedOut: boolean }> => {
+      let match: (lines: string[]) => LineMatches | Promise<LineMatches>;
+      let regex: RegexLineMatcher | undefined;
+      if (asRegex) {
+        // A slow pattern runs out its time in a worker instead of freezing the app.
+        regex = new RegexLineMatcher(query, "i", REGEX_BUDGET_MS);
+        const matcher = regex;
+        match = (lines) => matcher.match(lines.map((line) => (line.length > 2_000 ? line.slice(0, 2_000) : line)));
+      } else {
+        const needle = query.toLowerCase();
+        match = (lines) => lines.flatMap((line, index) => (line.toLowerCase().includes(needle) ? [index] : []));
+      }
+      const matches: string[] = [];
+      try {
+        return { matches, timedOut: await collectMatches(searchRoot, ctx, match, fileFilter, matches, maxResults) };
+      } finally {
+        regex?.close();
+      }
+    };
+
+    let { matches, timedOut } = await search(args.regex === true);
+    // Models often write a pattern ("a|b", "foo\\s+bar") without setting regex.
+    // When the literal text is nowhere, search for the pattern instead of
+    // spending a round on a hint.
+    let note = "";
+    if (matches.length === 0 && !timedOut && args.regex !== true && REGEX_SIGNAL.test(query) && isValidRegex(query)) {
+      ({ matches, timedOut } = await search(true));
+      note = matches.length > 0 ? `No literal matches for "${query}"; read as a regular expression it matches:\n` : "";
     }
 
     const stopped = timedOut ? `\n[stopped after ${REGEX_BUDGET_MS / 1000} seconds: the regular expression is too slow; simplify it]` : "";
     if (matches.length === 0) {
-      const hint = args.regex !== true && /[|\\()[\]*+?^$]/.test(query) ? " The query was read as literal text; set regex to true to search for a pattern." : "";
+      const hint = args.regex === true ? ""
+        : REGEX_SIGNAL.test(query) && isValidRegex(query) ? " Searched both as literal text and as a regular expression."
+          : /[|\\()[\]*+?^$]/.test(query) ? " The query was read as literal text; set regex to true to search for a pattern." : "";
       return { ok: !timedOut, content: `No matches for "${query}".${hint}${stopped}` };
     }
     const capped = matches.length >= maxResults;
     const body = matches.join("\n");
-    return { ok: true, content: `${capped ? `${body}\n…[capped at ${maxResults} matches]` : body}${stopped}` };
+    return { ok: true, content: `${note}${capped ? `${body}\n…[capped at ${maxResults} matches]` : body}${stopped}` };
   },
 };
 

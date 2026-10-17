@@ -1,4 +1,4 @@
-import { Brain, LoaderCircle, Mic, Paperclip, Rocket, SendHorizontal, Square, Zap } from "lucide-react";
+import { Brain, LoaderCircle, Mic, Paperclip, Repeat, Rocket, SendHorizontal, Square, Zap } from "lucide-react";
 import { useRef, useState, type ClipboardEventHandler, type KeyboardEventHandler, type ReactNode, type RefObject } from "react";
 
 /** One height and shape for every composer action, with an icon before the text. */
@@ -24,7 +24,9 @@ interface ChatComposerProps {
   /** a turn is running in another conversation */
   activeElsewhere?: boolean;
   /** the model's thinking switch, when the model is known to think */
-  thinking?: { on: boolean; onToggle: () => void };
+  thinking?: { on: boolean; extended?: boolean; onToggle: () => void };
+  /** goal mode: keep working until the model says the request is done; chat only */
+  keepGoing?: { on: boolean; onToggle: () => void };
   pendingAttachmentReads: number;
   hasSendContent: boolean;
   launchBlocked: boolean;
@@ -49,6 +51,7 @@ export function ChatComposer({
   modelSelected,
   activeElsewhere = false,
   thinking,
+  keepGoing,
   pendingAttachmentReads,
   hasSendContent,
   launchBlocked,
@@ -152,10 +155,23 @@ export function ChatComposer({
             onClick={thinking.onToggle}
             aria-pressed={thinking.on}
             aria-label="Thinking"
-            title={thinking.on ? "The model thinks before answering (slower, often better on hard problems). Click to turn off for faster replies." : "Thinking is off for faster replies. Click to let the model think first."}
+            title={thinking.on ? `The model thinks before answering${thinking.extended ? " at length (extended thinking, set in Settings)" : ""} (slower, often better on hard problems). Click to turn off for faster replies.` : "Thinking is off for faster replies. Click to let the model think first."}
           >
             <Brain size={16} className={thinking.on ? "text-emerald-700 dark:text-emerald-400" : "opacity-50"} aria-hidden="true" />
-            <span className="hidden sm:inline">{thinking.on ? "Thinking" : "No thinking"}</span>
+            <span className="hidden sm:inline">{thinking.on ? (thinking.extended ? "Extended thinking" : "Thinking") : "No thinking"}</span>
+          </button>
+        ) : null}
+        {keepGoing && mode === "chat" ? (
+          <button
+            type="button"
+            className={SECONDARY}
+            onClick={keepGoing.onToggle}
+            aria-pressed={keepGoing.on}
+            aria-label="Keep going"
+            title={keepGoing.on ? "Goal mode: the model keeps working until it says the request is done or that it needs you, up to 64 tool rounds. Click to turn off." : "Turn on goal mode: the model keeps working until it says the request is done, instead of stopping after each reply."}
+          >
+            <Repeat size={16} className={keepGoing.on ? "text-emerald-700 dark:text-emerald-400" : "opacity-50"} aria-hidden="true" />
+            <span className="hidden sm:inline">{keepGoing.on ? "Keep going: on" : "Keep going"}</span>
           </button>
         ) : null}
         {busy ? (

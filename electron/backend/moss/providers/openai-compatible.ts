@@ -31,14 +31,28 @@ interface OpenAiModelList {
   data?: Array<{ id?: string }>;
 }
 
-export function toOpenAiMessages(messages: AgentMessage[]): unknown[] {
+export function toOpenAiMessages(messages: AgentMessage[], model?: string): unknown[] {
+  // Reasoning goes back only on the latest round that called tools, by the model
+  // that wrote it: enough to keep its train of thought, and a small local
+  // context window is not filled with every earlier round's thinking.
+  let replayAt = -1;
+  if (model) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant" && m.toolCalls?.length) {
+        if (m.reasoningReplay?.text && m.reasoningReplay.model === model) replayAt = i;
+        break;
+      }
+    }
+  }
   // flatMap, not map: a tool result carrying images expands into two messages.
-  return messages.flatMap((m): unknown[] => {
+  return messages.flatMap((m, i): unknown[] => {
     if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
       return [
         {
           role: "assistant",
           content: m.content || null,
+          ...(i === replayAt ? { [m.reasoningReplay?.field ?? "reasoning"]: m.reasoningReplay?.text } : {}),
           tool_calls: m.toolCalls.map((tc) => ({
             id: tc.id,
             type: "function",
@@ -107,7 +121,7 @@ export class OpenAiCompatibleProvider implements ChatProvider {
       },
       body: JSON.stringify({
         model: req.model,
-        messages: toOpenAiMessages(req.messages),
+        messages: toOpenAiMessages(req.messages, withReasoning ? req.model : undefined),
         stream: true,
         stream_options: { include_usage: true },
         ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
@@ -119,9 +133,10 @@ export class OpenAiCompatibleProvider implements ChatProvider {
       signal,
     });
     let res = await send(true);
-    // Some servers and models reject reasoning_effort (or the value "none");
-    // the request is still valid without it.
-    if (res.status === 400 && reasoning !== undefined) {
+    // Some servers and models reject reasoning_effort (or the value "none"), or
+    // reasoning sent back on an assistant message; the request is valid without.
+    const replays = req.messages.some((m) => m.reasoningReplay?.text);
+    if (res.status === 400 && (reasoning !== undefined || replays)) {
       const detail = await safeText(res);
       if (/reasoning|think/i.test(detail)) res = await send(false);
       else throw new ProviderError(`OpenAI-compatible request failed: HTTP 400 ${detail}`, 400);
@@ -135,10 +150,16 @@ export class OpenAiCompatibleProvider implements ChatProvider {
     const toolsByIndex = new Map<number, { id: string; name: string; args: string }>();
     const ambiguousIndices = new Set<number>();
     let flushed = false;
+    // finish_reason "length": the server stopped at max_tokens or the context window.
+    let cutOff = false;
+    // The message field reasoning streamed in, so it can be sent back the same way.
+    let reasoningField: "reasoning" | "reasoning_content" | undefined;
     const flush = (): ProviderStreamEvent[] => {
       if (flushed) return [];
       flushed = true;
       const events: ProviderStreamEvent[] = [];
+      if (cutOff) events.push({ type: "output-limit" });
+      if (reasoningField) events.push({ type: "reasoning-replay", field: reasoningField });
       for (const tc of toolAcc.values()) {
         if (tc.name) {
           events.push({
@@ -164,7 +185,10 @@ export class OpenAiCompatibleProvider implements ChatProvider {
       const choice = json.choices?.[0];
       const delta = choice?.delta;
       const reasoning = delta?.reasoning ?? delta?.reasoning_content;
-      if (typeof reasoning === "string" && reasoning) yield { type: "reasoning-delta", text: reasoning };
+      if (typeof reasoning === "string" && reasoning) {
+        reasoningField ??= delta?.reasoning ? "reasoning" : "reasoning_content";
+        yield { type: "reasoning-delta", text: reasoning };
+      }
       if (delta?.content) yield { type: "text-delta", text: delta.content };
       if (delta?.tool_calls) {
         for (const d of delta.tool_calls) {
@@ -198,6 +222,7 @@ export class OpenAiCompatibleProvider implements ChatProvider {
           },
         };
       }
+      if (choice?.finish_reason === "length") cutOff = true;
       if (choice?.finish_reason === "tool_calls") yield* flush();
     }
     yield* flush();

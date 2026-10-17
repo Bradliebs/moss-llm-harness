@@ -53,6 +53,8 @@ to a stronger model on another provider.
 * Can read web and MCP content through a quarantine model with no tools, so planted instructions never reach the model that acts
 * Practices on your recorded work while the PC is idle, learns procedures from repeated verified work, and shows why it made each decision in a turn
 * Reads, writes, searches, and checkpoints files inside the selected workspace
+* Previews pages the agent writes beside the chat, served locally so modules and fetch work, and reloads them as it works
+* Keeps going until a request is done when you turn on goal mode, and can be used from a web browser on this PC
 * Runs shell commands with risk classification and approval controls
 * Uses isolated, domain-allow-listed Playwright browser sessions
 * Automates allow-listed Windows applications through semantic UI Automation
@@ -316,10 +318,31 @@ disposable Electron profile without model calls.
 | Anthropic | Anthropic | `https://api.anthropic.com` | Required |
 | GitHub Copilot | GitHub Copilot | Not needed | Optional GitHub token; otherwise your GitHub CLI sign-in |
 | Strata | OpenAI-compatible | `http://127.0.0.1:8080/v1` | Only if you started Strata with `--api-key` |
+| DeepSeek | Anthropic | `https://api.deepseek.com/anthropic` | Required |
 | Custom | OpenAI-compatible | User supplied | Provider dependent |
 
 Custom OpenAI-compatible servers must expose model listing and chat completion
 endpoints compatible with `/models` and `/chat/completions`.
+
+The Anthropic provider allows replies of up to 32,000 output tokens, enough to
+write a whole page or small game in one reply. A model or Anthropic-compatible
+server with a lower limit rejects that; Moss asks again with the limit the
+error names, or steps down through 16,000, 8,192, and 4,096 when it names none,
+and keeps using the limit that worked for that model during the session.
+OpenAI-compatible servers get no limit from Moss, so their own default
+applies.
+
+### DeepSeek
+
+The **DeepSeek** preset uses DeepSeek's Anthropic-format endpoint
+([DeepSeek API docs](https://api-docs.deepseek.com/guides/anthropic_api)), so
+its thinking and tool calls go through the same provider as Claude. Paste a
+DeepSeek API key and select **Load**; if the model list cannot be fetched, Moss
+offers `deepseek-flash` and `deepseek-v4-pro`. The endpoint accepts a thinking
+request but ignores its token budget. DeepSeek models have no built-in prices
+in Moss, so add rates under **Settings > Models > Model pricing** for the cost
+readout and daily cap. The preset was set up from DeepSeek's documentation and
+not yet tried with a key.
 
 ### Strata (a large local model)
 
@@ -485,7 +508,17 @@ was trained for and what fits in free GPU memory (read with `nvidia-smi` when
 available). When the window is too small, or the model spilled to the CPU, Moss
 offers **Create variant and switch**: it creates a named copy such as
 `qwen2.5:7b-ctx16k` with the right `num_ctx`, copies the capability profile to
-it, and selects it. Your original model is never changed.
+it, and selects it. Your original model is never changed. When the model's
+weights alone nearly fill the free GPU memory, so no context fits entirely, it
+still offers an 8,192-token variant if the served context is larger: most of
+the slowdown comes from the context.
+
+You do not have to remember to check. The first time a local Ollama model
+answers in a session, Moss runs the same check in the background and warns once
+if the model has spilled onto the CPU. Ollama 0.40 served `ministral-3:8b` with
+a 65,536-token context on an 8 GB RTX 3070, which put 64% of it on the CPU: it
+wrote 3.3 tokens a second, against 7.5 with a 16,384-token context and 13.1
+with 8,192.
 
 #### Prompt caching and token use
 
@@ -599,8 +632,10 @@ one piece rather than streaming, and a notice names the models it applies to.
 executes:
 
 * Calls written as text are recovered from `<tool_call>` tags, `[TOOL_CALLS]`,
-  JSON code blocks, bare JSON, and `name({...})`. Only offered tool names are
-  accepted, so prose and code samples are not misread as calls.
+  Mistral's `name[ARGS]{...}`, JSON code blocks, bare JSON, and `name({...})`,
+  after any `<think>` or `[THINK]` reasoning. Arguments with regular-expression
+  escapes such as `\s`, which JSON does not allow, are still read. Only offered
+  tool names are accepted, so prose and code samples are not misread as calls.
 * Tool names that differ only in case or punctuation are corrected.
 * Argument names outside the schema are mapped by alias (`file` to `path`), by
   close spelling, or when one unknown argument matches the one missing required
@@ -608,6 +643,22 @@ executes:
   unwrapped, and numbers and strings are converted to the declared type.
 * A call that still misses required arguments does not run. The model gets a
   precise error naming the missing and expected properties.
+* A reply that ends by announcing a step it did not take ("Let me read the
+  file:", "I’ll run the tests now.") gets a reminder to make the call or give
+  its final answer, instead of ending the turn with nothing done: at most twice
+  per turn, the second only after a tool round, and not once verification has
+  passed with nothing changed since. Questions for you and offers such as "Let
+  me know if…" are real endings. The reminder does not count toward escalation.
+* A thinking model that reasons and then replies with nothing has usually spent
+  its output on thinking; the one retry, and the rest of that turn, ask it to
+  answer without a thinking phase.
+* A reply that reaches the model's output limit ends mid-sentence or mid-call.
+  Moss notices (the server reports it), says so, and never runs the cut-off
+  call: the model is told to write a large file in parts, with `write_file`
+  for the first part and `edit_file` for the rest, or to split it into
+  several files. A cut-off answer is asked once to continue where it stopped.
+  On Ollama the limit is usually the context window, so a single-file game can
+  hit it on a small window.
 
 Each repair appears as a notice. The first schema error per tool is treated as a
 correction rather than a rejection, so one fixable mistake does not trigger
@@ -804,12 +855,30 @@ when supplied. Policy-scoped authorization binds the complete contract,
 capabilities, budgets, and automation scopes to its token. Editing any bound
 field requires fresh authorization.
 
+Policy-scoped is the default authority: one native confirmation at launch shows
+the objective, workspace, capabilities, and budget, and the mission then makes
+ordinary file changes and commands without asking each time. Destructive
+actions, and actions after untrusted content, still ask. **Supervised** asks
+before every change instead. Moss remembers the choice you made last.
+
 Mission intake includes Coding, Research, and Automation templates. Each template
 prefills an editable objective, outcome contract, verification method,
 capabilities, constraints, assumptions, and budget. Missing workspace,
 verification, browser, or desktop prerequisites remain visible and continue to
 block launch. Templates use the same preflight and native authorization paths as
-manually authored missions.
+manually authored missions. The Research template grants web search, fetching
+pages, reading files, and writing files, because its criterion is a saved
+`research-report.md`. Writing the report after reading the web still asks
+once, because it follows untrusted content; turn off **Settings > Safety > Ask
+before changes that follow web, MCP, or browser content** if you accept that
+risk. Its budget allows 90 minutes, 200,000 tokens, and 120 actions.
+
+Budgets bound a mission that runs on its own. Leave a budget field blank for no
+limit of its own: the mission then stops only at the ceiling of 4 hours,
+1,000,000 tokens, 256 actions, or $100. Models on this PC cost nothing unless
+you set a rate for them. For a question you want answered now rather than a
+long unattended job, use **Chat**: a chat turn can search the web too, and has
+no budget or plan to approve.
 
 When a workspace is selected, mission review suggests verification commands
 inferred from project files such as `package.json` scripts, `pyproject.toml`,
@@ -926,25 +995,68 @@ The workspace tools are built for the way models edit code:
   edit. `startLine` and `endLine` read any part.
 * `edit_file` matches Windows (CRLF) files when the model writes `\n`, keeps
   the file's line ending, and reports the line it changed. When `oldText` is
-  not found, it shows the lines where its first line does appear, so the next
-  try can copy them exactly. `write_file` keeps CRLF when it overwrites a CRLF
-  file and says how many lines it replaced.
+  not found exactly but matches exactly one place once trailing spaces, or a
+  uniform difference in indentation, are ignored, it edits that place, keeps
+  the file's indentation, and says so. Otherwise it shows the lines where the
+  first line of `oldText` does appear, so the next try can copy them exactly.
+  `write_file` keeps CRLF when it overwrites a CRLF file and says how many lines
+  it replaced.
+* After `write_file` or `edit_file` changes a JavaScript (`.js`, `.cjs`) or JSON
+  file, Moss compiles it without running it. When the change broke a file that
+  parsed before, or a new file does not parse, the result names the syntax
+  error and line, so a broken edit is caught at once even without
+  verification commands. ES modules, CommonJS top-level `return`, JSX, and
+  JSON files that allow comments, such as `tsconfig.json`, are not judged.
 * `search_files` accepts a regular expression (`regex`), run in a separate
   thread that is stopped after 5 seconds so a slow pattern cannot freeze the
-  app, and an `include` glob. It skips lockfiles, minified files, files over
-  1 MB, and cache folders such
-  as `.venv`, `__pycache__`, `target`, and `coverage`. `glob_files` understands
+  app, and an `include` glob. A pattern written without `regex`, such as
+  `total|sum`, is searched as a pattern when the literal text is nowhere, and
+  the result says so. It skips lockfiles, minified files, files over 1 MB, and
+  cache folders such as `.venv`, `__pycache__`, `target`, and `coverage`. `glob_files` understands
   `{ts,tsx}`, and a pattern without `/`, such as `*.test.ts`, matches in every
   folder (`./*.ts` matches only the top folder).
+* Paths are relative to the workspace. A container-style path such as
+  `/workspace/src/app.js` or `/src/app.js` is rewritten to `src/app.js` before
+  any check runs, when that file, or for a new file its folder, exists here;
+  `/workspace` alone means the workspace folder, and `glob_files` patterns such
+  as `/workspace/src/**` are rewritten the same way. Protected paths,
+  approvals, and undo then see the rewritten path, and a notice says what
+  changed; any other path outside the workspace is refused with an example of
+  a relative path. `search_codebase` needs an indexed workspace (**Settings >
+  Knowledge**); without one it says so and points the model to `search_files`.
 * `run_command` names its shell (cmd.exe on Windows), keeps the start and end
   of long output where test runners print their summary, adds `[exit code N]`
   when a command fails, and returns what a command printed before a timeout.
   Commands get no input, so one that waits for a prompt or an editor fails at
   once instead of hanging. The time limit is 60 seconds unless the model asks
   for more with `timeoutSeconds` (up to 600); the approval card shows it.
-* With a workspace and tools on, the system prompt adds four lines of coding
-  habits: read before editing, make the smallest change, run the tests after
-  changing code, and the platform the commands run on.
+* With a workspace and tools on, the system prompt adds six lines of coding
+  habits: read before editing, make a promised tool call in the same reply,
+  make the smallest change, run the tests after changing code, end by naming
+  the main file of something built to open or run and how to do it, and the
+  platform the commands run on.
+* When a chat writes or edits an `.html` file, its tool card shows **Preview**
+  and **Open in browser**. **Preview** shows the page beside the chat and
+  loads it again whenever the agent changes a file; **Open in browser** opens
+  it in your default browser. Both serve the workspace from a private address
+  on this PC (`http://127.0.0.1` with a random port and a random key in the
+  path), so JavaScript modules, `fetch` of the page's own files, and
+  root-relative links work as they would online, which they do not from a
+  file. The server only reads, never serves hidden files such as `.env` or
+  `.git`, stays inside the workspace, and stops when Moss closes. The preview
+  frame runs the page apart from Moss: it cannot reach Moss's controls,
+  navigate the window, open windows, or use the microphone. Only HTML files
+  inside a workspace this session has used open, and only when you select
+  them. After restarting Moss, send a message in the workspace before opening
+  a page from an older conversation; until then the button says it could not
+  open the page.
+* A chat turn with a workspace also gets a short map of it in the turn context:
+  up to 60 file paths, top folders first, without hidden files, `.git`,
+  `node_modules`, and build or cache folders, and the project's test and build
+  commands from its manifests. Small models otherwise spend their first rounds
+  listing folders and guessing paths. The names are marked as data, and names
+  that read like sentences are left out, so a file name cannot pose as an
+  instruction.
 
 With a workspace selected and tools on, a chat turn gets at least 16 tool rounds
 (20 with verification), whatever **Tool rounds per turn** says: reading,
@@ -1309,11 +1421,58 @@ qwen3.5:9b · 12 s", or "Writing a write_file call · 4 s" while the model strea
 a tool call), so long pauses from local models are visible. Thinking models
 (qwen3 on Ollama, or servers that send `reasoning_content`) show their reasoning
 live in a **Thinking** block that becomes "Thought for N s" when the answer
-starts. Up to the last 6,000 characters are saved with the reply; they are never
-sent back to the model. To get faster replies, turn thinking off under
-**Settings > Models > Thinking (reasoning models)** or with the composer's **Thinking** button, which
-appears once a conversation's model has thought. Moss then sends
-`reasoning_effort: "none"`, and retries without it on servers that reject it.
+starts. Up to the last 6,000 characters are saved with the reply for display.
+Within a turn, the model gets its own reasoning back with each round that
+called tools, so it keeps its train of thought while it works: Claude's
+signed thinking blocks unchanged (Anthropic requires them with tool results),
+and on OpenAI-compatible servers the latest tool round's reasoning, in the
+field the server sent it in (Ollama renders it into the prompt). It goes only
+to the model that wrote it and is never saved; a server that rejects it gets
+the request again without it.
+
+**Settings > Models > Thinking (reasoning models)** has three settings:
+
+* **Model default** sends nothing.
+* **Off** answers faster: Moss sends `reasoning_effort: "none"` (Claude:
+  thinking disabled) and retries without it on servers that reject it. The
+  composer's **Thinking** button, shown once a conversation's model has
+  thought, switches between this and the default.
+* **Extended** thinks longer on hard problems, at the cost of more output
+  tokens (billed) and slower replies. Claude gets adaptive thinking with its
+  summary shown; a model without adaptive thinking gets extended thinking with
+  a budget of half the output limit (up to 16,000 tokens); a model that
+  refuses both answers without. Other servers get `reasoning_effort: "high"`.
+  The setting that works is remembered per model for the session.
+
+### Goal mode
+
+The composer's **Keep going** button (chat with tools on) turns on goal mode.
+A turn then does not end when the model stops: the model gets a
+`finish_goal` tool and is asked to call it with `done` once the request is
+complete and checked, or `blocked` with what it needs from you. If it stops
+without calling it, Moss sends it back to work, up to three times, and says
+so in the timeline; the turn may use up to 64 tool rounds. Approvals still
+apply. Missions have their own completion checks and ignore this setting.
+
+### Browser access
+
+**Settings > General > Browser access** lets you use Moss from a web browser
+on this PC as well as its window, for example in a browser tab beside your
+editor. Moss serves its interface at `http://127.0.0.1:47821` (another free
+port if that one is taken) and gives you a link with a key in it; open it
+with **Open in browser** or **Copy link**. Calls from the page reach the same
+handlers as the window, so tools, approvals, and settings behave the same.
+
+* Only programs on this PC can connect, and only with the key: the page keeps
+  it in its own storage and sends it with each request, and requests that
+  name another host are refused. Anyone with the link on this PC can use Moss
+  as you, so keep it private. Turning browser access off and on makes a new
+  link; it stays on, with the same link, across restarts.
+* Each browser keeps its own conversations. A browser opening Moss for the
+  first time starts from this window's settings as they were when you turned
+  browser access on; API keys stay in Moss's encrypted store.
+* Closing the tab stops its running turn after 15 seconds, as closing the
+  window would. Workspace dialogs open on the desktop.
 
 Tool cards have readable headings that follow the call's state: "Wants to run
 npm test" while it waits for approval, "Running", "Ran", "Not allowed to" after
@@ -1402,6 +1561,7 @@ and image attachment handling in a disposable Electron profile.
 | `npm run pack:ci` | Create an unsigned unpacked application for CI and local smoke checks |
 | `npm run smoke:packaged` | Check packaged setup, Run center, templates, diagnostics, accessibility, and compact layout |
 | `node scripts/smoke-missions.mjs` | Run supervised approval, denial, reload, and recovery mission smokes |
+| `npm run smoke:web` | Use the packaged app from Chromium through browser access, and preview a written page in the browser and the window |
 | `npm run dist` | Build a Windows NSIS installer |
 
 The renderer alone expects APIs injected by `electron/preload.cjs`. Running
@@ -1415,8 +1575,8 @@ Node.js, with no Electron: the same permission policy, provenance gate,
 no-progress supervisor, verification, adaptive scaffolding, and constrained
 output. Use it in CI jobs, scripts, or another front end. It offers the
 built-in workspace, git, command, web, and delegate tools. MCP servers, skills,
-memory, working state, email, transcription, and the quarantine reader are not
-available headless, so a run never writes the desktop app's memory.
+memory, working state, email, transcription, codebase search, and the quarantine
+reader are not available headless, so a run never writes the desktop app's memory.
 
 ```powershell
 npm run moss -- --model llama3.1:8b --prompt "What does scripts/build.mjs do?"
@@ -1454,8 +1614,15 @@ Get-Content task.md | npm run moss -- --model ministral-3:8b --json > run.jsonl
   lessons, and tool-output artifacts carry over. Override it with `--data-dir`
   or `MOSS_USER_DATA`.
 * **Other flags.** `--workspace DIR` (default: current folder), `--prompt-file
-  FILE` or stdin instead of `--prompt`, `--max-rounds N`, `--no-tools`, and
-  `--instructions FILE` for project instructions.
+  FILE` or stdin instead of `--prompt`, `--max-rounds N`, `--no-tools`,
+  `--thinking off` to ask a reasoning model such as `qwen3.5` to answer without
+  a thinking phase (or `--thinking extended` to think longer), `--context TOKENS` for the model's context window so a long
+  run is compacted to fit, and `--instructions FILE` for project instructions.
+* **Context check.** On Ollama, the run first checks whether the model fits in
+  GPU memory and prints a warning when part of it runs on the CPU. After you
+  create a smaller variant, pass its size with `--context`.
+* **Workspace map.** With tools on, the model starts with the same short map of
+  the workspace as a desktop chat turn.
 
 Backend modules resolve their data folder through
 `electron/backend/moss/runtime/user-data.ts`, so the kernel imports cleanly
@@ -1496,8 +1663,8 @@ npm run build
 npm run check:bundle
 ```
 
-Before a release, also run `npm run pack:ci`, `npm run smoke:packaged`, and
-`node scripts/smoke-missions.mjs`.
+Before a release, also run `npm run pack:ci`, `npm run smoke:packaged`,
+`npm run smoke:web`, and `node scripts/smoke-missions.mjs`.
 
 Tests cover renderer behavior, IPC, providers, tool execution, permissions,
 approvals, checkpoints, capability acquisition, browser and desktop boundaries,
@@ -1648,8 +1815,10 @@ model list.
 
 ### The renderer is blank in a browser
 
-Launch Moss with `npm run dev` or `npm start`. The application depends on the
-Electron preload bridge and is not designed to run as a standalone website.
+Opening `dist/index.html` or the dev server in a browser shows nothing: the
+interface needs Moss's bridge. Turn on **Settings > General > Browser access**
+and open the link it gives you. A page that says the link is no longer valid
+needs the current link from that setting.
 
 ### A task cannot use files or commands
 
@@ -1727,8 +1896,9 @@ Ollama versions do.
 
 ### A local model is slow or cuts off long prompts
 
-Open **Settings > Models > Capability profile** and select **Check context
-window**. If Ollama serves more context than fits in GPU memory, part of the
+Moss warns once per session when a local Ollama model runs partly on the CPU.
+To check at any time, open **Settings > Models > Capability profile** and select
+**Check context window**. If Ollama serves more context than fits in GPU memory, part of the
 model runs on the CPU; if it serves too little, long prompts are cut off. Create
 the suggested variant to fix either. If even a small context does not fit, the
 check says so; choose a smaller model or quantization.

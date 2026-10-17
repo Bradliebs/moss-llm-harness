@@ -1,7 +1,7 @@
 // Harness governance inside the turn loop: working state rendering and
 // protected paths, provenance-gated approval, and the no-progress supervisor.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -98,6 +98,23 @@ describe("working state in the loop", () => {
     const result = events.find((event) => event.type === "tool-result") as Extract<MossEvent, { type: "tool-result" }>;
     expect(result).toMatchObject({ ok: false });
     expect(result.content).toMatch(/^Protected path: 'config\/app.json'/);
+  });
+
+  it("checks a repaired container-style path against protected paths, not the raw one", async () => {
+    const ws = mkdtempSync(join(tmpdir(), "moss-protected-"));
+    try {
+      mkdirSync(join(ws, "config"));
+      const store = new WorkingStateStore({ schemaVersion: 1, entries: [{ id: "p1", kind: "protected", text: "config/**", source: "user", createdAt: "x" }] });
+      let wrote = false;
+      const write: Tool = { ...fakeTool("write_file", "Wrote"), execute: async () => { wrote = true; return { ok: true, content: "Wrote" }; } };
+      const { events } = await run(scripted([[call("w", "write_file", { path: "/workspace/config/app.json", content: "{}" })], [{ type: "text-delta", text: "ok" }]]), [write], { workingState: store, autoApprove: true, workspaceRoot: ws });
+      expect(wrote).toBe(false);
+      expect(events.some((event) => event.type === "notice" && event.message.includes("/workspace/config/app.json as config/app.json"))).toBe(true);
+      const result = events.find((event) => event.type === "tool-result") as Extract<MossEvent, { type: "tool-result" }>;
+      expect(result.content).toMatch(/^Protected path: 'config\/app.json'/);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
   });
 });
 

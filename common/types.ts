@@ -420,6 +420,21 @@ export interface ToolCall {
 /** Content-risk tier the permission policy resolves for a tool call. */
 export type ToolRisk = "readonly" | "mutating" | "destructive";
 
+export type ThinkingMode = "auto" | "off" | "extended";
+
+/** Reasoning to send back to the model that produced it. */
+export interface ReasoningReplay {
+  /** sent only to this model; another model cannot read it */
+  model: string;
+  /** Anthropic thinking and redacted_thinking blocks, verbatim and in order;
+   *  their signatures must not change */
+  blocks?: Array<Record<string, unknown>>;
+  /** OpenAI-compatible servers: the reasoning text, and the message field the
+   *  server streamed it in (Ollama renders "reasoning" into the prompt) */
+  text?: string;
+  field?: "reasoning" | "reasoning_content";
+}
+
 /** The neutral conversation unit. Providers translate to/from their own wire
  *  formats (OpenAI tool_calls / Anthropic tool_use + tool_result). */
 export interface AgentMessage {
@@ -439,6 +454,10 @@ export interface AgentMessage {
   reasoning?: string;
   /** how long the model reasoned before answering or calling a tool */
   reasoningMs?: number;
+  /** The model's own reasoning for a round that called tools, sent back with
+   *  that round so the model keeps its train of thought while it works. Only
+   *  on the runner's model-facing copy within one turn; never stored or shown. */
+  reasoningReplay?: ReasoningReplay;
   /** on tool results that carry third-party content their tool name does not
    *  reveal (a subagent report); never sent to a provider */
   untrustedSources?: string[];
@@ -530,7 +549,8 @@ export type MossEvent =
   | { type: "tool-call-start"; name: string }
   | { type: "token-usage"; usage: TokenUsage }
   | { type: "round-start"; round: number; toolsEnabled: boolean }
-  | { type: "round-end"; round: number; toolCallCount: number; finish: "tools" | "complete" | "rejected" | "error" }
+  /** continued: the harness asked the model to go on (not a rejection of its work) */
+  | { type: "round-end"; round: number; toolCallCount: number; finish: "tools" | "complete" | "rejected" | "continued" | "error" }
   | { type: "tool-call"; callId: string; name: string; arguments: string }
   | { type: "tool-approval-request"; callId: string; name: string; arguments: string; risk?: ToolRisk; provenance?: ApprovalProvenance; reason?: string }
   | { type: "tool-result"; callId: string; name: string; ok: boolean; content: string; autoApproved: boolean; risk?: ToolRisk; durationMs?: number; untrustedSources?: string[] }
@@ -584,8 +604,13 @@ export interface ChatStartRequest {
   /** when true and a workspace is selected, the workspace's AGENTS.md, CLAUDE.md,
    *  or .github/copilot-instructions.md is added to the turn context as background */
   projectInstructions?: boolean;
-  /** "off" asks reasoning models to answer without a thinking phase */
-  thinking?: "auto" | "off";
+  /** "off" asks reasoning models to answer without a thinking phase;
+   *  "extended" asks them to think harder (Claude extended thinking, or
+   *  reasoning_effort "high"), which costs more output tokens */
+  thinking?: ThinkingMode;
+  /** Goal mode: keep working until the model says the request is done or that
+   *  it is blocked (ordinary chat turns with tools; ignored for missions) */
+  goal?: boolean;
   /** speech-to-text config for the transcribe_audio tool */
   stt?: SttConfig;
   /** email config for the send_email tool */

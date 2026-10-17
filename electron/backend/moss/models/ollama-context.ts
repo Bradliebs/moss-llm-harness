@@ -19,6 +19,8 @@ const STEP = 2048;
 export const DEFAULT_TARGET_CONTEXT = 32_768;
 /** Below this, long prompts are routinely truncated. */
 const SMALL_CONTEXT = 16_384;
+/** The smallest context worth suggesting when even that leaves part of the model on the CPU. */
+const FLOOR_CONTEXT = 8_192;
 
 export type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 export type GpuReader = () => Promise<{ totalMiB: number; usedMiB: number; name?: string } | null>;
@@ -164,6 +166,18 @@ export async function inspectOllamaContext(options: {
   // A model the server holds entirely in GPU memory demonstrably fits, so only
   // an observed spill to the CPU means the context is too large.
   if (recommended < STEP * 2) {
+    // The weights alone fill the GPU, but a huge context still makes it far
+    // worse: on an RTX 3070, ministral-3:8b wrote 3.3 tokens a second at
+    // 65,536 tokens and 13.1 at 8,192, both partly on the CPU.
+    if (spilled && served > FLOOR_CONTEXT) {
+      return {
+        ...base,
+        status: "too-large",
+        recommendedContext: FLOOR_CONTEXT,
+        variant: variantName(options.model, FLOOR_CONTEXT),
+        reason: `The model's weights nearly fill free GPU memory, and the served context of ${served.toLocaleString("en-US")} tokens pushes much more of it onto the CPU. ${FLOOR_CONTEXT.toLocaleString("en-US")} tokens still leaves some on the CPU but is several times faster; a smaller model or quantization would fit entirely.`,
+      };
+    }
     return spilled
       ? { ...base, status: "too-large", reason: "The model's weights nearly fill free GPU memory, so part of it runs on the CPU at any useful context size. A smaller model or quantization will be much faster." }
       : { ...base, status: "unknown", reason: "Free GPU memory is too small to recommend a context size for this model." };
@@ -187,6 +201,21 @@ export async function inspectOllamaContext(options: {
     };
   }
   return { ...base, status: "ok", reason: `The served context of ${served.toLocaleString("en-US")} tokens suits this model and fits in GPU memory.` };
+}
+
+/** A warning when a local Ollama model runs partly on the CPU because its
+ *  context window does not fit in GPU memory, which makes it several times
+ *  slower; null when it fits, the check fails, or it is not a local Ollama model. */
+export async function contextSpillWarning(config: { kind: string; baseUrl: string; model: string }, options: { fetcher?: Fetcher; gpu?: GpuReader; signal?: AbortSignal; fixHint?: string } = {}): Promise<string | null> {
+  if (config.kind !== "openai-compatible" || /[:-]cloud$/i.test(config.model)) return null;
+  try {
+    if (new URL(config.baseUrl).port !== "11434") return null;
+  } catch {
+    return null;
+  }
+  const report = await inspectOllamaContext({ baseUrl: config.baseUrl, model: config.model, ...(options.fetcher ? { fetcher: options.fetcher } : {}), ...(options.gpu ? { gpu: options.gpu } : {}), signal: options.signal ?? AbortSignal.timeout(15_000) }).catch(() => null);
+  if (report?.status !== "too-large") return null;
+  return `${config.model} is running partly on the CPU, so replies are several times slower. ${report.reason}${report.variant && options.fixHint ? ` ${options.fixHint}` : ""}`;
 }
 
 /** Create a variant of the model with the given num_ctx. Newer servers take

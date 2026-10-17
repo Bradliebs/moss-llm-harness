@@ -2,7 +2,7 @@
 
 import { onPersistResult } from "../lib/persistentStore";
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Brain, Check, ChevronDown, LoaderCircle, Copy, Eraser, FileText, Folder, Forward, ListChecks, Menu, PanelRightOpen, RefreshCw, Settings as SettingsIcon, X } from "lucide-react";
+import { ArrowDown, Brain, Check, ChevronDown, LoaderCircle, Copy, Eraser, ExternalLink, Eye, FileText, Folder, Forward, ListChecks, Menu, PanelRightOpen, RefreshCw, Settings as SettingsIcon, X } from "lucide-react";
 
 import type { AgentMessage, ApprovalProvenance, ChatEventPayload, ConfidenceMode, DocumentAttachment, MissionCapabilityDescriptor, MissionLaunchPolicy, Skill, TaskBudget, TaskHistoryEntry, TaskSnapshot, TaskSpec, TokenUsage } from "@common/types";
 import { PERSONALITY_PRESETS } from "@common/personalities";
@@ -46,6 +46,7 @@ import { MossFace } from "./MossFace";
 import { ChatComposer } from "./ChatComposer";
 import { ClarificationForm } from "./ClarificationForm";
 import { LiveStatus } from "./LiveStatus";
+import { PreviewPane } from "./PreviewPane";
 import { blockerRecovery, MissionMonitor } from "./MissionMonitor";
 import { criticSetup, MissionContractEditor, missionContractIssues, type MissionContract } from "./MissionReview";
 import { RichResponse } from "./RichResponse";
@@ -160,6 +161,19 @@ interface MissionLaunch {
   policy: MissionLaunchPolicy;
 }
 
+/** The path of an HTML file a write or edit call named, if any. */
+function htmlPathOf(args: string): string | undefined {
+  try {
+    const path = (JSON.parse(args) as { path?: unknown }).path;
+    return typeof path === "string" && /\.html?$/i.test(path) ? path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The most a mission may use, matching the main process's ceiling. */
+const MISSION_BUDGET_CEILING = { minutes: 240, tokens: 1_000_000, actions: 256, cost: 100 } as const;
+
 function positiveNumber(value: string): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -171,6 +185,7 @@ function ToolCard({
   workspaceRoot,
   onOpenSettings,
   onTrustEarlier,
+  onPreview,
 }: {
   tool: ToolView;
   onApprove: (callId: string, approved: boolean, comment?: string) => void;
@@ -178,13 +193,20 @@ function ToolCard({
   onOpenSettings?: (category?: SettingsCategoryId) => void;
   /** vouch for the conversation so far, so its content stops gating later turns */
   onTrustEarlier?: () => void;
+  /** show a page beside the chat; false when Moss refused it */
+  onPreview?: (path: string) => Promise<boolean>;
 }): React.ReactElement {
   const [trustedEarlier, setTrustedEarlier] = useState(false);
+  const [pageRefused, setPageRefused] = useState(false);
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const [approvalComment, setApprovalComment] = useState("");
   const active = tool.status === "running" || tool.status === "approval";
   const failure = tool.status === "error" || tool.status === "done" ? explainToolFailure(tool.result) : null;
   const summary = summarizeToolCall(tool.name, tool.args, tool.status);
+  // A page the agent wrote can be opened in the browser from its card.
+  const page = tool.status === "done" && (tool.name === "write_file" || tool.name === "edit_file") && workspaceRoot && window.moss?.workspace?.openInBrowser
+    ? htmlPathOf(tool.args)
+    : undefined;
 
   useEffect(() => {
     if (detailsRef.current) detailsRef.current.open = active;
@@ -223,6 +245,36 @@ function ToolCard({
           >
             auto
           </span>
+        ) : null}
+        {page && onPreview && !pageRefused ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-md border border-emerald-600/40 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800 hover:bg-emerald-600/10 dark:text-emerald-300"
+            title={`Show ${page} beside the chat. It reloads when the agent changes a file.`}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void onPreview(page).then((shown) => setPageRefused(!shown));
+            }}
+          >
+            <Eye size={12} aria-hidden="true" />
+            Preview
+          </button>
+        ) : null}
+        {page ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-md border border-emerald-600/40 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800 hover:bg-emerald-600/10 dark:text-emerald-300"
+            title={pageRefused ? "Moss opens pages only from a workspace used since it started. Send a message in this workspace, then try again." : `Open ${page} in your web browser. Its scripts run there, as when you open any file.`}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void window.moss.workspace.openInBrowser?.(workspaceRoot!, page).then((opened) => setPageRefused(!opened));
+            }}
+          >
+            <ExternalLink size={12} aria-hidden="true" />
+            {pageRefused ? "Could not open: send a message first" : "Open in browser"}
+          </button>
         ) : null}
         <span className={`text-xs ${toolStatusColor(tool.status)}`}>{tool.status}</span>
         <ChevronDown size={14} className="shrink-0 text-neutral-600 transition-transform duration-150 group-open:rotate-180 dark:text-neutral-400" aria-hidden="true" />
@@ -599,8 +651,13 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   const [task, setTask] = useState<TaskSnapshot | null>(null);
   const [taskHistory, setTaskHistory] = useState<TaskHistoryEntry[]>([]);
   const [artifactSelection, setArtifactSelection] = useState<{ sessionId: string; taskId: string; id: string } | null>(null);
+  /** a workspace page shown beside the chat; `reload` changes to load it again */
+  const [preview, setPreview] = useState<{ url: string; path: string; root: string; reload: number } | null>(null);
   const [composerMode, setComposerMode] = useState<"chat" | "mission">("chat");
-  const [missionAuthority, setMissionAuthority] = useState<MissionLaunchPolicy["authority"]>("supervised");
+  // Remembered between missions; settings saved before this choice existed get
+  // the default: one approval at launch rather than one per file change.
+  const missionAuthority: MissionLaunchPolicy["authority"] = settings.missionAuthority ?? "policy-scoped";
+  const setMissionAuthority = (authority: MissionLaunchPolicy["authority"]): void => updateSettings({ missionAuthority: authority });
   const [missionCapabilities, setMissionCapabilities] = useState<MissionCapabilityDescriptor[]>([]);
   const [selectedMissionCapabilities, setSelectedMissionCapabilities] = useState<string[]>([]);
   const [missionCapabilitiesLoading, setMissionCapabilitiesLoading] = useState(false);
@@ -1087,6 +1144,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       adaptiveTone: activeSettings.adaptiveTone,
       projectInstructions: activeSettings.projectInstructions,
       thinking: activeSettings.thinking,
+      ...(activeSettings.goalMode && !durableTask && !missionLaunch ? { goal: true } : {}),
       stt: {
         baseUrl: (activeSettings.sttBaseUrl || activeSettings.baseUrl || "").trim(),
         apiKey: activeSettings.apiKey || undefined,
@@ -1142,10 +1200,12 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   });
 
   function currentMissionBudget(): TaskBudget | null {
-    const minutes = positiveNumber(missionBudget.minutes);
-    const tokens = positiveNumber(missionBudget.tokens);
-    const actions = positiveNumber(missionBudget.actions);
-    const cost = positiveNumber(missionBudget.cost);
+    // A blank field means no limit of its own: the mission ceiling applies.
+    const limit = (value: string, ceiling: number): number | null => (value.trim() ? positiveNumber(value) : ceiling);
+    const minutes = limit(missionBudget.minutes, MISSION_BUDGET_CEILING.minutes);
+    const tokens = limit(missionBudget.tokens, MISSION_BUDGET_CEILING.tokens);
+    const actions = limit(missionBudget.actions, MISSION_BUDGET_CEILING.actions);
+    const cost = limit(missionBudget.cost, MISSION_BUDGET_CEILING.cost);
     if (minutes === null || tokens === null || actions === null || cost === null) return null;
     return {
       maxDurationMs: Math.round(minutes * 60_000),
@@ -1166,7 +1226,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     if (!budget || selectedMissionCapabilities.length === 0 || contractIssues.length > 0) {
       setStatus(
         !budget
-          ? "Mission budgets must all be positive numbers."
+          ? "Mission budgets must be positive numbers, or blank for no limit."
           : selectedMissionCapabilities.length === 0
             ? "Select at least one mission capability."
             : contractIssues[0],
@@ -1404,6 +1464,23 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     else if (action.kind === "retry") retryLastTurn();
   }
 
+  async function openPreview(path: string): Promise<boolean> {
+    const root = settings.workspaceRoot;
+    const url = root ? await window.moss.workspace.previewUrl?.(root, path) : null;
+    if (!root || !url) return false;
+    setArtifactSelection(null);
+    setPreview({ url, path, root, reload: 0 });
+    return true;
+  }
+
+  // The preview follows the agent's work: each finished file change reloads it.
+  const fileChanges = activity.filter((item) => item.kind === "tool" && item.status === "done" && /^(write_file|edit_file|delete_file|move_file|apply_patch)$/.test(item.name)).length;
+  useEffect(() => {
+    if (fileChanges > 0) setPreview((open) => open ? { ...open, reload: open.reload + 1 } : open);
+  }, [fileChanges]);
+  // A preview belongs to the conversation and workspace it was opened from.
+  useEffect(() => setPreview(null), [current?.id, settings.workspaceRoot]);
+
   useEffect(() => {
     const stopOnEscape = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.defaultPrevented || !turnIdRef.current) return;
@@ -1582,7 +1659,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   );
   // Only offered once this chat has shown the model thinking (or it is off), so
   // models that never think do not get a switch that does nothing.
-  const showThinkingToggle = settings.thinking === "off" || history.some((message) => !!message.reasoning) || activity.some((item) => item.kind === "thinking");
+  const showThinkingToggle = settings.thinking !== "auto" || history.some((message) => !!message.reasoning) || activity.some((item) => item.kind === "thinking");
   // With routing or escalation set up, another model may be answering.
   const waitingFor = settings.fastModel || settings.escalationModel || settings.fastRoute || settings.escalationRoute ? "the model" : settings.model || "the model";
   const waitingSeconds = busy && ownsActiveTurn && (preparingTool !== null || !visiblyWorking)
@@ -1593,12 +1670,15 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     : undefined;
   const missionIssues = missionContractIssues(missionContract, configuredVerificationCommands, settings.workspaceRoot, criticSetup(settings));
   function openArtifact(id: string): void {
-    if (current && task) setArtifactSelection({ sessionId: current.id, taskId: task.id, id });
+    if (current && task) {
+      setPreview(null);
+      setArtifactSelection({ sessionId: current.id, taskId: task.id, id });
+    }
   }
 
   return (
     <div className="relative flex h-screen min-w-0 flex-1 bg-transparent text-neutral-900 dark:text-neutral-100">
-    <div className={`${selectedArtifact ? "hidden lg:flex" : "flex"} min-h-0 min-w-0 flex-1 flex-col`}>
+    <div className={`${selectedArtifact || preview ? "hidden lg:flex" : "flex"} min-h-0 min-w-0 flex-1 flex-col`}>
       <header className="flex flex-wrap items-center gap-2 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50/60 dark:bg-neutral-950/60 px-4 py-2 text-sm backdrop-blur-sm">
         <button
           type="button"
@@ -1963,7 +2043,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           ) : (
             // In the same column as the answers, so a turn reads top to bottom.
             <div key={i} className="mx-auto w-full max-w-[52rem] sm:pl-11">
-              <ToolCard tool={it} onApprove={approve} workspaceRoot={settings.workspaceRoot} onOpenSettings={onOpenSettings} onTrustEarlier={activeTurnSessionId ? trustEarlierContent : undefined} />
+              <ToolCard tool={it} onApprove={approve} workspaceRoot={settings.workspaceRoot} onOpenSettings={onOpenSettings} onTrustEarlier={activeTurnSessionId ? trustEarlierContent : undefined} onPreview={window.moss?.workspace?.previewUrl ? openPreview : undefined} />
             </div>
           )
           );
@@ -2094,7 +2174,8 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         interruptQueued={interruptQueued}
         modelSelected={!!settings.model && !turnActiveElsewhere}
         activeElsewhere={turnActiveElsewhere}
-        thinking={showThinkingToggle ? { on: settings.thinking !== "off", onToggle: () => updateSettings({ thinking: settings.thinking === "off" ? "auto" : "off" }) } : undefined}
+        thinking={showThinkingToggle ? { on: settings.thinking !== "off", extended: settings.thinking === "extended", onToggle: () => updateSettings({ thinking: settings.thinking === "off" ? "auto" : "off" }) } : undefined}
+        keepGoing={settings.enableTools ? { on: settings.goalMode === true, onToggle: () => updateSettings({ goalMode: settings.goalMode !== true }) } : undefined}
         pendingAttachmentReads={pendingAttachmentReads}
         hasSendContent={!!input.trim() || attachments.length > 0 || documents.length > 0}
         launchBlocked={composerMode === "mission" && (
@@ -2328,12 +2409,13 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                 </fieldset>
                 <fieldset>
                   <legend className="mb-1 text-xs font-semibold text-neutral-700 dark:text-neutral-200">Budgets</legend>
+                  <p className="mb-1 text-[11px] text-neutral-600 dark:text-neutral-400">Leave a field blank for no limit of its own (a mission still stops at 4 hours, 1,000,000 tokens, 256 actions, or $100). Models on this PC cost nothing.</p>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {([
-                      ["minutes", "Minutes", "240"],
-                      ["tokens", "Tokens", "1000000"],
-                      ["actions", "Actions", "256"],
-                      ["cost", "Cost USD", "100"],
+                      ["minutes", "Minutes", String(MISSION_BUDGET_CEILING.minutes)],
+                      ["tokens", "Tokens", String(MISSION_BUDGET_CEILING.tokens)],
+                      ["actions", "Actions", String(MISSION_BUDGET_CEILING.actions)],
+                      ["cost", "Cost USD", String(MISSION_BUDGET_CEILING.cost)],
                     ] as const).map(([key, label, max]) => (
                       <label key={key} className="text-[11px] text-neutral-600 dark:text-neutral-400">
                         {label}
@@ -2343,6 +2425,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                           min="0.01"
                           max={max}
                           step={key === "cost" ? "0.01" : "1"}
+                          placeholder="No limit"
                           value={missionBudget[key]}
                           onChange={(event) => setMissionBudget((currentBudget) => ({ ...currentBudget, [key]: event.target.value }))}
                           className="mt-0.5 w-full rounded border border-neutral-300 bg-neutral-100 px-1.5 py-1 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
@@ -2377,6 +2460,18 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         <Suspense fallback={null}>
           <ArtifactWorkspace key={`${current?.id}:${task.id}`} artifacts={task.artifacts ?? []} selectedId={selectedArtifact.id} onSelect={openArtifact} onClose={() => setArtifactSelection(null)} loadArtifact={loadStoredArtifact} onCopy={copyArtifact} />
         </Suspense>
+      </div>
+    ) : null}
+    {preview && !selectedArtifact ? (
+      <div className="absolute inset-0 z-20 min-w-0 lg:static lg:z-auto lg:w-[45%] lg:max-w-[48rem] lg:shrink-0">
+        <PreviewPane
+          url={preview.url}
+          path={preview.path}
+          reloadKey={preview.reload}
+          onReload={() => setPreview((open) => open ? { ...open, reload: open.reload + 1 } : open)}
+          onOpenInBrowser={() => void window.moss.workspace.openInBrowser?.(preview.root, preview.path)}
+          onClose={() => setPreview(null)}
+        />
       </div>
     ) : null}
     {workingStateOpen && current ? (

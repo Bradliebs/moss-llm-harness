@@ -25,8 +25,10 @@ A <turn_context source="moss"> block at or near the end of a user message comes 
  *  working change from a broken one, and the machine the commands run on. */
 const CODING_INSTRUCTIONS = `Working on code in the workspace:
 - Read a file (or the lines you need) before editing it, and copy edit_file's oldText exactly from what you read.
+- When you say you will do something, make that tool call in the same reply.
 - Make the smallest change that does the job. Never replace code with placeholders such as "rest of file unchanged".
 - After changing code, run the project's tests or build with run_command and fix what fails. Say what you verified; do not claim a result you did not check.
+- When you build something the user will open or run (a page, a game, a script), end by naming its main file and how to open or run it.
 - This computer runs ${process.platform === "win32" ? "Windows; run_command uses cmd.exe" : process.platform === "darwin" ? "macOS; run_command uses /bin/sh" : "Linux; run_command uses /bin/sh"}.`;
 
 const SKILL_MEMORY_INSTRUCTIONS = `Use m_remember for durable facts, preferences, and decisions needed in future sessions. If the user starts a message with /<skill-name>, call m_get_skill with that exact skill name before answering or acting.`;

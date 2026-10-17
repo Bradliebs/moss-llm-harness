@@ -216,6 +216,8 @@ describe("registerChatIpc", () => {
       IPC.clipboardWrite,
       IPC.workspacePreview,
       IPC.workspaceSuggestVerification,
+      IPC.workspaceOpenInBrowser,
+      IPC.workspacePreviewUrl,
       IPC.windowFocus,
       IPC.modelProbeRun,
       IPC.modelProbeCancel,

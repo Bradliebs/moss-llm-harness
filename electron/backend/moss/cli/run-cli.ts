@@ -18,6 +18,8 @@ import type { AgentMessage, ModelCapabilityProfile, MossEvent, ProviderConfig, P
 import { runTurn, type CompletionContext, type CompletionDecision } from "../agent-runner";
 import { modelProfileStore } from "../models/model-profile-store";
 import { applyScaffoldingMessages, planScaffolding } from "../models/scaffolding";
+import { contextSpillWarning } from "../models/ollama-context";
+import { workspaceOrientation } from "../workspace/orientation";
 import { StepProtocolProvider } from "../models/step-protocol";
 import { findToolTool, semanticIndex } from "../models/tool-index";
 import { classifyTool } from "../permission";
@@ -29,9 +31,9 @@ import { buildSystemMessage } from "../system-prompt";
 import { TOOL_DEFINITIONS as ALL_TOOL_DEFINITIONS, TOOL_REGISTRY as ALL_TOOLS, type Tool } from "../tools";
 import { formatVerifyReport, runVerify } from "../verify/verifier";
 
-/** Memory and skill tools write the desktop app's shared data, and email and
- *  transcription need settings a headless run does not have. */
-const HEADLESS_EXCLUDED = (name: string): boolean => name.startsWith("m_") || name === "send_email" || name === "transcribe_audio";
+/** Memory and skill tools write the desktop app's shared data, and email,
+ *  transcription, and codebase search need settings a headless run does not have. */
+const HEADLESS_EXCLUDED = (name: string): boolean => name.startsWith("m_") || name === "send_email" || name === "transcribe_audio" || name === "search_codebase";
 const TOOL_REGISTRY = new Map([...ALL_TOOLS].filter(([name]) => !HEADLESS_EXCLUDED(name)));
 const TOOL_DEFINITIONS = ALL_TOOL_DEFINITIONS.filter((tool) => !HEADLESS_EXCLUDED(tool.name));
 
@@ -63,6 +65,10 @@ export interface RunCliOptions {
   instructions?: string;
   tools: boolean;
   profileFile?: string;
+  /** "off" asks reasoning models to answer without a thinking phase; "extended" to think longer */
+  thinking: "auto" | "off" | "extended";
+  /** the model's context window in tokens, so long runs are compacted to fit */
+  contextLimit?: number;
   /** environment variable the API key was read from */
   apiKeyEnv?: string;
 }
@@ -78,10 +84,12 @@ export interface RunCliDependencies {
   /** Measured profile lookup for scaffolding and --constrained auto. */
   loadProfile?: (options: RunCliOptions) => Promise<ModelCapabilityProfile | null>;
   runVerify?: typeof runVerify;
+  /** Warns when a local Ollama model spills onto the CPU; null when it fits. */
+  checkContext?: (config: ProviderConfig) => Promise<string | null>;
   signal?: AbortSignal;
 }
 
-export const RUN_USAGE = "Usage: moss --model NAME [--prompt TEXT | --prompt-file FILE | stdin] [--base-url URL] [--kind openai-compatible|anthropic|github-copilot] [--api-key-env VAR] [--workspace DIR] [--approve deny|safe|ask] [--verify CMD ...] [--max-rounds N] [--constrained auto|always|never] [--no-tools] [--profile FILE] [--instructions FILE] [--json] [--events-out FILE] [--data-dir DIR]";
+export const RUN_USAGE = "Usage: moss --model NAME [--prompt TEXT | --prompt-file FILE | stdin] [--base-url URL] [--kind openai-compatible|anthropic|github-copilot] [--api-key-env VAR] [--workspace DIR] [--approve deny|safe|ask] [--verify CMD ...] [--max-rounds N] [--constrained auto|always|never] [--thinking auto|off|extended] [--context TOKENS] [--no-tools] [--profile FILE] [--instructions FILE] [--json] [--events-out FILE] [--data-dir DIR]";
 
 /** The desktop app's data folder, so headless runs share its profiles and lessons. */
 export function defaultDataDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
@@ -101,6 +109,7 @@ export function parseRunArgs(args: readonly string[], env: NodeJS.ProcessEnv = p
     approve: "deny",
     verify: [],
     constrained: "auto",
+    thinking: "auto",
     json: false,
     dataDir: defaultDataDir(env),
     tools: true,
@@ -138,6 +147,14 @@ export function parseRunArgs(args: readonly string[], env: NodeJS.ProcessEnv = p
       const mode = need();
       if (mode !== "auto" && mode !== "always" && mode !== "never") throw new Error(`--constrained must be auto, always or never (got ${mode})`);
       options.constrained = mode;
+    } else if (flag === "--thinking") {
+      const mode = need();
+      if (mode !== "auto" && mode !== "off" && mode !== "extended") throw new Error(`--thinking must be auto, off or extended (got ${mode})`);
+      options.thinking = mode;
+    } else if (flag === "--context") {
+      const tokens = Number(need());
+      if (!Number.isInteger(tokens) || tokens < 2_048 || tokens > 2_000_000) throw new Error("--context must be a whole number of tokens from 2048 to 2000000");
+      options.contextLimit = tokens;
     } else if (flag === "--no-tools") options.tools = false;
     else if (flag === "--instructions") options.instructions = readFileSync(resolve(cwd, need()), "utf8");
     else if (flag === "--json") options.json = true;
@@ -236,6 +253,12 @@ export async function runMossCli(args: readonly string[], dependencies: RunCliDe
 
   emit({ type: "run-start", model: options.model, endpoint: options.baseUrl, workspace: options.workspace, approve: options.approve, constrained, ...(tier ? { tier } : {}), verify: options.verify });
   info(`moss: ${options.model} ${options.kind === "github-copilot" ? "on GitHub Copilot" : `at ${options.baseUrl}`} in ${options.workspace}${tier ? ` (${tier})` : ""}${constrained ? ", constrained output" : ""}, approvals: ${options.approve}`);
+  // The model is not loaded yet; the check loads it, which the run would do anyway.
+  const spill = await (dependencies.checkContext ?? ((checked) => contextSpillWarning({ kind: checked.kind ?? "openai-compatible", baseUrl: checked.baseUrl ?? "", model: checked.model }, { signal: AbortSignal.timeout(120_000), fixHint: "Create a variant with a smaller num_ctx, for example with Moss's Settings > Models > Check context window, and pass --context with its size." })))(config);
+  if (spill) {
+    emit({ type: "notice", level: "warn", message: spill });
+    info(`warning: ${spill}`);
+  }
 
   // The same adaptive scaffolding as the desktop app: a measured weak model
   // gets fewer, relevant tools, step guidance and find_tool to recover others.
@@ -251,6 +274,8 @@ export async function runMossCli(args: readonly string[], dependencies: RunCliDe
   // The registry is what can actually run, so it must never exceed what was offered.
   const toolRegistry = !options.tools ? new Map<string, Tool>() : narrowed ? new Map([...TOOL_REGISTRY, [findToolTool.name, findToolTool]]) : TOOL_REGISTRY;
 
+  // A map of the workspace, so the model does not start by listing folders.
+  const orientation = options.tools ? await workspaceOrientation(options.workspace).catch(() => "") : "";
   const messages: AgentMessage[] = [
     buildSystemMessage({
       includeSkills: false,
@@ -378,6 +403,9 @@ export async function runMossCli(args: readonly string[], dependencies: RunCliDe
       ...(options.verify.length > 0 ? { verify: { enabled: true, commands: options.verify }, completionGuard } : {}),
       ...(dependencies.runVerify ? { verificationRunner: dependencies.runVerify } : {}),
       ...(options.maxRounds ? { maxRounds: options.maxRounds } : {}),
+      ...(options.thinking === "off" ? { reasoning: "none" as const } : options.thinking === "extended" ? { reasoning: "high" as const } : {}),
+      ...(options.contextLimit ? { contextLimit: options.contextLimit } : {}),
+      ...(orientation ? { turnContext: [orientation] } : {}),
     });
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);

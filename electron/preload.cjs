@@ -32,6 +32,10 @@ const CH = {
   workspacePick: "moss:workspace:pick",
   workspacePreview: "moss:workspace:preview",
   workspaceSuggestVerification: "moss:workspace:suggestVerification",
+  workspaceOpenInBrowser: "moss:workspace:openInBrowser",
+  workspacePreviewUrl: "moss:workspace:previewUrl",
+  webAccessGet: "moss:webAccess:get",
+  webAccessSet: "moss:webAccess:set",
   windowFocus: "moss:window:focus",
   modelProbeRun: "moss:model:probeRun",
   modelProbeCancel: "moss:model:probeCancel",
@@ -136,10 +140,16 @@ contextBridge.exposeInMainWorld("moss", {
     pick: () => ipcRenderer.invoke(CH.workspacePick),
     preview: (root, path) => ipcRenderer.invoke(CH.workspacePreview, root, path),
     suggestVerification: (root) => ipcRenderer.invoke(CH.workspaceSuggestVerification, root),
+    openInBrowser: (root, path) => ipcRenderer.invoke(CH.workspaceOpenInBrowser, root, path),
+    previewUrl: (root, path) => ipcRenderer.invoke(CH.workspacePreviewUrl, root, path),
   },
   window: {
     focus: () => ipcRenderer.invoke(CH.windowFocus),
+  },  webAccess: {
+    get: () => ipcRenderer.invoke(CH.webAccessGet),
+    set: (enabled, settings) => ipcRenderer.invoke(CH.webAccessSet, enabled, settings),
   },
+
   procedures: {
     list: () => ipcRenderer.invoke(CH.proceduresList),
     setStatus: (id, status) => ipcRenderer.invoke(CH.procedureSetStatus, id, status),

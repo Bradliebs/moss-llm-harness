@@ -48,7 +48,7 @@ export function resolveInWorkspace(workspaceRoot: string, inputPath: string): st
   const rel = relative(workspaceRoot, abs);
   if (rel === "") return abs; // the root itself
   if (escapes(rel)) {
-    throw new Error(`Path escapes the workspace sandbox: ${inputPath}`);
+    throw new Error(`Path escapes the workspace sandbox: ${inputPath}. Use a path relative to the workspace folder, such as src/index.js.`);
   }
   // A link inside the workspace can point anywhere; follow it before trusting it.
   if (existsSync(workspaceRoot)) {

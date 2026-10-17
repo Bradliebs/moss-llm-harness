@@ -32,4 +32,16 @@ describe("buildMissionTemplate", () => {
     expect(buildMissionTemplate("automation", [], capabilities, false).contract.criteria[0].verification)
       .toEqual({ kind: "http", url: "http://localhost:3000", expectedStatus: 200 });
   });
+
+  it("grants research what its own criterion needs: writing the report and reading sources", () => {
+    const research = buildMissionTemplate("research", [], [
+      ...capabilities,
+      { id: "web_search", risk: "readonly" as const },
+      { id: "fetch_url", risk: "readonly" as const },
+      { id: "run_command", risk: "mutating" as const },
+    ], true);
+    // A file-exists criterion that the grant could never satisfy blocked every research mission.
+    expect(research.capabilityIds).toEqual(expect.arrayContaining(["read_file", "write_file", "web_search", "fetch_url", "browser_navigate"]));
+    expect(research.capabilityIds).not.toContain("run_command");
+  });
 });

@@ -32,6 +32,7 @@ export function estimateTokens(messages: readonly AgentMessage[]): number {
   for (const m of messages) {
     chars += m.content.length + 8;
     if (m.toolCalls) for (const c of m.toolCalls) chars += c.name.length + c.arguments.length;
+    if (m.reasoningReplay?.text) chars += m.reasoningReplay.text.length;
     if (m.documents) for (const document of m.documents) chars += document.name.length + document.mediaType.length + document.text.length + 32;
   }
   return Math.ceil(chars / 4);

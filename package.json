@@ -29,6 +29,7 @@
     "pack": "npm run build && electron-builder --dir",
     "pack:ci": "electron-builder --dir --config.win.signAndEditExecutable=false",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
+    "smoke:web": "node scripts/smoke-web-access.mjs",
     "dist": "npm run build && electron-builder --win nsis"
   },
   "dependencies": {

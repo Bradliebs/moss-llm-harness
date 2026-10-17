@@ -49,7 +49,7 @@ function editDistance(a: string, b: string): number {
 }
 
 function parseObject(raw: string): Record<string, unknown> | null {
-  const attempts = [raw, raw.replace(/^```(?:json)?\s*|\s*```$/g, ""), raw.replace(/,\s*([}\]])/g, "$1")];
+  const attempts = [raw, raw.replace(/^```(?:json)?\s*|\s*```$/g, ""), raw.replace(/,\s*([}\]])/g, "$1"), escapeStrayBackslashes(raw)];
   for (const attempt of attempts) {
     try {
       const value: unknown = JSON.parse(attempt.trim() || "{}");
@@ -61,8 +61,58 @@ function parseObject(raw: string): Record<string, unknown> | null {
   return null;
 }
 
+/** Models write regular expressions such as \s, \d or \b, and Windows paths
+ *  such as C:\users, inside JSON strings. Only used once strict parsing has
+ *  failed: every escape except \" \\ \/ \n \r \t and \uXXXX is kept literal. */
+function escapeStrayBackslashes(raw: string): string {
+  // Valid escapes are consumed whole, so the second backslash of `\\` is never
+  // mistaken for a stray one.
+  return raw.replace(/\\(["\\/nrt]|u[0-9a-fA-F]{4})|\\/g, (match: string, valid: string | undefined) => (valid ? match : "\\\\"));
+}
+
+function parseJson(raw: string): unknown {
+  for (const attempt of [raw.replace(/,\s*([}\]])/g, "$1"), escapeStrayBackslashes(raw).replace(/,\s*([}\]])/g, "$1")]) {
+    try {
+      return JSON.parse(attempt);
+    } catch {
+      // Try the next, more lenient form.
+    }
+  }
+  return undefined;
+}
+
 function stripThinking(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  const closed = text.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/\[THINK\][\s\S]*?\[\/THINK\]/g, "");
+  // Mistral reasoning models may stream only the closing marker.
+  const close = closed.lastIndexOf("[/THINK]");
+  return (close >= 0 ? closed.slice(close + "[/THINK]".length) : closed).trim();
+}
+
+/** The JSON object that starts at `start`, found by matching braces outside strings. */
+function balancedObject(text: string, start: number): string | undefined {
+  let depth = 0;
+  let inString = false;
+  for (let index = start; index < text.length; index++) {
+    const char = text[index];
+    if (inString) {
+      if (char === "\\") index++;
+      else if (char === "\"") inString = false;
+    } else if (char === "\"") inString = true;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth === 0) return text.slice(start, index + 1);
+  }
+  return undefined;
+}
+
+/** Mistral's newer format: `[TOOL_CALLS]name[ARGS]{...}`, one per call. */
+function mistralArgsCalls(text: string): Array<{ name: string; args: string }> {
+  const out: Array<{ name: string; args: string }> = [];
+  for (const match of text.matchAll(/([A-Za-z_][\w.-]*)\[ARGS\]\s*/g)) {
+    const start = match.index + match[0].length;
+    const object = text[start] === "{" ? balancedObject(text, start) : undefined;
+    if (object) out.push({ name: match[1], args: object });
+  }
+  return out;
 }
 
 function candidateObjects(text: string): string[] {
@@ -88,13 +138,11 @@ export function parseTextToolCalls(text: string, tools: readonly ToolDefinition[
     const value = typeof args === "string" ? parseObject(args) ?? {} : args && typeof args === "object" ? args : {};
     calls.push({ id: `repaired-${randomUUID()}`, name, arguments: JSON.stringify(value) });
   };
+  for (const call of mistralArgsCalls(visible)) accept(call.name, call.args);
+  if (calls.length > 0) return calls;
   for (const candidate of candidateObjects(visible)) {
-    let value: unknown;
-    try {
-      value = JSON.parse(candidate.replace(/,\s*([}\]])/g, "$1"));
-    } catch {
-      continue;
-    }
+    const value = parseJson(candidate);
+    if (value === undefined) continue;
     for (const item of Array.isArray(value) ? value : [value]) {
       if (!item || typeof item !== "object") continue;
       const record = item as Record<string, unknown>;

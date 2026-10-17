@@ -1,16 +1,17 @@
 // electron/backend/moss/tools/codebase-tool.test.ts
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { codebaseIndex } from "../codebase/codebase-index";
 import { searchCodebaseTool } from "./codebase-tool";
 import type { ToolContext } from "./types";
 
 vi.mock("../codebase/codebase-index", () => ({
-  codebaseIndex: { search: vi.fn() },
+  codebaseIndex: { search: vi.fn(), status: vi.fn() },
 }));
 
 const search = vi.mocked(codebaseIndex.search);
+const status = vi.mocked(codebaseIndex.status);
 
 function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
@@ -20,6 +21,10 @@ function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  status.mockResolvedValue({ indexed: true, files: 2, chunks: 4, model: "embed-v1" });
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -41,7 +46,15 @@ describe("searchCodebaseTool", () => {
   it("requires an embedding model", async () => {
     const res = await searchCodebaseTool.execute({ query: "x" }, ctx({ embed: undefined }));
     expect(res.ok).toBe(false);
-    expect(res.content).toMatch(/No embedding model configured/);
+    expect(res.content).toMatch(/no embedding model is configured.*search_files/);
+  });
+
+  it("says an unindexed workspace cannot be searched, instead of reporting no matches", async () => {
+    status.mockResolvedValue({ indexed: false, files: 0, chunks: 0, model: "" });
+    const res = await searchCodebaseTool.execute({ query: "x" }, ctx());
+    expect(res.ok).toBe(false);
+    expect(res.content).toMatch(/has not been indexed.*search_files/);
+    expect(search).not.toHaveBeenCalled();
   });
 
   it("formats ranked hits", async () => {

@@ -201,7 +201,8 @@ export interface HarnessTraceToolCall {
 
 export type HarnessTraceEvent =
   | { type: "round-start"; round: number; toolsEnabled: boolean }
-  | { type: "round-end"; round: number; toolCallCount: number; finish: "tools" | "complete" | "rejected" | "error" }
+  /** continued: the harness asked the model to go on (not a rejection of its work) */
+  | { type: "round-end"; round: number; toolCallCount: number; finish: "tools" | "complete" | "rejected" | "continued" | "error" }
   | { type: "tool-call"; callId: string; name: string; argumentHash: string }
   | { type: "approval-requested"; callId: string; name: string; risk?: ToolRisk }
   | { type: "approval-decision"; callId: string; approved: boolean; commentProvided: boolean }

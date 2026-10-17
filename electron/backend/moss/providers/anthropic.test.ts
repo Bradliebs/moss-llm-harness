@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChatRequest, ProviderStreamEvent } from "./types";
-import { AnthropicProvider, toAnthropic } from "./anthropic";
+import { AnthropicProvider, DEFAULT_MAX_OUTPUT_TOKENS, modelOutputLimit, toAnthropic } from "./anthropic";
 
 /** Minimal stand-in for the fetch Response body's ReadableStream: hands back the
  *  whole SSE payload as a single chunk, then signals done. */
@@ -244,6 +244,149 @@ describe("AnthropicProvider.streamChat", () => {
       },
     ]);
   });
+
+  it("allows long replies by default and says when a reply stopped at the limit", async () => {
+    const fetchMock = stubStream(sse(
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tu1", name: "write_file" } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"path":"game.html","content":"<html>' } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "max_tokens" }, usage: { output_tokens: 32000 } },
+    ));
+    const events = await collect(new AnthropicProvider("https://api"));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).max_tokens).toBe(DEFAULT_MAX_OUTPUT_TOKENS);
+    expect(events.at(-1)).toEqual({ type: "output-limit" });
+  });
+
+  it("asks again with the model's own output limit when the default is too large, and remembers it", async () => {
+    const tooLarge = "max_tokens: 32000 > 8192, which is the maximum allowed number of output tokens for claude-3-5-sonnet-20241022";
+    const ok = () => ({ ok: true, status: 200, body: bodyFrom(sse({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } })), text: async () => "" });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, body: undefined, text: async () => JSON.stringify({ error: { message: tooLarge } }) })
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok());
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new AnthropicProvider("https://api");
+    const small: ChatRequest = { ...req, model: "claude-small-output" };
+    const drain = async (): Promise<ProviderStreamEvent[]> => {
+      const events: ProviderStreamEvent[] = [];
+      for await (const e of provider.streamChat(small, new AbortController().signal)) events.push(e);
+      return events;
+    };
+    expect(await drain()).toEqual([{ type: "text-delta", text: "ok" }]);
+    await drain();
+    // The next turn starts at the limit that worked: no second rejected request.
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).max_tokens)).toEqual([32000, 8192, 8192]);
+  });
+
+  it("steps down when a compatible server rejects max_tokens without naming its limit", async () => {
+    const vague = { ok: false, status: 400, body: undefined, text: async () => "Invalid max_tokens value" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(vague)
+      .mockResolvedValueOnce(vague)
+      .mockResolvedValueOnce({ ok: true, status: 200, body: bodyFrom(sse()), text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+    for await (const _ of new AnthropicProvider("https://compatible").streamChat({ ...req, model: "vague-model" }, new AbortController().signal)) { /* drain */ }
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).max_tokens)).toEqual([32000, 16000, 8192]);
+  });
+
+  it("passes on a tool call cut off by the limit even without content_block_stop", async () => {
+    stubStream(sse(
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tu9", name: "write_file" } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"path":"game.html","content":"<html>' } },
+      { type: "message_delta", delta: { stop_reason: "max_tokens" }, usage: { output_tokens: 32000 } },
+    ));
+    const events = await collect(new AnthropicProvider("https://api"));
+    expect(events.filter((event) => event.type !== "usage")).toEqual([
+      { type: "tool-call", toolCall: { id: "tu9", name: "write_file", arguments: '{"path":"game.html","content":"<html>' } },
+      { type: "output-limit" },
+    ]);
+  });
+
+  it("does not retry other bad requests", async () => {
+    stubStream("model: not found", { ok: false, status: 400 });
+    await expect(collect(new AnthropicProvider("https://api"))).rejects.toThrow(/HTTP 400 model: not found/);
+  });
+
+  it("sends no thinking field unless a reasoning setting asks for one", async () => {
+    const fetchMock = stubStream(sse());
+    await collect(new AnthropicProvider("https://api"));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).not.toHaveProperty("thinking");
+  });
+
+  it("asks for summarized adaptive thinking when extended, without a temperature, and hands back the signed block", async () => {
+    const fetchMock = stubStream(sse(
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Read the file " } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "first." } },
+      { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig-1" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "redacted_thinking", data: "opaque" } },
+      { type: "content_block_stop", index: 1 },
+      { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "tu1", name: "read_file" } },
+      { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: '{"path":"a"}' } },
+      { type: "content_block_stop", index: 2 },
+    ));
+    const events: ProviderStreamEvent[] = [];
+    for await (const e of new AnthropicProvider("https://api").streamChat({ ...req, model: "claude-adaptive", reasoning: "high", temperature: 0.2 }, new AbortController().signal)) events.push(e);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body.thinking).toEqual({ type: "adaptive", display: "summarized" });
+    expect(body).not.toHaveProperty("temperature");
+    expect(events).toEqual([
+      { type: "reasoning-delta", text: "Read the file " },
+      { type: "reasoning-delta", text: "first." },
+      { type: "reasoning-replay", blocks: [{ type: "thinking", thinking: "Read the file first.", signature: "sig-1" }] },
+      { type: "reasoning-replay", blocks: [{ type: "redacted_thinking", data: "opaque" }] },
+      { type: "tool-call", toolCall: { id: "tu1", name: "read_file", arguments: '{"path":"a"}' } },
+    ]);
+  });
+
+  it("falls back to a thinking budget, then to no thinking field, and remembers what worked", async () => {
+    const rejected = (message: string) => ({ ok: false, status: 400, body: undefined, text: async () => JSON.stringify({ error: { message } }) });
+    const ok = () => ({ ok: true, status: 200, body: bodyFrom(sse()), text: async () => "" });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(rejected("thinking.type: Input tag 'adaptive' does not match any of the expected tags"))
+      .mockResolvedValueOnce(rejected("thinking: this model does not support extended thinking"))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok());
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new AnthropicProvider("https://api");
+    const old: ChatRequest = { ...req, model: "claude-no-thinking", reasoning: "high" };
+    for (let i = 0; i < 2; i++) for await (const _ of provider.streamChat(old, new AbortController().signal)) { /* drain */ }
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).thinking)).toEqual([
+      { type: "adaptive", display: "summarized" },
+      { type: "enabled", budget_tokens: 16000 },
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("keeps a manual thinking budget below a small output limit", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, body: undefined, text: async () => "\"thinking.type.adaptive\" is not supported" })
+      .mockResolvedValueOnce({ ok: true, status: 200, body: bodyFrom(sse()), text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+    for await (const _ of new AnthropicProvider("https://api").streamChat({ ...req, model: "claude-budget", reasoning: "high", maxTokens: 4096 }, new AbortController().signal)) { /* drain */ }
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string).thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+  });
+
+  it("turns thinking off with disabled, omitting the field where a model rejects that", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, body: undefined, text: async () => "\"thinking.type.disabled\" is not supported for this model" })
+      .mockResolvedValueOnce({ ok: true, status: 200, body: bodyFrom(sse()), text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+    for await (const _ of new AnthropicProvider("https://api").streamChat({ ...req, model: "claude-always-thinks", reasoning: "none" }, new AbortController().signal)) { /* drain */ }
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(call[1].body as string).thinking)).toEqual([{ type: "disabled" }, undefined]);
+  });
+});
+
+describe("modelOutputLimit", () => {
+  it("reads the limit only from a max_tokens error", () => {
+    expect(modelOutputLimit("max_tokens: 32000 > 8192, which is the maximum allowed number of output tokens for x")).toBe(8192);
+    expect(modelOutputLimit("max_tokens must be at most 4096 (the maximum for this model)")).toBe(4096);
+    expect(modelOutputLimit("Invalid max_tokens value, the valid range of max_tokens is [1, 8192]")).toBe(8192);
+    expect(modelOutputLimit("messages: roles must alternate")).toBeUndefined();
+    expect(modelOutputLimit("max_tokens: 32000 > 64000")).toBeUndefined();
+  });
 });
 
 describe("AnthropicProvider.listModels", () => {
@@ -266,9 +409,31 @@ describe("AnthropicProvider.listModels", () => {
     expect(ids.length).toBeGreaterThan(0);
     expect(ids.every((id) => id.startsWith("claude"))).toBe(true);
   });
+
+  it("falls back to DeepSeek's own models on its endpoint, which rejects other names", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) })));
+    expect(await new AnthropicProvider("https://api.deepseek.com/anthropic").listModels()).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+    expect(await new AnthropicProvider("https://notdeepseek.com.example/anthropic").listModels()).not.toContain("deepseek-flash");
+  });
 });
 
 describe("toAnthropic", () => {
+  it("sends thinking blocks back first, unchanged, only to the model that wrote them on a tool round", () => {
+    const blocks = [{ type: "thinking", thinking: "plan", signature: "sig" }, { type: "redacted_thinking", data: "x" }];
+    const history = [
+      { role: "user" as const, content: "go" },
+      { role: "assistant" as const, content: "Reading.", toolCalls: [{ id: "t1", name: "read_file", arguments: "{}" }], reasoningReplay: { model: "claude-a", blocks } },
+      { role: "tool" as const, toolCallId: "t1", content: "data" },
+    ];
+    expect(toAnthropic(history, "claude-a").messages[1].content).toEqual([
+      ...blocks,
+      { type: "text", text: "Reading." },
+      { type: "tool_use", id: "t1", name: "read_file", input: {} },
+    ]);
+    expect((toAnthropic(history, "claude-b").messages[1].content as Array<{ type: string }>).map((block) => block.type)).toEqual(["text", "tool_use"]);
+    expect((toAnthropic(history).messages[1].content as Array<{ type: string }>).map((block) => block.type)).toEqual(["text", "tool_use"]);
+  });
+
   it("puts tool-result images in the same user message as the tool result", () => {
     const { messages } = toAnthropic([
       { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "view_image", arguments: "{}" }] },

@@ -94,7 +94,45 @@ describe("OpenAiCompatibleProvider.streamChat", () => {
       { type: "reasoning-delta", text: "Thinking" },
       { type: "reasoning-delta", text: " hard" },
       { type: "text-delta", text: "391" },
+      // The field reasoning arrived in first, so it can be sent back the same way.
+      { type: "reasoning-replay", field: "reasoning" },
     ]);
+  });
+
+  it("sends reasoning back on the latest tool round only, in its own field, to the model that wrote it", async () => {
+    stubStream(sse({ choices: [{ delta: { content: "ok" } }] }));
+    const fetchMock = vi.mocked(fetch);
+    const call = (id: string) => [{ id, name: "list_dir", arguments: "{}" }];
+    const messages: ChatRequest["messages"] = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: "", toolCalls: call("c1"), reasoning: "old", reasoningReplay: { model: "m", text: "old", field: "reasoning_content" } },
+      { role: "tool", toolCallId: "c1", content: "a" },
+      { role: "assistant", content: "", toolCalls: call("c2"), reasoning: "new", reasoningReplay: { model: "m", text: "new", field: "reasoning_content" } },
+      { role: "tool", toolCallId: "c2", content: "b" },
+    ];
+    for await (const _ of new OpenAiCompatibleProvider("http://x/v1").streamChat({ model: "m", messages }, new AbortController().signal)) { /* drain */ }
+    const sent = JSON.parse(String(fetchMock.mock.calls[0][1].body)).messages;
+    expect(sent[1]).not.toHaveProperty("reasoning_content");
+    expect(sent[3]).toMatchObject({ reasoning_content: "new" });
+    expect(sent[3]).not.toHaveProperty("reasoning");
+    // Another model gets none of it.
+    expect(toOpenAiMessages(messages, "other")[3]).not.toHaveProperty("reasoning_content");
+  });
+
+  it("retries without the sent-back reasoning when the server rejects it", async () => {
+    const stream = sse({ choices: [{ delta: { content: "ok" } }] });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, body: undefined, text: async () => "reasoning_content is not allowed in input messages" })
+      .mockResolvedValueOnce({ ok: true, status: 200, body: bodyFrom(stream), text: async () => stream });
+    vi.stubGlobal("fetch", fetchMock);
+    const messages: ChatRequest["messages"] = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "list_dir", arguments: "{}" }], reasoningReplay: { model: "m", text: "t", field: "reasoning_content" } },
+      { role: "tool", toolCallId: "c1", content: "a" },
+    ];
+    for await (const _ of new OpenAiCompatibleProvider("http://x/v1").streamChat({ model: "m", messages }, new AbortController().signal)) { /* drain */ }
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body)).messages[1]).toMatchObject({ reasoning_content: "t" });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body)).messages[1]).not.toHaveProperty("reasoning_content");
   });
 
   it("requests token usage in the streaming response", async () => {
@@ -174,6 +212,20 @@ describe("OpenAiCompatibleProvider.streamChat", () => {
     expect(events).toEqual([
       { type: "tool-call", toolCall: { id: "t9", name: "f", arguments: "{}" } },
     ]);
+  });
+
+  it("says when a reply stopped at the output limit, before the cut-off tool call", async () => {
+    stubStream(sse(
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "w1", function: { name: "write_file", arguments: '{"path":"game.html","content":"<html>' } }] } }] },
+      { choices: [{ delta: {}, finish_reason: "length" }] },
+    ));
+    const events = await collect(new OpenAiCompatibleProvider("http://x/v1"));
+    expect(events).toEqual([
+      { type: "output-limit" },
+      { type: "tool-call", toolCall: { id: "w1", name: "write_file", arguments: '{"path":"game.html","content":"<html>' } },
+    ]);
+    stubStream(sse({ choices: [{ delta: { content: "The answer is" }, finish_reason: "length" }] }));
+    expect(await collect(new OpenAiCompatibleProvider("http://x/v1"))).toEqual([{ type: "text-delta", text: "The answer is" }, { type: "output-limit" }]);
   });
 
   it("keeps distinct tool-call IDs separate when the server reuses an index", async () => {

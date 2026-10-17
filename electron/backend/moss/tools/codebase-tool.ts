@@ -35,7 +35,13 @@ export const searchCodebaseTool: Tool = {
     if (!query) return { ok: false, content: "query is required" };
     if (!ctx.workspaceRoot) return { ok: false, content: "No workspace folder selected" };
     if (!ctx.embed || !ctx.embed.model) {
-      return { ok: false, content: "No embedding model configured; set one in Settings → Codebase index and index the workspace." };
+      return { ok: false, content: "search_codebase is not available here: no embedding model is configured. Use search_files (text or regex) or glob_files instead." };
+    }
+    // An empty result from a workspace that was never indexed would read as
+    // "nothing relevant exists", so say why there is nothing to search.
+    const status = await codebaseIndex.status(ctx.workspaceRoot).catch(() => undefined);
+    if (status && !status.indexed) {
+      return { ok: false, content: "search_codebase is not available here: this workspace has not been indexed (Settings → Codebase index). Use search_files (text or regex) or glob_files instead." };
     }
 
     let hits;

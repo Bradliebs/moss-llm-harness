@@ -134,7 +134,7 @@ try {
     const verificationCommand = review.getByRole("checkbox", { name: "npm test", exact: true });
     await verificationCommand.uncheck();
     await verificationCommand.check();
-    if (policyOnly) await review.getByRole("button", { name: "Policy-scoped", exact: true }).click();
+    await review.getByRole("button", { name: policyOnly ? "Policy-scoped" : "Supervised", exact: true }).click();
     const capabilities = review.getByRole("group", { name: "Capabilities", exact: true });
     await capabilities.getByRole("checkbox", { name: /^read_file / }).waitFor();
     for (const checkbox of await capabilities.getByRole("checkbox").all()) await checkbox.uncheck();

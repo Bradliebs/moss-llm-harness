@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentMessage, MossEvent, TaskExecutionGrant, ToolDefinition } from "../../../common/types";
-import { runTurn } from "./agent-runner";
+import { announcesNextStep, runTurn } from "./agent-runner";
 import type { CompletionContext, CompletionDecision } from "./agent-runner";
 import { clearCompactionSummaryCache } from "./context/compaction-summary";
 import { ToolOutputStore } from "./context/tool-output-store";
@@ -1134,6 +1134,19 @@ describe("runTurn verification loop", () => {
     expect(notices(h).some((notice) => notice.message === "Verification passed")).toBe(true);
   });
 
+  it("does not ask for an announced step once checks passed and nothing changed since", async () => {
+    const provider = scriptedProvider([
+      [call("c1", "write_file")],
+      [{ type: "text-delta", text: "Now I'll clean up the comments." }],
+    ]);
+    const h = await run(provider, [tool("write_file", { ok: true, content: "W" })], {
+      autoApprove: true,
+      workspaceRoot: cwd,
+      verify: { enabled: true, commands: ["exit 0"] },
+    });
+    expect(h.events.filter((e) => e.type === "round-end").map((e) => (e as Extract<MossEvent, { type: "round-end" }>).finish)).toEqual(["tools", "complete"]);
+  });
+
   it("emits a warning notice when verification fails", async () => {
     const provider = scriptedProvider([
       [call("c1", "write_file")],
@@ -1217,5 +1230,174 @@ describe("runTurn verification loop", () => {
     });
     expect(notices(h).map((n) => n.message)).toEqual(["Verification passed"]);
     expect(h.events.at(-1)?.type).toBe("turn-complete");
+  });
+});
+
+describe("announced next step", () => {
+  it("recognizes a reply that ends by announcing an action it did not take", () => {
+    expect(announcesNextStep("Plan:\n1. Find the bug.\n\nI will first check git diff of staged changes to avoid editing the wrong files:")).toBe(true);
+    expect(announcesNextStep("The bug is in money.js. Let me read it.")).toBe(true);
+    expect(announcesNextStep("Found it. Now I'll run the tests to confirm.")).toBe(true);
+    expect(announcesNextStep("**Next step:**")).toBe(true);
+    // Curly apostrophes, as Qwen and Mistral often write them.
+    expect(announcesNextStep("I’ll read the file now.")).toBe(true);
+    expect(announcesNextStep("I need to read the file first.")).toBe(true);
+    expect(announcesNextStep("Running the tests now.")).toBe(true);
+    // The code written into the reply instead of an edit call.
+    expect(announcesNextStep("Let me update the file:\n\n```js\nconst a = 1;\n```")).toBe(true);
+  });
+
+  it("leaves real endings alone", () => {
+    expect(announcesNextStep("Fixed the off-by-one in range.js; node test.js passes.")).toBe(false);
+    expect(announcesNextStep("Which file should I change?")).toBe(false);
+    expect(announcesNextStep("Done. Let me know if you want the tests extended.")).toBe(false);
+    expect(announcesNextStep("I will run the tests first, then edit. Should I go ahead?")).toBe(false);
+    expect(announcesNextStep("The fix is complete. Let's recap.")).toBe(false);
+    expect(announcesNextStep("All tests pass. I should note the old test was flaky.")).toBe(false);
+    expect(announcesNextStep("Checking the output shows all tests pass.")).toBe(false);
+    expect(announcesNextStep("All tests pass. The updated function is:\n\n```js\nconst a = 1;\n```")).toBe(false);
+    expect(announcesNextStep("")).toBe(false);
+  });
+
+  it("asks once for the call, without counting it as a rejection", async () => {
+    const requests: ChatRequest[] = [];
+    const provider = scriptedProvider([
+      [{ type: "text-delta", text: "I will read the file first:" }],
+      [call("c1", "read_file")],
+      [{ type: "text-delta", text: "Let me check one more thing." }],
+    ], requests);
+    const h = await run(provider, [tool("read_file", { ok: true, content: "x" })]);
+
+    const ends = h.events.filter((e): e is Extract<MossEvent, { type: "round-end" }> => e.type === "round-end").map((e) => e.finish);
+    // A second announcement after a tool round is asked once more; a third in
+    // a row with nothing run in between ends the turn: it is never a loop.
+    expect(ends).toEqual(["continued", "tools", "continued", "complete"]);
+    expect(requests[1].messages.at(-1)).toMatchObject({ role: "user", content: expect.stringContaining("did not call a tool") });
+    expect(h.events.some((e) => e.type === "harness-decision" && e.decision.kind === "stall")).toBe(true);
+  });
+
+  it("asks again only after a tool round, at most twice per turn", async () => {
+    const provider = scriptedProvider([
+      [{ type: "text-delta", text: "I will read the file first:" }],
+      [call("c1", "read_file")],
+      [{ type: "text-delta", text: "Let me check one more thing." }],
+      [call("c2", "read_file")],
+      [{ type: "text-delta", text: "Now I'll run the tests." }],
+    ]);
+    const h = await run(provider, [tool("read_file", { ok: true, content: "x" })]);
+    const ends = h.events.filter((e): e is Extract<MossEvent, { type: "round-end" }> => e.type === "round-end").map((e) => e.finish);
+    expect(ends).toEqual(["continued", "tools", "continued", "tools", "complete"]);
+  });
+
+  it("retries an empty reply after reasoning with thinking off", async () => {
+    const requests: ChatRequest[] = [];
+    const provider = scriptedProvider([
+      [{ type: "reasoning-delta", text: "Long thought that used up the reply." }],
+      [{ type: "text-delta", text: "391" }],
+    ], requests);
+    const h = await run(provider, []);
+    expect(requests.map((request) => request.reasoning)).toEqual([undefined, "none"]);
+    expect(h.events.at(-1)?.type).toBe("turn-complete");
+  });
+
+  it("sends a tool round's reasoning back to the model, but never stores it", async () => {
+    const requests: ChatRequest[] = [];
+    const signed = { type: "thinking", thinking: "Check the file.", signature: "sig" };
+    const provider = scriptedProvider([
+      [
+        { type: "reasoning-delta", text: "Check the file." },
+        { type: "reasoning-replay", blocks: [signed] },
+        { type: "reasoning-replay", field: "reasoning" },
+        call("r1", "read_file"),
+      ],
+      [{ type: "reasoning-delta", text: "Done." }, { type: "reasoning-replay", field: "reasoning" }, { type: "text-delta", text: "It says x." }],
+    ], requests);
+    const h = await run(provider, [tool("read_file", { ok: true, content: "x" })]);
+    const sentBack = requests[1].messages.find((message) => message.role === "assistant");
+    expect(sentBack?.reasoningReplay).toEqual({ model: "test-model", blocks: [signed], text: "Check the file.", field: "reasoning" });
+    const complete = h.events.at(-1) as Extract<MossEvent, { type: "turn-complete" }>;
+    expect(complete.type).toBe("turn-complete");
+    expect(complete.messages.some((message) => "reasoningReplay" in message)).toBe(false);
+    // The final answer called no tool, so it has nothing to send back.
+    expect(complete.messages.at(-1)?.reasoning).toBe("Done.");
+  });
+
+  it("retries an empty reply with thinking off even when extended thinking is on", async () => {
+    const requests: ChatRequest[] = [];
+    const provider = scriptedProvider([
+      [{ type: "reasoning-delta", text: "Long thought." }],
+      [{ type: "text-delta", text: "391" }],
+    ], requests);
+    await runTurn({
+      provider, model: "m", messages: [{ role: "user", content: "hi" }], tools: [], toolRegistry: new Map(), workspaceRoot: "/work",
+      signal: new AbortController().signal, onEvent: () => {}, requestApproval: async () => ({ approved: true }), reasoning: "high",
+    });
+    expect(requests.map((request) => request.reasoning)).toEqual(["high", "none"]);
+  });
+
+  it("does not nudge when no tools are offered", async () => {
+    const provider = scriptedProvider([[{ type: "text-delta", text: "Let me think about that:" }]]);
+    const h = await run(provider, []);
+    expect(h.events.filter((e) => e.type === "round-end").map((e) => (e as Extract<MossEvent, { type: "round-end" }>).finish)).toEqual(["complete"]);
+  });
+});
+
+describe("replies cut off at the output limit", () => {
+  it("does not run a cut-off tool call, and tells the model to write less per call", async () => {
+    let wrote = false;
+    const requests: ChatRequest[] = [];
+    const provider = scriptedProvider([
+      [call("w1", "write_file", '{"path":"game.html","content":"<html><body>'), { type: "output-limit" }],
+      [{ type: "text-delta", text: "I will write it in parts." }],
+    ], requests);
+    const h = await run(provider, [tool("write_file", async () => { wrote = true; return { ok: true, content: "Wrote" }; })], { autoApprove: true });
+
+    expect(wrote).toBe(false);
+    const result = h.events.find((e): e is Extract<MossEvent, { type: "tool-result" }> => e.type === "tool-result")!;
+    expect(result).toMatchObject({ ok: false, name: "write_file" });
+    expect(result.content).toContain("output limit");
+    expect(h.events.some((e) => e.type === "notice" && e.message.includes("incomplete tool call was not run"))).toBe(true);
+    expect(JSON.stringify(requests[1].messages)).toContain("write_file with the first part");
+  });
+
+  it("explains a cut-off call that parses but is missing what it needs", async () => {
+    const schemaTool: Tool = {
+      name: "write_file",
+      description: "",
+      parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] },
+      execute: async () => ({ ok: true, content: "Wrote" }),
+    };
+    const provider = scriptedProvider([
+      [call("w1", "write_file", ""), { type: "output-limit" }],
+      [{ type: "text-delta", text: "ok" }],
+    ]);
+    const h = await run(provider, [schemaTool], { autoApprove: true });
+    const result = h.events.find((e): e is Extract<MossEvent, { type: "tool-result" }> => e.type === "tool-result")!;
+    expect(result.content).toContain("output limit");
+  });
+
+  it("runs complete calls from the same reply and only drops the cut-off one", async () => {
+    const ran: string[] = [];
+    const provider = scriptedProvider([
+      [call("r1", "read_file", '{"path":"a.js"}'), call("w1", "write_file", '{"path":"b.js","content":"x'), { type: "output-limit" }],
+      [{ type: "text-delta", text: "done" }],
+    ]);
+    await run(provider, [
+      tool("read_file", async () => { ran.push("read"); return { ok: true, content: "a" }; }),
+      tool("write_file", async () => { ran.push("write"); return { ok: true, content: "w" }; }),
+    ], { autoApprove: true });
+    expect(ran).toEqual(["read"]);
+  });
+
+  it("asks once for the rest of a cut-off answer", async () => {
+    const requests: ChatRequest[] = [];
+    const provider = scriptedProvider([
+      [{ type: "text-delta", text: "Part one of a long answer" }, { type: "output-limit" }],
+      [{ type: "text-delta", text: " and part two." }, { type: "output-limit" }],
+    ], requests);
+    const h = await run(provider, []);
+    const ends = h.events.filter((e): e is Extract<MossEvent, { type: "round-end" }> => e.type === "round-end").map((e) => e.finish);
+    expect(ends).toEqual(["continued", "complete"]);
+    expect(requests[1].messages.at(-1)).toMatchObject({ role: "user", content: expect.stringContaining("Continue from exactly where it stopped") });
   });
 });

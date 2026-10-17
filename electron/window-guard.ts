@@ -60,8 +60,19 @@ export function guardWindow(contents: WebContents, openExternal: (url: string) =
   contents.on("will-attach-webview", (event) => event.preventDefault());
 }
 
+/** Requests from the browser interface (web-access.ts), which checked its own
+ *  token before dispatching; they have no frame to check. */
+const trustedWebEvents = new WeakSet<object>();
+
+/** Mark an event built by the browser interface as coming from the Moss interface. */
+export function trustWebEvent<T extends object>(event: T): T {
+  trustedWebEvents.add(event);
+  return event;
+}
+
 /** For privileged IPC: the request came from a frame showing the app itself. */
 export function isTrustedSender(event: { senderFrame?: { url?: string } | null }): boolean {
+  if (trustedWebEvents.has(event)) return true;
   // Before the main process records the app location (tests, headless use)
   // there is no window to impersonate.
   if (!appOrigin.devServer && !appOrigin.distRoot) return true;
@@ -73,16 +84,29 @@ export function requireTrustedSender(event: { senderFrame?: { url?: string } | n
   if (!isTrustedSender(event)) throw new Error(`Refused ${action}: the request did not come from the Moss interface.`);
 }
 
+/** Handlers registered through guardedIpc, by channel, so the browser
+ *  interface can dispatch to the same code the window reaches. */
+export const ipcHandlers = {
+  invoke: new Map<string, (event: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown>(),
+  send: new Map<string, (event: Electron.IpcMainEvent, ...args: unknown[]) => void>(),
+};
+
 /** An ipcMain whose handlers answer only the app's own page: invoke calls from
  *  anywhere else are rejected and fire-and-forget messages are dropped. */
 export function guardedIpc(ipc: IpcMain): IpcMain {
   const guarded = Object.create(ipc) as IpcMain;
-  guarded.handle = (channel, listener) => ipc.handle(channel, (event, ...args) => {
-    requireTrustedSender(event, channel);
-    return listener(event, ...args);
-  });
-  guarded.on = (channel, listener) => ipc.on(channel, (event, ...args) => {
-    if (isTrustedSender(event)) listener(event, ...args);
-  });
+  guarded.handle = (channel, listener) => {
+    ipcHandlers.invoke.set(channel, listener);
+    return ipc.handle(channel, (event, ...args) => {
+      requireTrustedSender(event, channel);
+      return listener(event, ...args);
+    });
+  };
+  guarded.on = (channel, listener) => {
+    ipcHandlers.send.set(channel, listener);
+    return ipc.on(channel, (event, ...args) => {
+      if (isTrustedSender(event)) listener(event, ...args);
+    });
+  };
   return guarded;
 }

@@ -45,6 +45,14 @@ export const IPC = {
   workspacePreview: "moss:workspace:preview",
   /** renderer -> main (invoke): infer advisory verification commands from project manifests */
   workspaceSuggestVerification: "moss:workspace:suggestVerification",
+  /** renderer -> main (invoke): open an HTML file inside the workspace in the OS browser */
+  workspaceOpenInBrowser: "moss:workspace:openInBrowser",
+  /** renderer -> main (invoke): a loopback preview URL for an HTML file inside the workspace */
+  workspacePreviewUrl: "moss:workspace:previewUrl",
+  /** renderer -> main (invoke): whether Moss can be used from a web browser, and its link */
+  webAccessGet: "moss:webAccess:get",
+  /** renderer -> main (invoke): turn browser access on (with the settings to start a browser from) or off */
+  webAccessSet: "moss:webAccess:set",
   /** renderer -> main (invoke): bring the application window to the foreground */
   windowFocus: "moss:window:focus",
   /** renderer -> main (invoke): run the capability probe suite against a model; returns ModelCapabilityProfile */

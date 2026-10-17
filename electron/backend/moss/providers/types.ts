@@ -11,20 +11,27 @@ export interface ChatRequest {
   temperature?: number;
   /** JSON schema the response must satisfy (grammar-constrained decoding); used instead of native tools */
   responseSchema?: Record<string, unknown>;
-  /** "none" asks reasoning models to answer without a thinking phase */
-  reasoning?: "none";
+  /** "none" asks reasoning models to answer without a thinking phase; "high"
+   *  asks them to think harder (Claude extended thinking, reasoning_effort "high") */
+  reasoning?: "none" | "high";
 }
 
 /** Low-level provider stream events. The agent runner accumulates these into the
  *  renderer-facing `MossEvent` stream and the tool-execution loop. */
 export type ProviderStreamEvent =
   | { type: "text-delta"; text: string }
-  /** a thinking model's reasoning, shown to the user but never sent back to a model */
+  /** a thinking model's reasoning, shown to the user; sent back only through `reasoning-replay` */
   | { type: "reasoning-delta"; text: string }
+  /** What the model needs to get its reasoning back next round: Anthropic
+   *  thinking blocks with their signatures, or the field an OpenAI-compatible
+   *  server streamed reasoning in. */
+  | { type: "reasoning-replay"; blocks?: Array<Record<string, unknown>>; field?: "reasoning" | "reasoning_content" }
   /** the model has started writing a tool call (its arguments are still streaming) */
   | { type: "tool-call-start"; name: string }
   | { type: "tool-call"; toolCall: { id: string; name: string; arguments: string } }
-  | { type: "usage"; usage: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number } };
+  | { type: "usage"; usage: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number } }
+  /** the reply stopped at the output-token limit, so its last part (text or a tool call) is cut off */
+  | { type: "output-limit" };
 
 export interface ChatProvider {
   readonly kind: string;

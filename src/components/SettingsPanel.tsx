@@ -7,12 +7,14 @@
 
 import { X } from "lucide-react";
 import { ReadinessIcon } from "./ReadinessIcon";
+import { BrowserAccessSettings } from "./BrowserAccessSettings";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
   InjectionMode,
   McpServerStatus,
   MemoryEntry,
+  ThinkingMode,
 } from "@common/types";
 import { PERSONALITY_PRESETS } from "@common/personalities";
 
@@ -539,6 +541,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
           </section>
 
           <AccessibilitySettings className={sectionClass("general", "accessibility text size font contrast notifications keyboard shortcuts guide")} />
+          <BrowserAccessSettings className={sectionClass("general", "browser access web interface link localhost remote")} />
 
           <section className={sectionClass("general", "appearance theme avatar")}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Appearance</h3>
@@ -682,14 +685,17 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               <select
                 className="w-full rounded border border-neutral-300 bg-white px-2 py-1 dark:border-neutral-700 dark:bg-neutral-800"
                 value={settings.thinking ?? "auto"}
-                onChange={(e) => updateSettings({ thinking: e.target.value as "auto" | "off" })}
+                onChange={(e) => updateSettings({ thinking: e.target.value as ThinkingMode })}
               >
                 <option value="auto">Model default</option>
                 <option value="off">Off: answer without thinking first</option>
+                <option value="extended">Extended: think longer before answering (costs more output tokens)</option>
               </select>
               <span className="mt-1 block text-xs text-neutral-600 dark:text-neutral-400">
                 Models such as qwen3.5 think before every reply; turning it off can make replies several times faster on a
-                local model, sometimes at the cost of accuracy on harder tasks. Servers that do not support this ignore it.
+                local model, sometimes at the cost of accuracy on harder tasks. Extended asks Claude for extended thinking
+                and other servers for high reasoning effort: better on hard problems, slower, and billed as output tokens.
+                Servers that do not support a setting ignore it.
               </span>
             </label>
           </section>

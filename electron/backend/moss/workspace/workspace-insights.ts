@@ -7,6 +7,7 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { VerificationSuggestion, WorkspaceFilePreview } from "../../../../common/types";
 import { resolveInWorkspace } from "../tools/path-guard";
@@ -31,6 +32,25 @@ export async function readWorkspacePreview(workspaceRoot: string, path: string):
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false };
     return { exists: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/** A file: URL for an HTML page inside the workspace, so the user can open a
+ *  page the agent wrote in their browser; null for anything else. The path
+ *  goes through the workspace sandbox check, so it cannot name a file outside. */
+export async function workspaceHtmlUrl(workspaceRoot: string, path: string): Promise<string | null> {
+  if (!workspaceRoot || !/\.html?$/i.test(path)) return null;
+  let absolute: string;
+  try {
+    absolute = resolveInWorkspace(workspaceRoot, path);
+  } catch {
+    return null;
+  }
+  try {
+    if (!(await stat(absolute)).isFile()) return null;
+  } catch {
+    return null;
+  }
+  return pathToFileURL(absolute).href;
 }
 
 async function readText(path: string): Promise<string | null> {

@@ -61,7 +61,9 @@ export function buildMissionTemplate(
     };
   }
   if (id === "research") {
-    const capabilityIds = matchingCapabilities(capabilities, ["read_file"], ["browser_", "web_"]);
+    // The report must be written, and a source page read in full, or the
+    // contract's own criterion can never be met.
+    const capabilityIds = matchingCapabilities(capabilities, ["read_file", "write_file", "fetch_url"], ["browser_", "web_"]);
     return {
       id,
       label: "Research",
@@ -77,7 +79,9 @@ export function buildMissionTemplate(
         assumptions: "The requested sources are accessible and may be cited in the final report.",
       },
       capabilityIds,
-      budget: { minutes: "30", tokens: "80000", actions: "40", cost: "8" },
+      // Searching, reading sources, and writing a report take many steps,
+      // and a local model writes a few tokens a second.
+      budget: { minutes: "90", tokens: "200000", actions: "120", cost: "8" },
       missingPrerequisites: [
         ...(!workspaceSelected ? ["Select a workspace for the report."] : []),
         ...(!capabilityIds.some((capability) => capability.startsWith("browser_") || capability.startsWith("web_"))

@@ -50,6 +50,7 @@ async function runCli(args: string[], provider: ChatProvider, extra: Partial<Run
     createProvider: () => provider,
     io: { stdout: (value) => { stdout += value; }, stderr: (value) => { stderr += value; } },
     loadProfile: async () => null,
+    checkContext: async () => null,
     signal: new AbortController().signal,
     ...extra,
   });
@@ -66,6 +67,30 @@ describe("parseRunArgs", () => {
   it("offers no approval mode that runs gated calls unseen", () => {
     expect(() => parseRunArgs(["--model", "m", "--approve", "all"])).toThrow(/deny, safe or ask/);
     expect(() => parseRunArgs(["--prompt", "hi"])).toThrow(/--model is required/);
+  });
+
+  it("turns thinking off or up only when asked, and rejects other values", async () => {
+    expect(parseRunArgs(["--model", "m"]).thinking).toBe("auto");
+    expect(() => parseRunArgs(["--model", "m", "--thinking", "high"])).toThrow(/auto, off or extended/);
+    const requests: ChatRequest[] = [];
+    await runCli(["--prompt", "hi", "--thinking", "off"], scripted([[text("ok")]], requests));
+    expect(requests[0].reasoning).toBe("none");
+    const extended: ChatRequest[] = [];
+    await runCli(["--prompt", "hi", "--thinking", "extended"], scripted([[text("ok")]], extended));
+    expect(extended[0].reasoning).toBe("high");
+    expect(parseRunArgs(["--model", "m", "--context", "8192"]).contextLimit).toBe(8192);
+    expect(() => parseRunArgs(["--model", "m", "--context", "100"])).toThrow(/--context/);
+    const defaults: ChatRequest[] = [];
+    await runCli(["--prompt", "hi"], scripted([[text("ok")]], defaults));
+    expect(defaults[0].reasoning).toBeUndefined();
+  });
+
+  it("warns before the run when the local model spills onto the CPU", async () => {
+    const { stderr, events } = await runCli(["--prompt", "hi"], scripted([[text("ok")]]), { checkContext: async () => "test-model is running partly on the CPU." });
+    expect(stderr).toContain("warning: test-model is running partly on the CPU.");
+    expect(events.length).toBe(0);
+    const json = await runCli(["--prompt", "hi", "--json"], scripted([[text("ok")]]), { checkContext: async () => "test-model is running partly on the CPU." });
+    expect(json.events.some((event) => event.type === "notice" && event.level === "warn")).toBe(true);
   });
 
   it("reads the API key from the named environment variable", () => {

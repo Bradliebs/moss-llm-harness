@@ -5,6 +5,7 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
 
 import { BrowserWindow, clipboard, dialog, ipcMain as electronIpcMain, powerMonitor, shell } from "electron";
 
@@ -51,7 +52,8 @@ import type {
   TranscribeResult,
 } from "../../common/types";
 import { runTurn } from "../backend/moss/agent-runner";
-import type { CompletionContext } from "../backend/moss/agent-runner";
+import type { CompletionContext, CompletionDecision } from "../backend/moss/agent-runner";
+import { createGoalTracker, GOAL_MODE_NOTE, MAX_GOAL_CONTINUATIONS } from "../backend/moss/tools/goal-tool";
 import { ApprovalBroker } from "../backend/moss/approval-broker";
 import { MissionBudgetProvider } from "../backend/moss/task/mission-budget";
 import { createBrowserTools } from "../backend/moss/browser/browser-tools";
@@ -75,14 +77,16 @@ import {
   type McpServerConfig,
 } from "../backend/moss/mcp/mcp-config";
 import { mcpManager } from "../backend/moss/mcp/mcp-manager";
-import { readWorkspacePreview, suggestVerificationCommands } from "../backend/moss/workspace/workspace-insights";
+import { readWorkspacePreview, suggestVerificationCommands, workspaceHtmlUrl } from "../backend/moss/workspace/workspace-insights";
+import { previewServer } from "../backend/moss/workspace/preview-server";
 import { readProjectInstructions } from "../backend/moss/workspace/project-instructions";
+import { workspaceOrientation } from "../backend/moss/workspace/orientation";
 import { CONTEXT_LEVELS, DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_TIMEOUT_SECONDS, runCapabilityProbes } from "../backend/moss/models/capability-probes";
 import { buildCapabilityProfile } from "../backend/moss/models/capability-profile";
 import { modelProfileStore } from "../backend/moss/models/model-profile-store";
 import { DEFAULT_ESCALATE_AFTER, EscalationMonitor, isModelRejection } from "../backend/moss/models/escalation";
 import { effectiveProfile, gradeTurn, modelPerformanceStore, taskKindFor } from "../backend/moss/models/model-performance";
-import { createContextVariant, inspectOllamaContext } from "../backend/moss/models/ollama-context";
+import { contextSpillWarning, createContextVariant, inspectOllamaContext } from "../backend/moss/models/ollama-context";
 import { detectSetup, pullOllamaModel } from "../backend/moss/setup/pc-setup";
 import { createQuarantine } from "../backend/moss/safety/quarantine";
 import { createMissionCritic } from "../backend/moss/task/mission-critic";
@@ -150,6 +154,8 @@ export function resolveMaxToolRounds(requested: number | undefined, verifyEnable
 }
 import { taskStore } from "../backend/moss/task/task-store";
 import { guardedIpc, requireTrustedSender } from "../window-guard";
+import { webAccess } from "../web-access";
+import type { WebAccessStatus } from "../web-access";
 import { TOOL_REGISTRY } from "../backend/moss/tools";
 import { createJevTool } from "../backend/moss/tools/jev-tool";
 import { detectWorkspaceVerificationChecks, VerificationRegistry } from "../backend/moss/verify/verification-registry";
@@ -177,6 +183,31 @@ const missionAuthority = new MissionAuthorityBroker();
 const processStartedAt = Date.now();
 let bundledCapabilityTools: ReturnType<typeof createBundledCapabilityTools> | undefined;
 let capabilityHistoryCache = new Map<string, { successCount: number; failureCount: number }>();
+/** Local Ollama models already checked for a context that spills onto the CPU this session. */
+const contextFitChecked = new Set<string>();
+/** Workspace folders this session has used (a chat turn ran in it, or you
+ *  picked it). Opening a page from any other folder is refused: this guards
+ *  against stale or mistaken folders, not a compromised window, which could
+ *  name a folder in a chat turn anyway. */
+const knownWorkspaceRoots = new Set<string>();
+const workspaceKey = (root: string): string => {
+  const normalized = resolve(root).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+};
+
+/** Once per model and app session: an Ollama model whose context window does
+ *  not fit in GPU memory runs partly on the CPU, several times slower, and
+ *  nothing else would say so. Runs after the model first responds, when it is
+ *  loaded, so the check adds no load of its own. */
+async function warnIfContextSpills(config: ProviderConfig, emit: (event: MossEvent) => void): Promise<void> {
+  const key = `${config.kind}\u0000${config.baseUrl}\u0000${config.model}`;
+  if (contextFitChecked.has(key)) return;
+  contextFitChecked.add(key);
+  const summary = await contextSpillWarning({ kind: config.kind ?? "openai-compatible", baseUrl: config.baseUrl ?? "", model: config.model }, { fixHint: "Settings > Models > Check context window can create a variant that fits." });
+  if (!summary) return;
+  emit({ type: "notice", level: "warn", message: summary });
+  emit({ type: "harness-decision", decision: { kind: "context", summary, settings: "models" } });
+}
 
 export function registerChatIpc(): void {
   // Every channel below answers only the app's own page.
@@ -185,6 +216,7 @@ export function registerChatIpc(): void {
   ipcMain.on(IPC.chatStart, (event, req: ChatStartRequest) => {
     // Your work takes the GPU back from a practice run.
     practiceController?.abort();
+    if (typeof req?.workspaceRoot === "string" && req.workspaceRoot.trim()) knownWorkspaceRoots.add(workspaceKey(req.workspaceRoot));
     void startTurn(event, req);
   });
 
@@ -324,6 +356,7 @@ export function registerChatIpc(): void {
   ipcMain.handle(IPC.workspacePick, async () => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
     if (result.canceled || result.filePaths.length === 0) return null;
+    knownWorkspaceRoots.add(workspaceKey(result.filePaths[0]));
     return result.filePaths[0];
   });
   ipcMain.handle(IPC.workspacePreview, (_event, root: unknown, path: unknown) => {
@@ -332,6 +365,35 @@ export function registerChatIpc(): void {
   });
   ipcMain.handle(IPC.workspaceSuggestVerification, (_event, root: unknown) =>
     typeof root === "string" ? suggestVerificationCommands(root) : []);
+  // Only an HTML file inside the workspace, after the sandbox check, and only
+  // when the user asks: the page runs in their browser like any file they open.
+  // It is served over loopback so ES modules and fetch work; the file itself if
+  // the server cannot start.
+  ipcMain.handle(IPC.workspaceOpenInBrowser, async (event, root: unknown, path: unknown): Promise<boolean> => {
+    requireTrustedSender(event, "opening a workspace page");
+    if (typeof root !== "string" || typeof path !== "string" || !knownWorkspaceRoots.has(workspaceKey(root))) return false;
+    const fileUrl = await workspaceHtmlUrl(root, path);
+    if (!fileUrl) return false;
+    await shell.openExternal(await previewServer.urlFor(root, path).catch(() => fileUrl));
+    return true;
+  });
+  ipcMain.handle(IPC.workspacePreviewUrl, async (event, root: unknown, path: unknown): Promise<string | null> => {
+    requireTrustedSender(event, "previewing a workspace page");
+    if (typeof root !== "string" || typeof path !== "string" || !knownWorkspaceRoots.has(workspaceKey(root))) return null;
+    if (!(await workspaceHtmlUrl(root, path))) return null;
+    return previewServer.urlFor(root, path).catch(() => null);
+  });
+  ipcMain.handle(IPC.webAccessGet, (): WebAccessStatus => webAccess()?.status() ?? { enabled: false, error: "Browser access is not available in this build." });
+  ipcMain.handle(IPC.webAccessSet, async (event, enabled: unknown, settings: unknown): Promise<WebAccessStatus> => {
+    requireTrustedSender(event, "changing browser access");
+    const server = webAccess();
+    if (!server) return { enabled: false, error: "Browser access is not available in this build." };
+    try {
+      return enabled === true ? await server.enable(typeof settings === "string" ? settings : undefined) : await server.disable();
+    } catch (error) {
+      return { ...server.status(), error: error instanceof Error ? error.message : String(error) };
+    }
+  });
   ipcMain.handle(IPC.windowFocus, (event) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window) return;
@@ -708,6 +770,7 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       && ["text-delta", "reasoning-delta", "tool-call", "notice", "task-state"].includes(mossEvent.type)
     ) {
       firstResponseRecorded = true;
+      void warnIfContextSpills(req.config, send);
       void productDiagnostics.record("first-response", { durationMs: Date.now() - startedAt, mission });
       void productDiagnostics.record("launch-first-response", { durationMs: Date.now() - processStartedAt, mission });
     }
@@ -938,6 +1001,11 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
         decide({ kind: "context", summary: `Added project instructions from ${project.files.join(", ")}${project.truncated ? ", cut to 2,000 characters" : ""}.`, settings: "tools" });
       }
     }
+    // A map of the workspace, so a chat turn does not start by listing folders.
+    if (enableTools && req.workspaceRoot && !req.taskSpec && !req.taskId) {
+      const orientation = await workspaceOrientation(req.workspaceRoot).catch(() => "");
+      if (orientation) turnContext.push(orientation);
+    }
     const workingState = new WorkingStateStore(normalizeWorkingState(req.workingState));
     const stallLimit = typeof req.stallLimit === "number" && Number.isFinite(req.stallLimit) ? Math.max(0, Math.floor(req.stallLimit)) : undefined;
     // Snapshot file pre-images only when a workspace is selected, so a turn's
@@ -1147,16 +1215,35 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
       return { calls: expanded.calls, procedureId: procedure.id, name: procedure.name };
     };
 
+    // Goal mode: an ordinary chat turn with tools keeps going until the model
+    // says the request is done or blocked (missions and tasks have their own checks).
+    const goal = req.goal === true && toolDefinitions.length > 0 && !task ? createGoalTracker() : undefined;
+    if (goal) {
+      scaffolding = { ...scaffolding, tools: [...scaffolding.tools, { name: goal.tool.name, description: goal.tool.description, parameters: goal.tool.parameters }] };
+      scaffoldedRegistry.set(goal.tool.name, goal.tool);
+      turnContext.push(GOAL_MODE_NOTE);
+    }
+    const goalGuard = goal
+      ? (context: CompletionContext): CompletionDecision => {
+          const decision = goal.guard(context);
+          if (!decision.accept) {
+            decide({ kind: "stall", summary: `Goal mode: the model stopped before saying the goal was done; asked it to continue (${goal.continuations()} of ${MAX_GOAL_CONTINUATIONS}).` }, "info");
+          } else if (!goal.status()) {
+            decide({ kind: "stall", summary: `Goal mode: the model stopped again after ${MAX_GOAL_CONTINUATIONS} reminders without saying the goal was done.` }, "warn");
+          }
+          return decision;
+        }
+      : undefined;
     await runTurn({
       provider,
       model: req.config.model,
-      ...(req.thinking === "off" ? { reasoning: "none" as const } : {}),
+      ...(req.thinking === "off" ? { reasoning: "none" as const } : req.thinking === "extended" ? { reasoning: "high" as const } : {}),
       // The reminder goes after the turn context, at the very end.
       messages: applyScaffoldingMessages(messages, { ...scaffolding, userReminder: undefined }),
       ...(scaffolding.userReminder ? { userReminder: scaffolding.userReminder } : {}),
       tools: scaffolding.tools,
       toolRegistry: scaffoldedRegistry,
-      ...(needsFindTool ? { toolCatalog: toolDefinitions } : {}),
+      ...(needsFindTool ? { toolCatalog: goal ? [...toolDefinitions, { name: goal.tool.name, description: goal.tool.description, parameters: goal.tool.parameters }] : toolDefinitions } : {}),
       ...(deferral.deferred.length > 0 ? { toolGroups: deferral.deferred.map((group) => group.tools) } : {}),
       ...(rankingEmbed ? { rankingEmbed } : {}),
       ...(quarantine ? { quarantine } : {}),
@@ -1222,12 +1309,13 @@ async function startTurn(event: Electron.IpcMainEvent, req: ChatStartRequest): P
               };
             },
           }
-        : {}),
+        : goalGuard ? { completionGuard: goalGuard } : {}),
       ...(req.gatedMemory ? { gatedMemory: true } : {}),
       ...(req.showConfidence ? { showConfidence: true } : {}),
       ...(req.injectionMode ? { injectionMode: req.injectionMode } : {}),
       ...(req.contextLimit ? { contextLimit: req.contextLimit } : {}),
-      maxRounds,
+      // Room to finish: goal mode gets the full round ceiling.
+      maxRounds: goal ? MAX_TOOL_ROUNDS : maxRounds,
     });
     if (task && attemptId) {
       await finalizeTurnTask(

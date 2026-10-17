@@ -18,6 +18,8 @@ const AUTO_ALLOW = new Set<string>([
   "working_state",
   // find_tool only changes which tools are offered this turn.
   "find_tool",
+  // finish_goal only records that a goal-mode turn is done or blocked.
+  "finish_goal",
   "read_file",
   "list_dir",
   "search_files",

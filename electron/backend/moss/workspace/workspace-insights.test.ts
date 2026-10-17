@@ -4,7 +4,9 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { MAX_PREVIEW_BYTES, readWorkspacePreview, suggestVerificationCommands } from "./workspace-insights";
+import { pathToFileURL } from "node:url";
+
+import { MAX_PREVIEW_BYTES, readWorkspacePreview, suggestVerificationCommands, workspaceHtmlUrl } from "./workspace-insights";
 
 let root = "";
 
@@ -31,6 +33,20 @@ describe("readWorkspacePreview", () => {
     expect(await readWorkspacePreview(root, "big.txt")).toMatchObject({ exists: true, truncated: true });
     await mkdir(join(root, "dir"));
     expect((await readWorkspacePreview(root, "dir")).error).toBe("Not a regular file");
+  });
+});
+
+describe("workspaceHtmlUrl", () => {
+  it("gives a file URL only for an existing HTML file inside the workspace", async () => {
+    await mkdir(join(root, "site"));
+    await writeFile(join(root, "site", "index.html"), "<h1>hi</h1>");
+    await writeFile(join(root, "notes.txt"), "x");
+    expect(await workspaceHtmlUrl(root, "site/index.html")).toBe(pathToFileURL(join(root, "site", "index.html")).href);
+    expect(await workspaceHtmlUrl(root, "notes.txt")).toBeNull();
+    expect(await workspaceHtmlUrl(root, "missing.html")).toBeNull();
+    expect(await workspaceHtmlUrl(root, "site")).toBeNull();
+    expect(await workspaceHtmlUrl(root, "../outside.html")).toBeNull();
+    expect(await workspaceHtmlUrl("", "site/index.html")).toBeNull();
   });
 });
 

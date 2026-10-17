@@ -116,7 +116,13 @@ describe("applyPreset", () => {
 
   it("keeps saved preset indexes stable by adding presets at the end", () => {
     // Settings store the preset by index, so earlier entries must not move.
-    expect(PROVIDER_PRESETS.map((preset) => preset.id)).toEqual(["ollama", "openai", "anthropic", "openrouter", "mistral", "xai", "custom", "github-copilot", "strata"]);
+    expect(PROVIDER_PRESETS.map((preset) => preset.id)).toEqual(["ollama", "openai", "anthropic", "openrouter", "mistral", "xai", "custom", "github-copilot", "strata", "deepseek"]);
+  });
+
+  it("applies the DeepSeek preset to its Anthropic-format endpoint", () => {
+    const idx = PROVIDER_PRESETS.findIndex((p) => p.id === "deepseek");
+    applyPreset(idx);
+    expect(settingsStore.get()).toMatchObject({ presetIndex: idx, kind: "anthropic", baseUrl: "https://api.deepseek.com/anthropic" });
   });
 
   it("ignores an out-of-range index", () => {

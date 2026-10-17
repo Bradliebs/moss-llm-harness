@@ -37,6 +37,17 @@ describe("resolveInWorkspace", () => {
     expect(() => resolveInWorkspace(root, outside)).toThrow(/escapes the workspace sandbox/);
   });
 
+  it("refuses a container-style path, with an example of a relative one", () => {
+    // Argument repair rewrites these before any guard runs; the sandbox stays strict.
+    const ws = mkdtempSync(join(tmpdir(), "moss-guard-"));
+    try {
+      writeFileSync(join(ws, "a.js"), "x");
+      expect(() => resolveInWorkspace(ws, "/workspace/a.js")).toThrow(/escapes the workspace sandbox: \/workspace\/a\.js\. Use a path relative to the workspace folder/);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
   it("rejects an empty path", () => {
     expect(() => resolveInWorkspace(root, "")).toThrow(/path is required/);
   });

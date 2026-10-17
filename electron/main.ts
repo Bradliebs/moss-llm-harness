@@ -16,8 +16,10 @@ import { stopCopilotClients } from "./backend/moss/providers/copilot";
 import { memoryStore } from "./backend/moss/memory/memory-store";
 import { taskEngine } from "./backend/moss/task/task-engine";
 import { productDiagnostics } from "./backend/moss/product-diagnostics";
+import { previewServer } from "./backend/moss/workspace/preview-server";
 import { registerChatIpc } from "./ipc/chat-ipc";
-import { guardWindow, setAppLocation } from "./window-guard";
+import { configureWebAccess, webAccess } from "./web-access";
+import { guardWindow, isAppUrl, setAppLocation } from "./window-guard";
 
 const log = createLogger("Main");
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -175,6 +177,13 @@ app
     } catch (err) {
       fileLog(`registerChatIpc failed: ${fmtError(err)}`);
     }
+    // Browser access, when the user turned it on: start it again.
+    const browserAccess = configureWebAccess({
+      distDir: join(app.getAppPath(), "dist"),
+      preloadPath: join(app.getAppPath(), "electron", "preload.cjs"),
+      statePath: join(app.getPath("userData"), "web-access.json"),
+    });
+    void browserAccess.restore().catch((err) => fileLog(`browser access restore failed: ${fmtError(err)}`));
     // Active work is never replayed blindly after a crash. Persist it as an
     // explicit resumable pause so the renderer can inspect and resume safely.
     void taskEngine.recoverInterruptedTasks().catch((err) => {
@@ -182,10 +191,11 @@ app
       fileLog(`task recovery failed: ${fmtError(err)}`);
     });
     try {
-      // The renderer captures microphone audio for speech-to-text. This is a
-      // local, trusted app, so grant only the media permission it needs.
-      session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-        callback(permission === "media");
+      // The renderer captures microphone audio for speech-to-text. Grant only
+      // that, and only to the app's own page: a workspace page previewed in a
+      // frame must not get the microphone silently.
+      session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+        callback(permission === "media" && isAppUrl(details.requestingUrl));
       });
     } catch (err) {
       fileLog(`setPermissionRequestHandler failed: ${fmtError(err)}`);
@@ -210,4 +220,6 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   void mcpManager.close();
   void stopCopilotClients();
+  previewServer.close();
+  webAccess()?.close();
 });

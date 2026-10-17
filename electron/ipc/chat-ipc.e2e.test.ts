@@ -42,11 +42,18 @@ vi.mock("electron", () => ({
     handle: (channel: string, fn: (...args: unknown[]) => unknown) => recorded.handle.set(channel, fn),
   },
   dialog: { showOpenDialog: vi.fn(), showMessageBox: vi.fn() },
-  shell: { openPath: vi.fn() },
+  shell: { openPath: vi.fn(), openExternal: vi.fn(async () => undefined) },
 }));
 
 vi.mock("../backend/moss/providers", () => ({
   createProvider: (config: { kind?: string; baseUrl?: string; model: string; apiKey?: string }) => mockProviderRef.factory?.(config) ?? mockProviderRef.current,
+}));
+
+// The context check talks to a real Ollama server; tests script its answer.
+const contextReport = vi.hoisted(() => ({ warning: vi.fn(async (): Promise<string | null> => null) }));
+vi.mock("../backend/moss/models/ollama-context", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../backend/moss/models/ollama-context")>()),
+  contextSpillWarning: contextReport.warning,
 }));
 
 vi.mock("../backend/moss/mcp/mcp-manager", () => ({
@@ -175,6 +182,121 @@ describe("chat IPC turn (e2e)", () => {
     recorded.on.get(IPC.chatStart)!(fakeEvent([]), request({ thinking: "off" }));
     await tick();
     expect(seen[0]?.reasoning).toBe("none");
+  });
+
+  it("keeps a goal-mode turn going until the model says the goal is done", async () => {
+    const seen: ChatRequest[] = [];
+    mockProviderRef.current = {
+      kind: "test",
+      async *streamChat(chatRequest: ChatRequest): AsyncIterable<ProviderStreamEvent> {
+        seen.push({ ...chatRequest, messages: chatRequest.messages.map((message) => ({ ...message })) });
+        if (seen.length === 1) yield { type: "text-delta", text: "Here is my progress so far." };
+        else if (seen.length === 2) yield { type: "tool-call", toolCall: { id: "g1", name: "finish_goal", arguments: '{"status":"done","summary":"Finished."}' } };
+        else yield { type: "text-delta", text: "All done, and checked." };
+      },
+      listModels: async () => [],
+    };
+    const sent: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({ enableTools: true, goal: true, turnId: "goal" }));
+    await vi.waitFor(() => expect(sent.some((payload) => payload.event.type === "turn-complete")).toBe(true));
+    expect(seen).toHaveLength(3);
+    expect(seen[0].tools?.some((tool) => tool.name === "finish_goal")).toBe(true);
+    expect(seen[0].messages.filter((message) => message.role === "user").at(-1)?.content).toContain("Goal mode is on");
+    // Stopping without finish_goal sends the model back to work.
+    expect(seen[1].messages.at(-1)?.content).toContain("goal mode is on and you have not called finish_goal");
+    expect(sent.some((payload) => payload.event.type === "harness-decision" && payload.event.decision.summary.startsWith("Goal mode: the model stopped before"))).toBe(true);
+    // finish_goal runs without asking: it only records that the goal is done.
+    expect(sent.some((payload) => payload.event.type === "tool-approval-request")).toBe(false);
+  });
+
+  it("does not offer finish_goal outside goal mode", async () => {
+    const seen: ChatRequest[] = [];
+    mockProviderRef.current = {
+      kind: "test",
+      async *streamChat(chatRequest: ChatRequest): AsyncIterable<ProviderStreamEvent> {
+        seen.push(chatRequest);
+        yield { type: "text-delta", text: "ok" };
+      },
+      listModels: async () => [],
+    };
+    recorded.on.get(IPC.chatStart)!(fakeEvent([]), request({ enableTools: true, turnId: "no-goal" }));
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0].tools?.some((tool) => tool.name === "finish_goal")).toBe(false);
+  });
+
+  it("warns once per model when a local Ollama model spills onto the CPU", async () => {
+    contextReport.warning.mockResolvedValue("spill-test:8b is running partly on the CPU, so replies are several times slower.");
+    const config = { kind: "openai-compatible" as const, baseUrl: "http://localhost:11434/v1", model: "spill-test:8b" };
+    mockProviderRef.current = scriptedProvider([[{ type: "text-delta", text: "ok" }]]);
+    const sent: ChatEventPayload[] = [];
+    recorded.on.get(IPC.chatStart)!(fakeEvent(sent), request({ config, turnId: "spill-1" }));
+    await vi.waitFor(() => expect(sent.some((payload) => payload.event.type === "notice" && payload.event.message.includes("running partly on the CPU"))).toBe(true));
+    expect(sent.some((payload) => payload.event.type === "harness-decision" && payload.event.decision.kind === "context")).toBe(true);
+
+    // The same model is checked once per session.
+    mockProviderRef.current = scriptedProvider([[{ type: "text-delta", text: "ok" }]]);
+    recorded.on.get(IPC.chatStart)!(fakeEvent([]), request({ config, turnId: "spill-2" }));
+    await tick();
+    expect(contextReport.warning.mock.calls.filter(([checked]) => (checked as { model: string }).model === "spill-test:8b")).toHaveLength(1);
+    contextReport.warning.mockReset();
+    contextReport.warning.mockResolvedValue(null);
+  });
+
+  it("gives a chat turn with a workspace a map of its files", async () => {
+    const ws = mkdtempSync(join(tmpdir(), "moss-ipc-orientation-"));
+    try {
+      writeFileSync(join(ws, "package.json"), JSON.stringify({ scripts: { test: "node test.js" } }));
+      writeFileSync(join(ws, "test.js"), "");
+      const seen: ChatRequest[] = [];
+      mockProviderRef.current = {
+        kind: "test",
+        async *streamChat(chatRequest: ChatRequest): AsyncIterable<ProviderStreamEvent> {
+          seen.push(chatRequest);
+          yield { type: "text-delta", text: "ok" };
+        },
+        listModels: async () => [],
+      };
+      recorded.on.get(IPC.chatStart)!(fakeEvent([]), request({ enableTools: true, workspaceRoot: ws, turnId: "orient" }));
+      await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0));
+      const user = seen[0].messages.filter((message) => message.role === "user").at(-1)!.content;
+      expect(user).toContain("Workspace files (paths relative to the workspace folder):");
+      expect(user).toContain("test.js");
+      expect(user).toContain("Project commands: npm test");
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it("opens only HTML pages in a workspace this session has used", async () => {
+    const ws = mkdtempSync(join(tmpdir(), "moss-ipc-page-"));
+    const other = mkdtempSync(join(tmpdir(), "moss-ipc-other-"));
+    try {
+      writeFileSync(join(ws, "index.html"), "<h1>hi</h1>");
+      writeFileSync(join(other, "index.html"), "<h1>other</h1>");
+      const { shell } = await import("electron");
+      const open = recorded.handle.get(IPC.workspaceOpenInBrowser)!;
+      const trusted = fakeEvent([]);
+      // Never used in a chat turn or picked: refused, whatever it contains.
+      expect(await open(trusted, other, "index.html")).toBe(false);
+      mockProviderRef.current = scriptedProvider([[{ type: "text-delta", text: "ok" }]]);
+      recorded.on.get(IPC.chatStart)!(fakeEvent([]), request({ workspaceRoot: ws, turnId: "page" }));
+      await tick();
+      expect(await open(trusted, ws, "index.html")).toBe(true);
+      expect(await open(trusted, ws, "../index.html")).toBe(false);
+      expect(vi.mocked(shell.openExternal)).toHaveBeenCalledTimes(1);
+      // Served over loopback, so modules and fetch work as they would online.
+      const opened = String(vi.mocked(shell.openExternal).mock.calls[0][0]);
+      expect(opened).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]+\/index\.html$/);
+      expect(await (await fetch(opened)).text()).toBe("<h1>hi</h1>");
+      // The in-app preview gets the same kind of URL, under the same rules.
+      const previewUrl = recorded.handle.get(IPC.workspacePreviewUrl)!;
+      expect(await previewUrl(trusted, ws, "index.html")).toBe(opened);
+      expect(await previewUrl(trusted, other, "index.html")).toBeNull();
+      expect(await previewUrl(trusted, ws, "missing.html")).toBeNull();
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 
   it("streams a text turn back over IPC, every event tagged with the turn id", async () => {

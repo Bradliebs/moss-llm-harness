@@ -74,6 +74,8 @@ const mockSettingsDefaults = {
   verifyCommands: "",
   presetIndex: 0,
   kind: "openai-compatible",
+  missionAuthority: "supervised" as "supervised" | "policy-scoped" | undefined,
+  goalMode: false as boolean | undefined,
 };
 const mockSettings = vi.hoisted(() => ({
   model: "gpt-4",
@@ -96,6 +98,8 @@ const mockSettings = vi.hoisted(() => ({
   verifyCommands: "",
   presetIndex: 0,
   kind: "openai-compatible",
+  missionAuthority: "supervised" as "supervised" | "policy-scoped" | undefined,
+  goalMode: false as boolean | undefined,
 }));
 
 vi.mock("../lib/settings", () => ({
@@ -376,6 +380,37 @@ describe("ChatPanel", () => {
     }));
   });
 
+  it("asks once at launch by default, instead of before each file change, and remembers the choice", async () => {
+    const { updateSettings } = await import("../lib/settings");
+    // Settings saved before the choice existed have no value: the default applies.
+    mockSettings.missionAuthority = undefined;
+    await prepareMissionReview();
+    const composer = screen.getByPlaceholderText("Message…");
+    fireEvent.change(composer, { target: { value: "Inspect and verify this repository" } });
+    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+    await waitFor(() => expect(window.moss.chat.send).toHaveBeenCalled());
+    expect(mockMissionAuthorize).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(window.moss.chat.send).mock.calls[0][0].mission).toMatchObject({ authority: "policy-scoped", maxAutoApprovedRisk: "mutating" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Supervised" }));
+    expect(updateSettings).toHaveBeenCalledWith({ missionAuthority: "supervised" });
+  });
+
+  it("reads a blank mission budget field as no limit of its own, up to the ceiling", async () => {
+    await prepareMissionReview();
+    fireEvent.change(screen.getByLabelText("Mission Minutes"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Mission Actions"), { target: { value: "" } });
+    const composer = screen.getByPlaceholderText("Message…");
+    fireEvent.change(composer, { target: { value: "Inspect and verify this repository" } });
+    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+
+    expect(window.moss.chat.send).toHaveBeenCalledWith(expect.objectContaining({
+      taskSpec: expect.objectContaining({
+        budget: { maxDurationMs: 240 * 60_000, maxTokens: 50000, maxActions: 256, maxCostUsd: 5 },
+      }),
+    }));
+  });
+
   it("keeps launch disabled until the mission has a verifiable outcome contract", async () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole("button", { name: "Mission" }));
@@ -386,8 +421,8 @@ describe("ChatPanel", () => {
   });
 
   it("native-authorizes a policy-scoped mission immediately before sending", async () => {
+    mockSettings.missionAuthority = "policy-scoped";
     await prepareMissionReview();
-    fireEvent.click(screen.getByRole("button", { name: "Policy-scoped" }));
     fireEvent.click(screen.getByLabelText(/write_file/));
     fireEvent.change(screen.getByPlaceholderText("Message…"), { target: { value: "Apply the bounded change" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
@@ -410,8 +445,8 @@ describe("ChatPanel", () => {
 
   it("does not send when native mission authorization is cancelled", async () => {
     mockMissionAuthorize.mockResolvedValue(null);
+    mockSettings.missionAuthority = "policy-scoped";
     await prepareMissionReview();
-    fireEvent.click(screen.getByRole("button", { name: "Policy-scoped" }));
     fireEvent.change(screen.getByPlaceholderText("Message…"), { target: { value: "Do not lose this draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
 
@@ -1558,6 +1593,20 @@ describe("ChatPanel", () => {
     expect(updateSettings).toHaveBeenCalledWith({ thinking: "off" });
   });
 
+  it("turns goal mode on from the composer and sends it with chat turns", async () => {
+    const { updateSettings } = await import("../lib/settings");
+    render(<Harness />);
+    const toggle = screen.getByRole("button", { name: "Keep going" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    expect(updateSettings).toHaveBeenCalledWith({ goalMode: true });
+    cleanup();
+    mockSettings.goalMode = true;
+    render(<Harness />);
+    expect(screen.getByRole("button", { name: "Keep going" }).getAttribute("aria-pressed")).toBe("true");
+    startTurn();
+    expect(vi.mocked(window.moss.chat.send).mock.calls[0][0].goal).toBe(true);
+  });
   it("drops the live thinking of a model call that is retried", () => {
     render(<Harness />);
     const turnId = startTurn();
@@ -1611,6 +1660,47 @@ describe("ChatPanel", () => {
     expect(screen.getByText("No reply to this message.")).toBeDefined();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(vi.mocked(window.moss.chat.send).mock.calls[0][0].messages).toEqual([{ role: "user", content: "fix it" }]);
+  });
+
+  it("offers to open a page the agent wrote in the browser", async () => {
+    mockSettings.workspaceRoot = "C:\\work\\site";
+    const openInBrowser = vi.fn(async () => true);
+    window.moss.workspace = { ...window.moss.workspace, openInBrowser };
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "tool-call", callId: "w1", name: "write_file", arguments: JSON.stringify({ path: "index.html", content: "<h1>hi</h1>" }) });
+    emit(turnId, { type: "tool-result", callId: "w1", name: "write_file", ok: true, content: "Wrote 11 bytes", autoApproved: true });
+    emit(turnId, { type: "tool-call", callId: "w2", name: "write_file", arguments: JSON.stringify({ path: "notes.md", content: "x" }) });
+    emit(turnId, { type: "tool-result", callId: "w2", name: "write_file", ok: true, content: "Wrote 1 bytes", autoApproved: true });
+    const buttons = screen.getAllByRole("button", { name: "Open in browser" });
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0]);
+    expect(openInBrowser).toHaveBeenCalledWith("C:\\work\\site", "index.html");
+    // Refused (for example, after a restart before any message): the button says why.
+    openInBrowser.mockResolvedValueOnce(false);
+    fireEvent.click(screen.getByRole("button", { name: "Open in browser" }));
+    expect(await screen.findByRole("button", { name: "Could not open: send a message first" })).toBeDefined();
+  });
+
+  it("previews a page the agent wrote beside the chat, reloading it after later file changes", async () => {
+    mockSettings.workspaceRoot = "C:\\work\\site";
+    const previewUrl = vi.fn(async () => "http://127.0.0.1:5555/tok/index.html");
+    window.moss.workspace = { ...window.moss.workspace, openInBrowser: vi.fn(async () => true), previewUrl };
+    render(<Harness />);
+    const turnId = startTurn();
+    emit(turnId, { type: "tool-call", callId: "w1", name: "write_file", arguments: JSON.stringify({ path: "index.html", content: "<h1>hi</h1>" }) });
+    emit(turnId, { type: "tool-result", callId: "w1", name: "write_file", ok: true, content: "Wrote 11 bytes", autoApproved: true });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    const frame = await screen.findByTitle("Preview of index.html");
+    expect(previewUrl).toHaveBeenCalledWith("C:\\work\\site", "index.html");
+    expect(frame.getAttribute("src")).toBe("http://127.0.0.1:5555/tok/index.html");
+    expect(frame.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin allow-forms allow-modals allow-pointer-lock");
+    // A later write loads the page again: a new frame replaces the old one.
+    emit(turnId, { type: "tool-call", callId: "w2", name: "edit_file", arguments: JSON.stringify({ path: "app.js", old: "a", new: "b" }) });
+    emit(turnId, { type: "tool-result", callId: "w2", name: "edit_file", ok: true, content: "Edited", autoApproved: true });
+    await vi.waitFor(() => expect(screen.getByTitle("Preview of index.html")).not.toBe(frame));
+    fireEvent.click(screen.getByRole("button", { name: "Close preview" }));
+    expect(screen.queryByTitle("Preview of index.html")).toBeNull();
   });
 
   it("treats the same folder written differently as unchanged", () => {

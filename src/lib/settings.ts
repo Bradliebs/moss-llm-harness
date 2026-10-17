@@ -4,7 +4,7 @@
 // master switch, the UI theme, and the tool workspace root. Persisted to
 // localStorage so the app reopens with the same provider/model selected.
 
-import type { ConstrainedOutputMode, EmailConfig, EmbedConfig, InjectionMode, ModelRoute, ProviderConfig, ProviderKind } from "@common/types";
+import type { ConstrainedOutputMode, EmailConfig, EmbedConfig, InjectionMode, ModelRoute, ProviderConfig, ProviderKind, ThinkingMode } from "@common/types";
 import { DEFAULT_PERSONALITY_ID } from "@common/personalities";
 
 import type { ModelRate } from "./pricing";
@@ -30,6 +30,9 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: "github-copilot", label: "GitHub Copilot", kind: "github-copilot", baseUrl: "https://api.githubcopilot.com" },
   // A large MoE model served on this PC (github.com/Niko1221/Strata).
   { id: "strata", label: "Strata", kind: "openai-compatible", baseUrl: "http://127.0.0.1:8080/v1" },
+  // DeepSeek's Anthropic-format endpoint, so its thinking and tool use go through
+  // the same provider as Claude (api-docs.deepseek.com/guides/anthropic_api).
+  { id: "deepseek", label: "DeepSeek", kind: "anthropic", baseUrl: "https://api.deepseek.com/anthropic" },
 ];
 
 export type ReadinessProfileId = "chat" | "coding" | "research" | "desktop" | "custom";
@@ -86,8 +89,14 @@ export interface MossSettings {
   adaptiveTone: boolean;
   /** add the workspace's AGENTS.md (and similar files) to each turn as background */
   projectInstructions: boolean;
-  /** "off" asks reasoning models to answer without a thinking phase */
-  thinking: "auto" | "off";
+  /** "off" asks reasoning models to answer without a thinking phase; "extended"
+   *  asks them to think longer (more output tokens) */
+  thinking: ThinkingMode;
+  /** How a mission approves file changes: once at launch (policy-scoped, the
+   *  default) or before each change (supervised). Remembered between missions. */
+  missionAuthority?: "supervised" | "policy-scoped";
+  /** Goal mode for chat turns: keep working until the model says the request is done or blocked. */
+  goalMode?: boolean;
   workspaceRoot: string | null;
   /** speech-to-text endpoint base URL (empty = reuse the provider baseUrl) */
   sttBaseUrl: string;
@@ -202,6 +211,7 @@ const DEFAULT_SETTINGS: MossSettings = {
   adaptiveTone: false,
   projectInstructions: false,
   thinking: "auto",
+  missionAuthority: "policy-scoped",
   workspaceRoot: null,
   sttBaseUrl: "",
   sttModel: "whisper-1",

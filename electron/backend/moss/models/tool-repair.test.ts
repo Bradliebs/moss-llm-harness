@@ -32,6 +32,25 @@ describe("parseTextToolCalls", () => {
     expect(parseTextToolCalls('<think>maybe {"name":"write_file"}</think><tool_call>{"name":"read_file","arguments":{}}</tool_call>', TOOLS)).toHaveLength(1);
   });
 
+  it("reads Mistral's name[ARGS]{...} format, after its reasoning, with regex escapes in strings", () => {
+    // Recorded from ministral-3:8b: the reasoning ends with [/THINK] and the
+    // arguments hold a JavaScript regex, so they are not strictly valid JSON.
+    const recorded = String.raw`I see there was a syntax error. I'll correct this.[/THINK]write_file[ARGS]{"content":"text.replace(/[^a-z0-9\s-]/g, \"-\")\n.split(/[\s]+/)","path": "src/slugify.js"}`;
+    const [parsed] = parseTextToolCalls(recorded, TOOLS);
+    expect(parsed.name).toBe("write_file");
+    expect(JSON.parse(parsed.arguments)).toEqual({ content: "text.replace(/[^a-z0-9\\s-]/g, \"-\")\n.split(/[\\s]+/)", path: "src/slugify.js" });
+
+    const two = parseTextToolCalls('[TOOL_CALLS]read_file[ARGS]{"path":"a.md"}[TOOL_CALLS]read_file[ARGS]{"path":"b.md"}', TOOLS);
+    expect(two.map((item) => item.arguments)).toEqual(['{"path":"a.md"}', '{"path":"b.md"}']);
+    expect(parseTextToolCalls('[THINK]maybe read_file[ARGS]{"path":"x"}[/THINK]The answer is 4.', TOOLS)).toEqual([]);
+    // Once strict JSON fails, a word boundary or a Windows path stays a backslash.
+    const lenient = parseTextToolCalls(String.raw`write_file[ARGS]{"path":"C:\users\a.txt","content":"/\bword\s/"}`, TOOLS);
+    expect(JSON.parse(lenient[0].arguments)).toEqual({ path: "C:\\users\\a.txt", content: "/\\bword\\s/" });
+    // A valid escaped backslash next to a stray regex escape.
+    const mixed = parseTextToolCalls(String.raw`write_file[ARGS]{"path":"a.txt","content":"x\\s+\d"}`, TOOLS);
+    expect(JSON.parse(mixed[0].arguments)).toEqual({ path: "a.txt", content: "x\\s+\\d" });
+  });
+
   it("ignores prose, code samples, and tools that were not offered", () => {
     expect(parseTextToolCalls("Here is the answer: 42.", TOOLS)).toEqual([]);
     expect(parseTextToolCalls('```json\n{"name":"Alice","age":3}\n```', TOOLS)).toEqual([]);

@@ -40,6 +40,7 @@ import { PlanStore } from "./task/plan-store";
 import { RecoveryPolicy } from "./task/recovery-policy";
 import { formatVerifyReport, runVerify } from "./verify/verifier";
 import { verificationFileTouched } from "./verify/verification-files";
+import { repairPathArguments } from "./tools/workspace-path-repair";
 import { JsonArtifactGuard } from "./verify/json-artifact-guard";
 import type { VerifyResult } from "./verify/verifier";
 
@@ -104,8 +105,9 @@ export interface RunTurnOptions {
   maxRounds?: number;
   /** Provider output-token ceiling for each model round. */
   maxOutputTokens?: number;
-  /** "none" asks a reasoning model to answer without a thinking phase */
-  reasoning?: "none";
+  /** "none" asks a reasoning model to answer without a thinking phase; "high"
+   *  asks it to think harder */
+  reasoning?: "none" | "high";
   /** base backoff for stream-failure retries (ms); overridable for tests. */
   streamRetryBaseMs?: number;
   /** Override for declared cooperative tool deadlines; used by tests and
@@ -395,6 +397,12 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
 
   try {
     let emptyResponseRetried = false;
+    let reasoningAfterEmpty: "none" | undefined;
+    let nextStepNudges = 0;
+    /** A cut-off answer is asked to continue once per turn. */
+    let continuedAfterCutOff = false;
+    /** A tool round ran since the last nudge, so another one is not a loop. */
+    let actedSinceNudge = true;
     // maxRounds limits tool-execution rounds. One additional tool-disabled
     // invocation lets the model turn the final tool result into a user-facing
     // response instead of ending the turn immediately after the last tool.
@@ -420,14 +428,21 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
       let roundReasoning = "";
       let reasoningStartedAt = 0;
       let reasoningEndedAt = 0;
+      let replayBlocks: Array<Record<string, unknown>> = [];
+      let replayField: "reasoning" | "reasoning_content" | undefined;
+      /** the reply stopped at the output-token limit, so its end is missing */
+      let cutOff = false;
       for (;;) {
         failureSource = "provider-model";
         pendingText = "";
         calls = [];
+        cutOff = false;
         // A retry streams its reasoning again from the start.
         if (roundReasoning) onEvent({ type: "reasoning-reset" });
         roundReasoning = "";
         reasoningStartedAt = 0;
+        replayBlocks = [];
+        replayField = undefined;
         let usageIn = 0;
         let usageOut = 0;
         let usageCached = 0;
@@ -439,7 +454,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
             messages: conversation,
             tools: roundTools,
             ...(opts.maxOutputTokens ? { maxTokens: opts.maxOutputTokens } : {}),
-            ...(opts.reasoning ? { reasoning: opts.reasoning } : {}),
+            ...(reasoningAfterEmpty ?? opts.reasoning ? { reasoning: reasoningAfterEmpty ?? opts.reasoning } : {}),
           }, signal)) {
             if (signal.aborted) break;
             if (ev.type === "text-delta") {
@@ -450,10 +465,15 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
               reasoningEndedAt = Date.now();
               roundReasoning += ev.text;
               onEvent({ type: "reasoning-delta", text: ev.text });
+            } else if (ev.type === "reasoning-replay") {
+              if (ev.blocks) replayBlocks.push(...ev.blocks);
+              if (ev.field) replayField = ev.field;
             } else if (ev.type === "tool-call-start") {
               onEvent({ type: "tool-call-start", name: ev.name });
             } else if (ev.type === "tool-call") {
               calls.push({ id: ev.toolCall.id, name: ev.toolCall.name, arguments: ev.toolCall.arguments });
+            } else if (ev.type === "output-limit") {
+              cutOff = true;
             } else if (ev.type === "usage") {
               usageIn += ev.usage.inputTokens ?? 0;
               usageOut += ev.usage.outputTokens ?? 0;
@@ -536,7 +556,13 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
       }
       const invalidCalls = new Map<string, string>();
       calls = calls.map((original) => {
-        const repaired = repairToolCall(original, offeredTools);
+        const pathRepair = repairPathArguments(original, opts.workspaceRoot);
+        if (pathRepair.repairs.length > 0) {
+          const summary = `Repaired ${original.name} call: ${pathRepair.repairs.join("; ")}.`;
+          onEvent({ type: "notice", level: "info", message: summary });
+          onEvent({ type: "harness-decision", decision: { kind: "repair", summary } });
+        }
+        const repaired = repairToolCall(pathRepair.call, offeredTools);
         if (repaired.repairs.length > 0) {
           const summary = `Repaired ${repaired.call.name} call: ${repaired.repairs.join("; ")}.`;
           onEvent({ type: "notice", level: "info", message: summary });
@@ -550,6 +576,22 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         for (const name of expand(repaired.call.name)) offerTool(name);
         return repaired.call;
       });
+
+      // A reply that stopped at the output limit ends mid-call: its last call's
+      // arguments are incomplete and must not run. Say why, so the next try
+      // writes less at once instead of repeating the same cut-off call.
+      if (cutOff) {
+        const summary = calls.length > 0
+          ? "The reply reached the model's output limit and was cut off; the incomplete tool call was not run."
+          : "The reply reached the model's output limit and was cut off.";
+        onEvent({ type: "notice", level: "warn", message: summary });
+        onEvent({ type: "harness-decision", decision: { kind: "context", summary } });
+        // The last call is the one the limit cut: if it does not parse, or
+        // parses but is missing what it needs, it was cut off, not mistaken.
+        calls.forEach((call, index) => {
+          if (!parsesAsObject(call.arguments) || (index === calls.length - 1 && invalidCalls.has(call.id))) invalidCalls.set(call.id, CUT_OFF_CALL);
+        });
+      }
 
       let deferredCalls = 0;
       if (opts.maxToolCallsPerRound && calls.length > opts.maxToolCallsPerRound) {
@@ -582,7 +624,16 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         ...(roundUsage ? { usage: roundUsage } : {}),
         ...(opts.turnId ? { turnId: opts.turnId } : {}),
       };
-      conversation.push(assistantMsg);
+      // The model gets its reasoning back with a round that called tools, so it
+      // keeps its train of thought; the stored message never carries it.
+      const replay: AgentMessage["reasoningReplay"] = calls.length > 0 && (replayBlocks.length > 0 || (replayField && assistantMsg.reasoning))
+        ? {
+            model,
+            ...(replayBlocks.length > 0 ? { blocks: replayBlocks } : {}),
+            ...(replayField && assistantMsg.reasoning ? { text: assistantMsg.reasoning, field: replayField } : {}),
+          }
+        : undefined;
+      conversation.push(replay ? { ...assistantMsg, reasoningReplay: replay } : assistantMsg);
       newMessages.push(assistantMsg);
       pendingText = "";
 
@@ -594,9 +645,34 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
             return;
           }
           emptyResponseRetried = true;
+          // A thinking model that reasoned and then said nothing has usually
+          // spent its output on thinking; the retry asks it to answer directly.
+          if (assistantMsg.reasoning) reasoningAfterEmpty = "none";
           conversation.push({ role: "user", content: "Your last response was empty. Complete any remaining requested actions, then provide a final response." });
           onEvent({ type: "round-end", round, toolCallCount: 0, finish: "rejected" });
           onEvent({ type: "notice", level: "warn", message: "Empty provider response; retrying once" });
+          continue;
+        }
+        // An answer cut off at the output limit is incomplete: ask once for the rest.
+        if (cutOff && !continuedAfterCutOff && round + 1 < maxRounds) {
+          continuedAfterCutOff = true;
+          conversation.push({ role: "user", content: CONTINUE_AFTER_CUT_OFF });
+          onEvent({ type: "round-end", round, toolCallCount: 0, finish: "continued" });
+          continue;
+        }
+        // Small models often end a round by announcing the next step ("Let me
+        // read the file:") without calling a tool, which would end the turn
+        // with nothing done. Ask once per turn for the call or a final answer.
+        // Not when checks passed and nothing changed since: the work is verifiably done.
+        const verifiedDone = latestVerification?.ok === true && !changedSinceVerify;
+        if (nextStepNudges < MAX_NEXT_STEP_NUDGES && actedSinceNudge && !verifiedDone && offeredTools.length > 0 && announcesNextStep(assistantMsg.content)) {
+          nextStepNudges += 1;
+          actedSinceNudge = false;
+          conversation.push({ role: "user", content: NEXT_STEP_NUDGE });
+          onEvent({ type: "round-end", round, toolCallCount: 0, finish: "continued" });
+          const summary = "The model said what it would do next without calling a tool; asked it to continue.";
+          onEvent({ type: "notice", level: "info", message: summary });
+          onEvent({ type: "harness-decision", decision: { kind: "stall", summary } });
           continue;
         }
         // Files changed since the last check: check the final state before the
@@ -657,6 +733,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
         return;
       }
 
+      actedSinceNudge = true;
       onEvent({ type: "round-end", round, toolCallCount: calls.length, finish: "tools" });
 
       const roundObservations: RoundObservation[] = [];
@@ -862,6 +939,39 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
   } finally {
     opts.onUntrustedSources?.(guards.provenance.untrustedSources);
   }
+}
+
+/** Nudges per turn, each only after a tool round since the last. */
+const MAX_NEXT_STEP_NUDGES = 2;
+const CUT_OFF_CALL = "Not run: your reply reached the model's output limit, so this call's arguments were cut off. Write less per call: create a large file in parts (write_file with the first part, then add the rest with edit_file), or split it into several smaller files.";
+const CONTINUE_AFTER_CUT_OFF = "[moss] Your reply reached the output limit and was cut off. Continue from exactly where it stopped, without repeating what you already wrote.";
+
+function parsesAsObject(args: string): boolean {
+  try {
+    const value: unknown = JSON.parse(args || "{}");
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+const NEXT_STEP_NUDGE = "[moss] You described your next step but did not call a tool, so nothing ran. If the task is not finished, make that tool call now. If it is finished, give your final answer.";
+
+/** Whether a reply with no tool call ends by announcing an action it did not
+ *  take ("I will now run the tests.", "Let me read the file:"). A question
+ *  for the user or an offer of further help is a real ending. */
+export function announcesNextStep(text: string): boolean {
+  const paragraphs = text.trim().split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
+  let last = paragraphs.at(-1) ?? "";
+  // "Let me update the file:" followed by the code instead of an edit call.
+  if (/^```/.test(last) && /```$/.test(last) && paragraphs.length > 1) last = paragraphs.at(-2) ?? "";
+  if (!last || /\?[*_\s]*$/.test(last)) return false;
+  if (/\b(?:let me know|feel free|if you(?:['’]d| would)? (?:like|want|need)|would you like|happy to help)\b/i.test(last)) return false;
+  if (/\blet['’]s (?:recap|summari[sz]e|review what)\b/i.test(last)) return false;
+  const sentence = last.split(/(?<=[.!:])\s+/).filter((part) => part.trim()).at(-1) ?? last;
+  if (/\bI (?:should|must|need to) (?:note|say|mention|point out|add|clarify|stress)\b/i.test(sentence)) return false;
+  if (/\bnext steps?\b[*_\s]*:[*_\s]*$/i.test(sentence)) return true;
+  return /\b(?:I(?:['’]ll| will| am going to|['’]m going to| need to| should| must)|let me|let['’]s|next,? I|now I)\b/i.test(sentence)
+    || /^(?:now\s+)?(?:running|checking|reading|opening|editing|updating|applying|searching|looking)\b.*(?:\bnow|:|…|\.\.\.)[*_.!\s]*$/i.test(sentence);
 }
 
 /** Reasoning kept on a saved message: the end of it, where a model reaches its conclusion. */

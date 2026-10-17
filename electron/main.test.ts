@@ -3,11 +3,14 @@
 // Wiring test for the composition root. main.ts registers app lifecycle handlers
 // and, once the app is ready, reloads memory, registers chat IPC, installs a
 // permission handler, and opens a window. The security-relevant property is that
-// the permission handler grants only "media" and denies everything else.
+// the permission handler grants only "media", only to the app page, and denies everything else.
 //
 // electron and the backend singletons are mocked so importing main.ts does not
 // touch a real Electron runtime. This file is excluded from both tsconfigs, so
 // the loose mock typing here is never type-checked.
+
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -21,7 +24,7 @@ const env = vi.hoisted(() => ({
   menuTemplate: [] as any[],
   menuPopup: vi.fn(),
   replaceMisspelling: vi.fn(),
-  permission: null as null | ((wc: unknown, permission: string, cb: (granted: boolean) => void) => void),
+  permission: null as null | ((wc: unknown, permission: string, cb: (granted: boolean) => void, details: { requestingUrl: string }) => void),
   reload: vi.fn(),
   registerIpc: vi.fn(),
   setAppUserModelId: vi.fn(),
@@ -110,13 +113,19 @@ describe("main composition root", () => {
     if (process.platform === "win32") expect(env.setAppUserModelId).toHaveBeenCalledWith("com.moss.app");
   });
 
-  it("grants the media permission and denies all others", () => {
+  it("grants the media permission to the app's own page only, and denies all others", () => {
+    const appPage = { requestingUrl: pathToFileURL(join("/app", "dist", "index.html")).href };
     const grant = vi.fn();
-    env.permission?.({}, "media", grant);
+    env.permission?.({}, "media", grant, appPage);
     expect(grant).toHaveBeenCalledWith(true);
 
+    // A workspace page previewed in a frame asks from its own address.
+    const preview = vi.fn();
+    env.permission?.({}, "media", preview, { requestingUrl: "http://127.0.0.1:5555/token/index.html" });
+    expect(preview).toHaveBeenCalledWith(false);
+
     const deny = vi.fn();
-    env.permission?.({}, "geolocation", deny);
+    env.permission?.({}, "geolocation", deny, appPage);
     expect(deny).toHaveBeenCalledWith(false);
   });
 

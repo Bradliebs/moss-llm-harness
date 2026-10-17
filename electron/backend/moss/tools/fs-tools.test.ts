@@ -77,6 +77,39 @@ describe("edit_file", () => {
       /escapes the workspace sandbox/,
     );
   });
+
+  it("edits the one place that matches once indentation is ignored, keeping the file's indentation", async () => {
+    // Recorded from ministral-3:8b: the whole snippet indented one level too deep.
+    await writeFile(join(root, "d.js"), "const UNITS = { h: 3600, m: 60 };\n\nfunction f(text) {\n  return text;\n}\n", "utf8");
+    const res = await editFileTool.execute({
+      path: "d.js",
+      oldText: "  const UNITS = { h: 3600, m: 60 };\n\n  function f(text) {\n",
+      newText: "  const UNITS = { h: 3600, m: 60, s: 1 };\n\n  function f(text) {\n",
+    }, ctx());
+    expect(res).toEqual({ ok: true, content: "Replaced 1 occurrence in d.js at line 1 (matched ignoring indentation)" });
+    expect(await readFile(join(root, "d.js"), "utf8")).toBe("const UNITS = { h: 3600, m: 60, s: 1 };\n\nfunction f(text) {\n  return text;\n}\n");
+  });
+
+  it("edits the one place that matches once trailing spaces are ignored", async () => {
+    await writeFile(join(root, "e.js"), "let a = 1;   \nlet b = 2;\n", "utf8");
+    const res = await editFileTool.execute({ path: "e.js", oldText: "let a = 1;\nlet b = 2;", newText: "let a = 3;\nlet b = 4;" }, ctx());
+    expect(res.content).toContain("(matched ignoring trailing spaces)");
+    expect(await readFile(join(root, "e.js"), "utf8")).toBe("let a = 3;\nlet b = 4;\n");
+  });
+
+  it("does not guess between several loose matches", async () => {
+    await writeFile(join(root, "f.js"), "if (a) {\n  go();\n}\nif (a) {\n    go();\n}\n", "utf8");
+    const res = await editFileTool.execute({ path: "f.js", oldText: "if (a) {\n go();\n}", newText: "stop();" }, ctx());
+    expect(res.ok).toBe(false);
+    expect(await readFile(join(root, "f.js"), "utf8")).toBe("if (a) {\n  go();\n}\nif (a) {\n    go();\n}\n");
+  });
+
+  it("reports when an edit leaves JavaScript that no longer parses", async () => {
+    await writeFile(join(root, "g.js"), "const a = 1;\n", "utf8");
+    const res = await editFileTool.execute({ path: "g.js", oldText: "const a = 1;", newText: "const a = (1;" }, ctx());
+    expect(res.ok).toBe(true);
+    expect(res.content).toMatch(/\n\[check\] g\.js no longer parses: SyntaxError: /);
+  });
 });
 
 describe("line endings and line ranges", () => {
@@ -102,11 +135,20 @@ describe("line endings and line ranges", () => {
   });
 
   it("says where a near miss is and shows the actual text", async () => {
+    // The snippet's lines are not indented as the file's are relative to each
+    // other, so no shift is safe: the model is shown the real text instead.
     await writeFile(join(root, "a.py"), "def f():\n    if x:\n        return 1\n", "utf8");
-    const res = await editFileTool.execute({ path: "a.py", oldText: "if x:\n    return 1", newText: "if x:\n    return 2" }, ctx());
+    const res = await editFileTool.execute({ path: "a.py", oldText: "if x:\n  return 1", newText: "if x:\n  return 2" }, ctx());
     expect(res.ok).toBe(false);
     expect(res.content).toContain("first line appears at line 2");
     expect(res.content).toContain("        return 1");
+  });
+
+  it("carries a uniformly shifted Python snippet over at the file's indentation", async () => {
+    await writeFile(join(root, "b.py"), "def f():\n    if x:\n        return 1\n", "utf8");
+    const res = await editFileTool.execute({ path: "b.py", oldText: "if x:\n    return 1", newText: "if x:\n    return 2" }, ctx());
+    expect(res.content).toContain("(matched ignoring indentation)");
+    expect(await readFile(join(root, "b.py"), "utf8")).toBe("def f():\n    if x:\n        return 2\n");
   });
 
   it("keeps CRLF when overwriting a CRLF file, and writes new files as given", async () => {
@@ -154,7 +196,7 @@ describe("line endings and line ranges", () => {
 });
 
 describe("search_files", () => {
-  it("searches by regex and include glob, skips lockfiles, and hints at regex", async () => {
+  it("searches by regex and include glob, skips lockfiles, and falls back to a pattern", async () => {
     await mkdir(join(root, "src"), { recursive: true });
     await writeFile(join(root, "src", "a.ts"), "function   bar() {}\nconst foo = 1;\n", "utf8");
     await writeFile(join(root, "src", "a.md"), "foo in docs\n", "utf8");
@@ -163,7 +205,14 @@ describe("search_files", () => {
     expect((await searchFilesTool.execute({ query: "foo", include: "*.ts" }, ctx())).content).toBe("src/a.ts:2: const foo = 1;");
     expect((await searchFilesTool.execute({ query: "foo" }, ctx())).content).not.toContain("package-lock");
     expect((await searchFilesTool.execute({ query: "foo", include: "package-lock.json" }, ctx())).content).toContain("package-lock.json:1");
-    expect((await searchFilesTool.execute({ query: "zip|zap" }, ctx())).content).toContain("set regex to true");
+    expect((await searchFilesTool.execute({ query: "zip|zap" }, ctx())).content).toBe("No matches for \"zip|zap\". Searched both as literal text and as a regular expression.");
+    // A pattern written without regex: true still finds what it describes.
+    expect((await searchFilesTool.execute({ query: "bar|nothing", include: "*.ts" }, ctx())).content).toBe("No literal matches for \"bar|nothing\"; read as a regular expression it matches:\nsrc/a.ts:1: function   bar() {}");
+    // Literal text that is there is never reinterpreted.
+    await writeFile(join(root, "src", "b.ts"), "a|b\nab\n", "utf8");
+    expect((await searchFilesTool.execute({ query: "a|b", include: "b.ts" }, ctx())).content).toBe("src/b.ts:1: a|b");
+    // Code text with brackets stays literal: a miss is a miss.
+    expect((await searchFilesTool.execute({ query: "items[0]" }, ctx())).content).toBe("No matches for \"items[0]\". The query was read as literal text; set regex to true to search for a pattern.");
 
     expect((await searchFilesTool.execute({ query: "(unclosed", regex: true }, ctx())).content).toContain("Invalid regular expression");
   });

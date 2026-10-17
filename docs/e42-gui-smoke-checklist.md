@@ -159,6 +159,32 @@ not the Windows shell wrapper. Both fixtures remove their temporary profiles
 and workspaces. Dictation remains conditional on an available Whisper endpoint
 and microphone; it was not exercised by these runs.
 
+### Browser access and page preview
+
+Run `npm run smoke:web` after `pack:ci` and after changes to the preload
+bridge, IPC contract, `electron/web-access.ts`, the preview server, or the
+CSP. It starts the packaged app with browser access on in a temporary profile
+and a scripted provider, then drives a real Chromium page through the link:
+the key moves from the address into the page's storage, the desktop settings
+seed the browser, a chat turn runs a `write_file` call and streams its reply
+over the event stream, and **Preview** shows the written page with its module
+script running. A wrong key gets the refusal page. The desktop window then
+previews the same page under its own CSP and frame rules.
+
+By hand, also check:
+
+1. **Settings > General > Browser access**: turning it on shows a link with
+   its key hidden; **Copy link** and **Open in browser** work; turning it off
+   makes an open tab show the refusal page on reload, and turning it on again
+   gives a different key.
+2. A preview of a page that asks for the microphone gets no access and no
+   prompt in the Moss window.
+3. With **Settings > Models > Thinking** set to **Extended** on a Claude model,
+   a coding turn shows reasoning, keeps working after its tool calls, and the
+   cost readout reflects the extra output tokens.
+4. **Keep going** on: a multi-step request continues past the model's first
+   stop, and the timeline says when Moss sent it back to work.
+
 Final prerequisite inspection found a healthy Windows microphone endpoint
 (`ELEGIANT SR030`), but no configured Whisper-compatible endpoint was available
 for acceptance. The service on port 8080 is SearXNG, not transcription. Endpoint
@@ -249,7 +275,8 @@ still required before closing end-to-end dictation acceptance.
 
 9. **Supervised read-only mission**
    - Select Mission and open Review mission.
-   - Keep Supervised selected and choose only read-only repository capabilities.
+   - Select Supervised (Policy-scoped is the default) and choose only read-only
+     repository capabilities.
    - Describe a measurable acceptance criterion and select its verification
      method. Confirm Launch remains disabled until the method is complete.
    - Launch a repository inspection objective. Confirm no native authorization
@@ -257,15 +284,16 @@ still required before closing end-to-end dictation acceptance.
      evidence is attached to the acceptance criterion before completion.
 
 10. **Supervised file mutation**
-    - Keep Supervised selected and add a file mutation capability.
+    - Keep Supervised selected and add a file mutation capability. Close and
+      reopen Review mission and confirm Supervised is still selected.
     - Launch a bounded file change. Confirm the concrete tool card requests
       approval before the write and denial prevents the mutation.
     - Approve a fresh attempt. Confirm the admitted artifact and verification
       evidence appear in Mission details.
 
 11. **Policy-scoped bounded mutation**
-    - Select Policy-scoped, set positive time, token, action, and cost budgets,
-      then launch a bounded file change.
+    - Select Policy-scoped, set time, token, action, and cost budgets (or leave
+      one blank for no limit), then launch a bounded file change.
     - Confirm the native dialog names the objective, acceptance criterion,
       verification method, and authority scope.
     - Cancel once and confirm no task launches and the draft remains. Launch
@@ -590,6 +618,14 @@ still required before closing end-to-end dictation acceptance.
       and confirm the banner offers **Switch back** and **Keep the current
       folder**.
     - Press `Up` in an empty message box and confirm your last message returns.
+    - With a local Ollama model whose served context does not fit in GPU
+      memory (Ollama's 64K default on an 8 GB card), send a message. Confirm one
+      warning that it runs partly on the CPU, and that **Check context window**
+      offers a smaller variant.
+    - In a workspace with a failing `node test.js`, ask a local model to fix it.
+      Confirm the model opens the right files without listing folders first,
+      and that a JavaScript edit that breaks the syntax gets a "[check] … no
+      longer parses" line in its tool result.
 
 ## Pass criteria
 
