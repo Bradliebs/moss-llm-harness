@@ -49,6 +49,8 @@ export const IPC = {
   workspaceOpenInBrowser: "moss:workspace:openInBrowser",
   /** renderer -> main (invoke): a loopback preview URL for an HTML file inside the workspace */
   workspacePreviewUrl: "moss:workspace:previewUrl",
+  /** renderer -> main (invoke): a raster image inside the workspace as a data: URL, for a reply that shows it */
+  workspaceImage: "moss:workspace:image",
   /** renderer -> main (invoke): whether Moss can be used from a web browser, and its link */
   webAccessGet: "moss:webAccess:get",
   /** renderer -> main (invoke): turn browser access on (with the settings to start a browser from) or off */

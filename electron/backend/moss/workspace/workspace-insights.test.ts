@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { pathToFileURL } from "node:url";
 
-import { MAX_PREVIEW_BYTES, readWorkspacePreview, suggestVerificationCommands, workspaceHtmlUrl } from "./workspace-insights";
+import { MAX_INLINE_IMAGE_BYTES, MAX_PREVIEW_BYTES, readWorkspacePreview, suggestVerificationCommands, workspaceHtmlUrl, workspaceImageDataUrl } from "./workspace-insights";
 
 let root = "";
 
@@ -50,6 +50,26 @@ describe("workspaceHtmlUrl", () => {
   });
 });
 
+describe("workspaceImageDataUrl", () => {
+  it("reads a raster image inside the workspace as a data URL, and nothing else", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    await mkdir(join(root, "charts"), { recursive: true });
+    await writeFile(join(root, "charts", "q 3.png"), png);
+    await writeFile(join(root, "charts", "logo.svg"), "<svg/>");
+    await writeFile(join(root, "notes.txt"), "text");
+    await writeFile(join(root, "huge.png"), Buffer.alloc(MAX_INLINE_IMAGE_BYTES + 1));
+    const expected = `data:image/png;base64,${png.toString("base64")}`;
+    expect(await workspaceImageDataUrl(root, "charts/q 3.png")).toBe(expected);
+    // As written in Markdown: encoded, from the root, or as a file URL.
+    expect(await workspaceImageDataUrl(root, "charts/q%203.png")).toBe(expected);
+    expect(await workspaceImageDataUrl(root, "/charts/q%203.png")).toBe(expected);
+    expect(await workspaceImageDataUrl(root, pathToFileURL(join(root, "charts", "q 3.png")).href)).toBe(expected);
+    for (const refused of ["charts/logo.svg", "notes.txt", "huge.png", "missing.png", "../outside.png", "charts"]) {
+      expect(await workspaceImageDataUrl(root, refused), refused).toBeNull();
+    }
+    expect(await workspaceImageDataUrl("", "charts/q 3.png")).toBeNull();
+  });
+});
 describe("suggestVerificationCommands", () => {
   it("suggests package scripts with the detected package manager", async () => {
     await writeFile(join(root, "package.json"), JSON.stringify({ scripts: { test: "vitest run", lint: "eslint .", build: "tsc" } }));

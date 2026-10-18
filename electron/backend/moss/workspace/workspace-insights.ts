@@ -6,8 +6,8 @@
 // sandbox and never execute anything.
 
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { extname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { VerificationSuggestion, WorkspaceFilePreview } from "../../../../common/types";
 import { resolveInWorkspace } from "../tools/path-guard";
@@ -51,6 +51,40 @@ export async function workspaceHtmlUrl(workspaceRoot: string, path: string): Pro
     return null;
   }
   return pathToFileURL(absolute).href;
+}
+
+const IMAGE_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+/** Largest workspace image a reply shows inline. */
+export const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** A data: URL for a raster image inside the workspace that a reply refers to
+ *  (`![chart](charts/q3.png)`), or null. The path goes through the workspace
+ *  sandbox check; a leading slash or a file: URL means the same place. */
+export async function workspaceImageDataUrl(workspaceRoot: string, reference: string): Promise<string | null> {
+  if (!workspaceRoot || !reference) return null;
+  let path = reference.trim();
+  try {
+    path = path.startsWith("file:") ? fileURLToPath(path) : decodeURIComponent(path.replace(/[?#].*$/, ""));
+  } catch {
+    return null;
+  }
+  if (/^[\\/](?![\\/])/.test(path)) path = path.slice(1);
+  const type = IMAGE_TYPES[extname(path).toLowerCase()];
+  if (!type) return null;
+  try {
+    const absolute = resolveInWorkspace(workspaceRoot, path);
+    const info = await stat(absolute);
+    if (!info.isFile() || info.size > MAX_INLINE_IMAGE_BYTES) return null;
+    return `data:${type};base64,${(await readFile(absolute)).toString("base64")}`;
+  } catch {
+    return null;
+  }
 }
 
 async function readText(path: string): Promise<string | null> {

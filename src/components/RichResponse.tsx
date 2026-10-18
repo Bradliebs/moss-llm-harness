@@ -1,8 +1,9 @@
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, ExternalLink, ImageOff } from "lucide-react";
 import { Children, isValidElement, memo, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { rehypeAllowedHtml, richUrlTransform, SAFE_DATA_IMAGE, sanitizeSchema } from "../lib/richMarkdown";
 import { ResultTable } from "./ResultTable";
 
 // The highlighter engine loads with the first code block, not at startup.
@@ -27,6 +28,8 @@ interface RichResponseProps {
   content: string;
   streaming?: boolean;
   onCopy: (text: string) => void;
+  /** where relative image and file paths in the reply point */
+  workspaceRoot?: string | null;
 }
 
 interface SelectionCopyState {
@@ -116,13 +119,91 @@ function CodeBlock({ children, onCopy }: { children: ReactNode; onCopy: (text: s
   );
 }
 
-function markdownComponents(onCopy: (text: string) => void, streaming: boolean): Components {
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+/** An image in a reply. Raster data URLs show as they are and workspace files
+ *  are read through the main process each time the image appears, so a chart
+ *  the agent rewrites shows its new version. Web images become a link instead:
+ *  loading one would send a request (and anything in its URL) to that site unasked. */
+function MarkdownImage({ src, alt, workspaceRoot }: { src?: string; alt?: string; workspaceRoot?: string | null }): ReactElement {
+  const label = alt?.trim() || "image";
+  const remote = !!src && /^https?:/i.test(src);
+  const inline = !!src && SAFE_DATA_IMAGE.test(src);
+  const reader = typeof window !== "undefined" ? window.moss?.workspace?.image : undefined;
+  const [loaded, setLoaded] = useState<string | null | undefined>(inline ? src : undefined);
+
+  useEffect(() => {
+    if (inline || remote || !src) return;
+    if (!workspaceRoot || !reader) {
+      setLoaded(null);
+      return;
+    }
+    let active = true;
+    void reader(workspaceRoot, src).catch(() => null).then((url) => { if (active) setLoaded(url); });
+    return () => {
+      active = false;
+    };
+  }, [src, inline, remote, workspaceRoot, reader]);
+
+  if (remote) {
+    return (
+      <a
+        href={src}
+        className="response-image-link"
+        title={`Open ${src} in your browser`}
+        onClick={(event) => {
+          event.preventDefault();
+          void window.moss.shell?.openExternal(src!);
+        }}
+      >
+        <ExternalLink size={14} aria-hidden="true" />
+        <span>Image: {label} ({hostOf(src!)})</span>
+      </a>
+    );
+  }
+  if (loaded) return <img src={loaded} alt={alt ?? ""} className="response-image" loading="lazy" />;
+  if (loaded === undefined) return <span className="response-image-link" aria-busy="true">Loading image: {label}</span>;
+  return (
+    <span className="response-image-link" title={src}>
+      <ImageOff size={14} aria-hidden="true" />
+      <span>Image not found: {src || label}</span>
+    </span>
+  );
+}
+
+function markdownComponents(onCopy: (text: string) => void, streaming: boolean, workspaceRoot?: string | null): Components {
   return {
     ...(streaming ? {} : { table: ResultTable }),
     // The page has its own h1 (the conversation); an answer's top heading sits below it.
     h1: ({ children }) => <h2 data-level="1">{children}</h2>,
     a: ({ href, children }) => {
       const safeHref = safeExternalUrl(href);
+      // A relative link names a file in the workspace: a page opens in the
+      // browser, anything else shows its path rather than a dead link.
+      if (!safeHref && href && workspaceRoot && !/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+        const path = href.replace(/[?#].*$/, "");
+        if (/\.html?$/i.test(path) && window.moss?.workspace?.openInBrowser) {
+          return (
+            <a
+              href={href}
+              title={`Open ${path} in your browser`}
+              onClick={(event) => {
+                event.preventDefault();
+                void window.moss.workspace.openInBrowser?.(workspaceRoot, path);
+              }}
+            >
+              {children}
+            </a>
+          );
+        }
+        return <span title={`${path} in the workspace`}>{children}</span>;
+      }
       return (
         <a
           href={safeHref}
@@ -136,24 +217,25 @@ function markdownComponents(onCopy: (text: string) => void, streaming: boolean):
         </a>
       );
     },
+    img: ({ src, alt }) => <MarkdownImage src={typeof src === "string" ? src : undefined} alt={alt} workspaceRoot={workspaceRoot} />,
     pre: ({ children }) => <CodeBlock onCopy={onCopy}>{children}</CodeBlock>,
     input: (props) => <input {...props} disabled aria-label="Task item" />,
   };
 }
 
 const REMARK_PLUGINS = [remarkGfm];
-const REHYPE_PLUGINS = [rehypeSanitize];
+const REHYPE_PLUGINS = [rehypeAllowedHtml, [rehypeSanitize, sanitizeSchema]] as NonNullable<Parameters<typeof ReactMarkdown>[0]["rehypePlugins"]>;
 
-/** Re-renders only when its text or streaming state changes: while one answer
- *  streams, earlier answers are not parsed again on every token. `onCopy` is
- *  left out on purpose: callers pass a stable function. */
-export const RichResponse = memo(RichResponseView, (prev, next) => prev.content === next.content && prev.streaming === next.streaming);
+/** Re-renders only when its text, streaming state, or workspace changes: while
+ *  one answer streams, earlier answers are not parsed again on every token.
+ *  `onCopy` is left out on purpose: callers pass a stable function. */
+export const RichResponse = memo(RichResponseView, (prev, next) => prev.content === next.content && prev.streaming === next.streaming && prev.workspaceRoot === next.workspaceRoot);
 
-function RichResponseView({ content, streaming = false, onCopy }: RichResponseProps): ReactElement {
+function RichResponseView({ content, streaming = false, onCopy, workspaceRoot }: RichResponseProps): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null);
   // The markdown component map must keep its identity across renders, or React
   // treats every code block as a new component and remounts it on each token.
-  const components = useMemo(() => markdownComponents(onCopy, streaming), [onCopy, streaming]);
+  const components = useMemo(() => markdownComponents(onCopy, streaming, workspaceRoot), [onCopy, streaming, workspaceRoot]);
   const [selectionCopy, setSelectionCopy] = useState<SelectionCopyState | null>(null);
 
   useEffect(() => {
@@ -195,6 +277,7 @@ function RichResponseView({ content, streaming = false, onCopy }: RichResponsePr
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
+        urlTransform={richUrlTransform}
         components={components}
       >
         {content}

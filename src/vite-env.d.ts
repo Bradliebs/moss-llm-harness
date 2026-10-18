@@ -108,6 +108,8 @@ declare global {
         openInBrowser?: (root: string, path: string) => Promise<boolean>;
         /** a loopback URL that serves an HTML file inside the workspace; null when refused */
         previewUrl?: (root: string, path: string) => Promise<string | null>;
+        /** a raster image inside the workspace as a data: URL; null when it is not one */
+        image?: (root: string, path: string) => Promise<string | null>;
       };
       window?: {
         focus: () => Promise<void>;

@@ -1300,6 +1300,14 @@ describe("announced next step", () => {
     expect(h.events.at(-1)?.type).toBe("turn-complete");
   });
 
+  it("passes the images a tool produced to the chat as well as the model", async () => {
+    const shot = "data:image/png;base64,iVBORw0KGgo=";
+    const provider = scriptedProvider([[call("v1", "view_image")], [{ type: "text-delta", text: "It is a chart." }]]);
+    const h = await run(provider, [tool("view_image", { ok: true, content: "Viewing shot.png", images: [shot] })]);
+    const result = h.events.find((event): event is Extract<MossEvent, { type: "tool-result" }> => event.type === "tool-result");
+    expect(result?.images).toEqual([shot]);
+  });
+
   it("sends a tool round's reasoning back to the model, but never stores it", async () => {
     const requests: ChatRequest[] = [];
     const signed = { type: "thinking", thinking: "Check the file.", signature: "sig" };

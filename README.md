@@ -230,8 +230,10 @@ the selected conversation while keeping its entry, after a second click on
 a bounded summary of the current context and the same workspace folder, and
 leaves the original unchanged.
 
-The conversation follows new output while you are at the end. Scroll up to read
-and it stays put; **Jump to latest** returns to the end.
+The conversation follows new output while you are at the end, through tool
+cards, thinking, and the final answer. Scroll up (wheel, keys, touch, or the
+scroll bar) to read and it stays put; **Jump to latest** returns to the end.
+The view moving by itself as content changes size does not count as scrolling.
 
 When a configured context window approaches its input budget, Moss summarizes
 the oldest model-facing turns into a bounded assistant-authored note. The
@@ -1409,12 +1411,24 @@ category that controls it.
 ## Response experience
 
 Assistant responses render sanitized GitHub-flavored Markdown. Raw model HTML is
-not executed. Safe links open through the Electron shell bridge, and fenced code
-uses a curated set of lazily loaded Shiki grammars.
+not executed: a short list of tags models use becomes formatting (`<br>`,
+`<sub>`, `<sup>`, `<kbd>`, `<ins>`, `<del>`, `<s>`, `<details>` with
+`<summary>`, and `<img>` with only its source and description), and any other
+tag is dropped, keeping its text. Safe links open through the Electron shell
+bridge, and fenced code uses a curated set of lazily loaded Shiki grammars.
+
+Images in a reply show in place: PNG, JPEG, GIF, and WebP files in the
+workspace (`![chart](charts/q3.png)`, up to 5 MB), and inline `data:` images in
+those formats. Images on the web appear as a link that opens in your browser
+instead, because loading one would send a request, and anything in its address,
+to that site without your say. Images a tool produced, such as a screenshot it
+looked at, show under its tool card. A reply's link to a page in the workspace
+opens it in the browser; links to other workspace files show the path.
 
 The response surface supports headings, nested lists, task lists, tables,
-blockquotes, inline code, highlighted code blocks, copy controls, regeneration,
-checkpoint reversion, token details, and a streaming indicator.
+blockquotes, inline code, highlighted code blocks, images, collapsible
+sections, copy controls, regeneration, checkpoint reversion, token details,
+and a streaming indicator.
 
 While a turn runs, a status row says what Moss is waiting on ("Waiting for
 qwen3.5:9b · 12 s", or "Writing a write_file call · 4 s" while the model streams

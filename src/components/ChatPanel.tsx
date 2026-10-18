@@ -47,6 +47,7 @@ import { ChatComposer } from "./ChatComposer";
 import { ClarificationForm } from "./ClarificationForm";
 import { LiveStatus } from "./LiveStatus";
 import { PreviewPane } from "./PreviewPane";
+import { SAFE_DATA_IMAGE } from "../lib/richMarkdown";
 import { blockerRecovery, MissionMonitor } from "./MissionMonitor";
 import { criticSetup, MissionContractEditor, missionContractIssues, type MissionContract } from "./MissionReview";
 import { RichResponse } from "./RichResponse";
@@ -94,6 +95,8 @@ interface ToolView {
   provenance?: ApprovalProvenance;
   /** why the policy asked, when there is no untrusted-content warning to say it */
   approvalReason?: string;
+  /** images the tool produced, such as a screenshot it looked at */
+  images?: string[];
 }
 
 interface MessageView {
@@ -174,6 +177,9 @@ function htmlPathOf(args: string): string | undefined {
 /** The most a mission may use, matching the main process's ceiling. */
 const MISSION_BUDGET_CEILING = { minutes: 240, tokens: 1_000_000, actions: 256, cost: 100 } as const;
 
+/** Keys that scroll the conversation when focus is not in a control. */
+const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+
 function positiveNumber(value: string): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -213,6 +219,7 @@ function ToolCard({
   }, [active]);
 
   return (
+    <>
     <details
       ref={detailsRef}
       open={active}
@@ -400,6 +407,15 @@ function ToolCard({
         ) : null}
       </div>
     </details>
+    {tool.images?.length ? (
+      // Shown outside the card, which is closed once the tool is done.
+      <div className="mt-2 flex flex-wrap gap-2" aria-label={`Images from ${tool.name}`}>
+        {tool.images.filter((src) => SAFE_DATA_IMAGE.test(src)).map((src, index) => (
+          <img key={index} src={src} alt={`Image ${index + 1} from ${tool.name}`} className="max-h-64 max-w-full rounded-lg border border-neutral-300/60 bg-white object-contain dark:border-neutral-700/60" />
+        ))}
+      </div>
+    ) : null}
+    </>
   );
 }
 
@@ -518,10 +534,10 @@ function looksFailed(content: string): boolean {
 
 function messagesToItems(messages: AgentMessage[]): ViewItem[] {
   const items: ViewItem[] = [];
-  const toolResults = new Map<string, { content: string; autoApproved?: boolean; failed?: boolean }>();
+  const toolResults = new Map<string, { content: string; autoApproved?: boolean; failed?: boolean; images?: string[] }>();
   for (const m of messages) {
     if (m.role === "tool" && m.toolCallId) {
-      toolResults.set(m.toolCallId, { content: m.content, autoApproved: m.autoApproved, failed: m.failed });
+      toolResults.set(m.toolCallId, { content: m.content, autoApproved: m.autoApproved, failed: m.failed, images: m.images });
     }
   }
   // A turn spans a user message and the assistant/tool messages that answer it.
@@ -585,6 +601,7 @@ function messagesToItems(messages: AgentMessage[]): ViewItem[] {
           status: tr?.failed ?? (tr ? looksFailed(tr.content) : false) ? "error" : "done",
           result: tr?.content,
           autoApproved: tr?.autoApproved,
+          ...(tr?.images?.length ? { images: tr.images } : {}),
         });
       }
     }
@@ -760,6 +777,13 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   // or opening another conversation always goes to the end.
   const followRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
+  /** Last click or key press in the conversation: the reader opening something. */
+  const actedAtRef = useRef(Number.NEGATIVE_INFINITY);
+  /** Last wheel, touch drag, scrollbar press, or scrolling key: the reader scrolling. */
+  const scrolledAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const lastScrollTopRef = useRef(0);
+  /** Which way the reader last scrolled with the wheel or keys; null for a drag. */
+  const scrolledUpRef = useRef<boolean | null>(null);
   // Content can grow after it renders (code highlighting, a file list that
   // loads later), so a size change also keeps the end in view while following.
   // Growth right after a click or key press is the reader opening something,
@@ -767,14 +791,53 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
   useEffect(() => {
     const element = scrollRef.current;
     if (!element || typeof ResizeObserver === "undefined") return;
-    let actedAt = 0;
-    const acted = (): void => {
-      actedAt = performance.now();
+    const acted = (event: Event): void => {
+      actedAtRef.current = performance.now();
+      // A press on the conversation itself, not on something in it, is its scrollbar.
+      if (event.type === "pointerdown" && event.target === element) scrolled();
+    };
+    const scrolled = (up: boolean | null = null): void => {
+      scrolledAtRef.current = performance.now();
+      scrolledUpRef.current = up;
+    };
+    // Scrolling up leaves the end at once, even by a few pixels, so the next
+    // token does not pull the reader back down.
+    const leaveEnd = (): void => {
+      scrolled(true);
+      followRef.current = false;
+      setShowJump(true);
+    };
+    const wheel = (event: WheelEvent): void => {
+      if (event.deltaY < 0) leaveEnd();
+      else scrolled(false);
+    };
+    const scrollKey = (event: KeyboardEvent): void => {
+      if (!SCROLL_KEYS.has(event.key)) return;
+      if (event.target instanceof Element && event.target.closest("input, textarea, select, button, summary, [contenteditable='true']")) return;
+      if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) leaveEnd();
+      else scrolled(false);
+    };
+    // Opening something near the end (a tool card, a thought) can push the end
+    // out of view; the reader is looking at what they opened, so stop following.
+    const opened = (): void => {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (followRef.current && element.scrollHeight - element.scrollTop - element.clientHeight >= 80) {
+          followRef.current = false;
+          setShowJump(true);
+        }
+      }));
     };
     element.addEventListener("pointerdown", acted);
     element.addEventListener("keydown", acted);
+    // Keys scroll the conversation even when focus is on the page itself (after
+    // a click on message text), so they are watched on the whole document.
+    document.addEventListener("keydown", scrollKey);
+    element.addEventListener("click", opened);
+    element.addEventListener("wheel", wheel, { passive: true });
+    const touched = (): void => scrolled();
+    element.addEventListener("touchmove", touched, { passive: true });
     const resize = new ResizeObserver(() => {
-      if (followRef.current && performance.now() - actedAt > 600) element.scrollTop = element.scrollHeight;
+      if (followRef.current && performance.now() - actedAtRef.current > 600) element.scrollTop = element.scrollHeight;
     });
     const watch = (): void => {
       resize.disconnect();
@@ -786,6 +849,10 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
     return () => {
       element.removeEventListener("pointerdown", acted);
       element.removeEventListener("keydown", acted);
+      document.removeEventListener("keydown", scrollKey);
+      element.removeEventListener("click", opened);
+      element.removeEventListener("wheel", wheel);
+      element.removeEventListener("touchmove", touched);
       resize.disconnect();
       mutation.disconnect();
     };
@@ -1012,7 +1079,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
       setActivity((prev) =>
         prev.map((it) =>
           it.kind === "tool" && it.callId === ev.callId
-            ? { ...it, status: ev.ok ? "done" : "error", result: ev.content, autoApproved: ev.autoApproved }
+            ? { ...it, status: ev.ok ? "done" : "error", result: ev.content, autoApproved: ev.autoApproved, ...(ev.images?.length ? { images: ev.images } : {}) }
             : it,
         ),
       );
@@ -1885,9 +1952,29 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
         className="flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6"
         onScroll={(event) => {
           const element = event.currentTarget;
+          const now = performance.now();
+          const readerScrolling = now - scrolledAtRef.current < 1_000;
+          const movedUp = scrolledUpRef.current ?? element.scrollTop < lastScrollTopRef.current;
+          lastScrollTopRef.current = element.scrollTop;
           const atEnd = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
-          followRef.current = atEnd;
-          if (atEnd) setShowJump(false);
+          if (atEnd && !(readerScrolling && movedUp)) {
+            followRef.current = true;
+            setShowJump(false);
+            return;
+          }
+          if (readerScrolling) {
+            // The reader is scrolling (a drag or momentum keeps it going): stop following.
+            scrolledAtRef.current = now;
+            followRef.current = false;
+            setShowJump(true);
+          } else if (now - actedAtRef.current < 600) {
+            // Something the reader just opened moved the view: leave it there.
+            followRef.current = false;
+          } else if (followRef.current) {
+            // The browser moved the view as content changed size (scroll
+            // anchoring), not the reader: stay at the end.
+            element.scrollTop = element.scrollHeight;
+          }
         }}
       >
         {showWelcome ? (
@@ -1952,6 +2039,7 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
                   content={it.content}
                   streaming={busy && i === items.length - 1}
                   onCopy={copyToClipboard}
+                  workspaceRoot={current?.workspaceRoot ?? settings.workspaceRoot}
                 />
               ) : it.content}
               {it.role === "user" && it.images && it.images.length > 0 ? (

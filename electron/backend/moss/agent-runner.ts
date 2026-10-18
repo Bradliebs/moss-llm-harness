@@ -848,6 +848,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<void> {
           ...(risk ? { risk } : {}),
           durationMs,
           ...(result.untrustedSources?.length ? { untrustedSources: result.untrustedSources } : {}),
+          ...(result.images?.length ? { images: result.images } : {}),
         });
       }
 

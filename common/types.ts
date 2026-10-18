@@ -553,7 +553,7 @@ export type MossEvent =
   | { type: "round-end"; round: number; toolCallCount: number; finish: "tools" | "complete" | "rejected" | "continued" | "error" }
   | { type: "tool-call"; callId: string; name: string; arguments: string }
   | { type: "tool-approval-request"; callId: string; name: string; arguments: string; risk?: ToolRisk; provenance?: ApprovalProvenance; reason?: string }
-  | { type: "tool-result"; callId: string; name: string; ok: boolean; content: string; autoApproved: boolean; risk?: ToolRisk; durationMs?: number; untrustedSources?: string[] }
+  | { type: "tool-result"; callId: string; name: string; ok: boolean; content: string; autoApproved: boolean; risk?: ToolRisk; durationMs?: number; untrustedSources?: string[]; /** images the tool produced (data URLs), shown on its card */ images?: string[] }
   | { type: "notice"; level: "info" | "warn"; message: string }
   | { type: "context-compaction"; reason: "proactive" | "overflow"; droppedCount: number }
   | { type: "verification"; ok: boolean; checkCount: number; failedCheckHash?: string }

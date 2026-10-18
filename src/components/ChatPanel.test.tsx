@@ -1593,6 +1593,76 @@ describe("ChatPanel", () => {
     expect(updateSettings).toHaveBeenCalledWith({ thinking: "off" });
   });
 
+  it("keeps the end of a turn in view when the browser moves it, and stops when the reader scrolls up", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
+    try {
+      render(<Harness />);
+      const main = screen.getByRole("main", { name: "Conversation" });
+      let height = 2_000;
+      let top = 1_500;
+      const clamp = (value: number): number => Math.max(0, Math.min(value, height - 500));
+      Object.defineProperty(main, "scrollHeight", { configurable: true, get: () => height });
+      Object.defineProperty(main, "clientHeight", { configurable: true, get: () => 500 });
+      Object.defineProperty(main, "scrollTop", { configurable: true, get: () => top, set: (value: number) => { top = clamp(value); } });
+      main.scrollTo = ((options: ScrollToOptions) => { top = clamp(options.top ?? top); }) as typeof main.scrollTo;
+      const turnId = startTurn();
+
+      // Content grows and the browser nudges the view (scroll anchoring), with
+      // no input from the reader: the view goes back to the end.
+      height = 3_000;
+      top = 1_520;
+      fireEvent.scroll(main);
+      expect(top).toBe(2_500);
+      emit(turnId, { type: "text-delta", text: "Working on it" });
+      expect(screen.queryByRole("button", { name: "Jump to latest" })).toBeNull();
+
+      // The reader scrolls up, even a little: the view stays where they put it.
+      fireEvent.wheel(main, { deltaY: -40 });
+      top = 2_460;
+      fireEvent.scroll(main);
+      height = 3_400;
+      emit(turnId, { type: "text-delta", text: " and more" });
+      expect(top).toBe(2_460);
+      fireEvent.click(screen.getByRole("button", { name: "Jump to latest" }));
+      expect(top).toBe(2_900);
+
+      // Back at the end, the turn is followed again.
+      height = 3_600;
+      emit(turnId, { type: "text-delta", text: " done." });
+      expect(top).toBe(3_100);
+
+      // Page Up with focus on the page itself (after a click on message text).
+      fireEvent.keyDown(document.body, { key: "PageUp" });
+      top = 2_700;
+      fireEvent.scroll(main);
+      height = 3_800;
+      emit(turnId, { type: "text-delta", text: " More." });
+      expect(top).toBe(2_700);
+
+      // A touch drag up the conversation.
+      fireEvent.click(screen.getByRole("button", { name: "Jump to latest" }));
+      expect(top).toBe(3_300);
+      fireEvent.touchMove(main);
+      top = 3_000;
+      fireEvent.scroll(main);
+      height = 4_000;
+      emit(turnId, { type: "text-delta", text: " Last." });
+      expect(top).toBe(3_000);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows the images a tool produced under its card", () => {
+    render(<Harness />);
+    const turnId = startTurn();
+    const shot = "data:image/png;base64,iVBORw0KGgo=";
+    emit(turnId, { type: "tool-call", callId: "v1", name: "view_image", arguments: JSON.stringify({ path: "shot.png" }) });
+    emit(turnId, { type: "tool-result", callId: "v1", name: "view_image", ok: true, content: "Viewing shot.png", autoApproved: false, images: [shot, "data:image/svg+xml;base64,PHN2Zz4="] });
+    expect(screen.getByRole("img", { name: "Image 1 from view_image" }).getAttribute("src")).toBe(shot);
+    // SVG could carry script, so it is not shown.
+    expect(screen.queryByRole("img", { name: "Image 2 from view_image" })).toBeNull();
+  });
   it("turns goal mode on from the composer and sends it with chat turns", async () => {
     const { updateSettings } = await import("../lib/settings");
     render(<Harness />);

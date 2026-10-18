@@ -34,6 +34,7 @@ const CH = {
   workspaceSuggestVerification: "moss:workspace:suggestVerification",
   workspaceOpenInBrowser: "moss:workspace:openInBrowser",
   workspacePreviewUrl: "moss:workspace:previewUrl",
+  workspaceImage: "moss:workspace:image",
   webAccessGet: "moss:webAccess:get",
   webAccessSet: "moss:webAccess:set",
   windowFocus: "moss:window:focus",
@@ -142,6 +143,7 @@ contextBridge.exposeInMainWorld("moss", {
     suggestVerification: (root) => ipcRenderer.invoke(CH.workspaceSuggestVerification, root),
     openInBrowser: (root, path) => ipcRenderer.invoke(CH.workspaceOpenInBrowser, root, path),
     previewUrl: (root, path) => ipcRenderer.invoke(CH.workspacePreviewUrl, root, path),
+    image: (root, path) => ipcRenderer.invoke(CH.workspaceImage, root, path),
   },
   window: {
     focus: () => ipcRenderer.invoke(CH.windowFocus),

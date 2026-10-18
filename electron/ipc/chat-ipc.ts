@@ -77,7 +77,7 @@ import {
   type McpServerConfig,
 } from "../backend/moss/mcp/mcp-config";
 import { mcpManager } from "../backend/moss/mcp/mcp-manager";
-import { readWorkspacePreview, suggestVerificationCommands, workspaceHtmlUrl } from "../backend/moss/workspace/workspace-insights";
+import { readWorkspacePreview, suggestVerificationCommands, workspaceHtmlUrl, workspaceImageDataUrl } from "../backend/moss/workspace/workspace-insights";
 import { previewServer } from "../backend/moss/workspace/preview-server";
 import { readProjectInstructions } from "../backend/moss/workspace/project-instructions";
 import { workspaceOrientation } from "../backend/moss/workspace/orientation";
@@ -363,6 +363,8 @@ export function registerChatIpc(): void {
     if (typeof root !== "string" || typeof path !== "string") throw new Error("Invalid preview request");
     return readWorkspacePreview(root, path);
   });
+  ipcMain.handle(IPC.workspaceImage, (_event, root: unknown, path: unknown) =>
+    typeof root === "string" && typeof path === "string" ? workspaceImageDataUrl(root, path) : null);
   ipcMain.handle(IPC.workspaceSuggestVerification, (_event, root: unknown) =>
     typeof root === "string" ? suggestVerificationCommands(root) : []);
   // Only an HTML file inside the workspace, after the sandbox check, and only
