@@ -29,6 +29,7 @@ import {
   readinessProfilePatch,
   saveProviderCredential,
   setModelRate,
+  settingsStore,
   storedUnencrypted,
   toEmbedConfig,
   toProviderConfig,
@@ -41,6 +42,7 @@ import { LiveStatus } from "./LiveStatus";
 import { ProductDiagnosticsSettings } from "./ProductDiagnosticsSettings";
 import { AutomationSettings } from "./AutomationSettings";
 import { AccessibilitySettings } from "./AccessibilitySettings";
+import { ModelPicker } from "./ModelPicker";
 import { ModelProfileSettings } from "./ModelProfileSettings";
 import { PracticeSettings } from "./PracticeSettings";
 import { SetupAssistant } from "./SetupAssistant";
@@ -184,10 +186,13 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
 
   async function loadModels(): Promise<void> {
     setStatus("Loading models…");
+    // Read the store, not the render's snapshot: this also runs right after a preset
+    // switch or a key save, before the component re-renders.
+    const current = settingsStore.get();
     try {
-      const list = await window.moss.provider.listModels(toProviderConfig(settings));
+      const list = await window.moss.provider.listModels(toProviderConfig(current));
       modelsStore.set(list);
-      if (list.length > 0 && !settings.model) updateSettings({ model: list[0] });
+      if (list.length > 0 && !current.model) updateSettings({ model: list[0] });
       setProviderConnected(true);
       setStatus(`${list.length} models`);
     } catch (err) {
@@ -206,10 +211,15 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
     setStatus("Saving API key...");
     try {
       await saveProviderCredential(apiKey);
-      setStatus(apiKey.trim() ? "API key saved securely" : "API key removed");
     } catch (error) {
       setStatus(`API key error: ${error instanceof Error ? error.message : String(error)}`);
+      return;
     }
+    if (!apiKey.trim()) {
+      setStatus("API key removed");
+      return;
+    }
+    await loadModels();
   }
 
   async function pickWorkspace(): Promise<void> {
@@ -604,7 +614,7 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
               <select
                 className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
                 value={settings.presetIndex}
-                onChange={(e) => void applyPreset(Number(e.target.value))}
+                onChange={(e) => void applyPreset(Number(e.target.value)).then(loadModels)}
               >
                 {PROVIDER_PRESETS.map((p, i) => (
                   <option key={p.label} value={i}>
@@ -651,27 +661,12 @@ export function SettingsPanel({ onClose, initialCategory }: { onClose: () => voi
             <label className="block">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-400">Model</span>
               <div className="flex gap-2">
-                {models.length > 0 ? (
-                  <select
-                    className="border border-neutral-300 dark:border-neutral-700 min-w-0 flex-1 rounded bg-white dark:bg-neutral-800 px-2 py-1"
-                    value={settings.model}
-                    onChange={(e) => updateSettings({ model: e.target.value })}
-                  >
-                    <option value="">Select model…</option>
-                    {models.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className="border border-neutral-300 dark:border-neutral-700 min-w-0 flex-1 rounded bg-white dark:bg-neutral-800 px-2 py-1"
-                    placeholder="Model"
-                    value={settings.model}
-                    onChange={(e) => updateSettings({ model: e.target.value })}
-                  />
-                )}
+                <ModelPicker
+                  className="border border-neutral-300 dark:border-neutral-700 w-full rounded bg-white dark:bg-neutral-800 px-2 py-1"
+                  models={models}
+                  value={settings.model}
+                  onChange={(model) => updateSettings({ model })}
+                />
                 <button
                   className="rounded bg-neutral-300 dark:bg-neutral-700 px-2 py-1 hover:bg-neutral-400 dark:hover:bg-neutral-600"
                   onClick={() => void loadModels()}

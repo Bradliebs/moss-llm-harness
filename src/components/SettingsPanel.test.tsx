@@ -7,7 +7,7 @@
 // presets and routes form edits to applyPreset / updateSettings. window.moss is
 // stubbed for the read-only MCP status effect that runs on mount.
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as settings from "../lib/settings";
@@ -65,13 +65,14 @@ vi.mock("../lib/settings", () => ({
     { id: "workspace", label: "Workspace", detail: "No workspace selected.", status: "attention" },
   ]),
   readinessProfilePatch: vi.fn((profile: string) => ({ readinessProfile: profile })),
-  applyPreset: vi.fn(),
+  applyPreset: vi.fn(() => Promise.resolve()),
   saveProviderCredential: vi.fn(() => Promise.resolve()),
   storedUnencrypted: vi.fn(() => false),
   updateSettings: vi.fn(),
   toProviderConfig: vi.fn(() => ({})),
   toEmbedConfig: vi.fn(() => ({ baseUrl: "http://x", model: "nomic-embed-text" })),
   modelsStore: { use: vi.fn(() => []), set: vi.fn() },
+  settingsStore: { get: vi.fn(() => settingsValue) },
   mcpAddFormTypeStore: { get: vi.fn(() => "stdio"), set: vi.fn() },
   useSettings: vi.fn(() => settingsValue),
 }));
@@ -122,6 +123,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.mocked(settings.modelsStore.use).mockReturnValue([]);
   delete (window as { moss?: unknown }).moss;
 });
 
@@ -226,6 +228,59 @@ describe("SettingsPanel", () => {
 
     await waitFor(() => expect(settings.modelsStore.set).toHaveBeenCalledWith(["glm-5.3-flash:cloud"]));
     expect(window.moss.provider.listModels).toHaveBeenCalledWith({});
+  });
+
+  it("lists every loaded model, filters by search, and accepts an unlisted model ID", async () => {
+    vi.mocked(settings.modelsStore.use).mockReturnValue(["openai/gpt-5", "anthropic/claude-sonnet-4.5", "openai/gpt-4o"]);
+    settingsValue.model = "openai/gpt-5";
+    render(<SettingsPanel onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText("No MCP servers configured or connected.")).toBeDefined());
+
+    const picker = screen.getByRole("combobox", { name: "Model" });
+    fireEvent.focus(picker);
+    const options = () => within(screen.getByRole("listbox", { name: "Model options" })).getAllByRole("option");
+    expect(options().map((o) => o.textContent)).toEqual(["openai/gpt-5", "anthropic/claude-sonnet-4.5", "openai/gpt-4o"]);
+
+    fireEvent.change(picker, { target: { value: "claude" } });
+    const shown = options();
+    expect(shown.map((o) => o.textContent)).toEqual(["anthropic/claude-sonnet-4.5"]);
+    fireEvent.mouseDown(shown[0]);
+    expect(settings.updateSettings).toHaveBeenCalledWith({ model: "anthropic/claude-sonnet-4.5" });
+
+    fireEvent.focus(picker);
+    fireEvent.change(picker, { target: { value: " openai/gpt-5:nitro " } });
+    fireEvent.keyDown(picker, { key: "Enter" });
+    expect(settings.updateSettings).toHaveBeenCalledWith({ model: "openai/gpt-5:nitro" });
+
+    // A typed ID that is a prefix of a listed variant keeps the typed ID.
+    vi.mocked(settings.modelsStore.use).mockReturnValue(["openai/gpt-5:nitro", "openai/gpt-4o"]);
+    fireEvent.focus(picker);
+    fireEvent.change(picker, { target: { value: "openai/gpt-5" } });
+    fireEvent.keyDown(picker, { key: "Enter" });
+    expect(settings.updateSettings).toHaveBeenLastCalledWith({ model: "openai/gpt-5" });
+
+    // Arrow keys pick the highlighted suggestion instead.
+    fireEvent.focus(picker);
+    fireEvent.change(picker, { target: { value: "openai/gpt" } });
+    fireEvent.keyDown(picker, { key: "ArrowDown" });
+    fireEvent.keyDown(picker, { key: "ArrowDown" });
+    fireEvent.keyDown(picker, { key: "Enter" });
+    expect(settings.updateSettings).toHaveBeenLastCalledWith({ model: "openai/gpt-4o" });
+    settingsValue.model = "";
+  });
+
+  it("reloads the model list after a preset switch and after saving an API key", async () => {
+    render(<SettingsPanel onClose={() => {}} />);
+    await waitFor(() => expect(window.moss.provider.listModels).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByDisplayValue("Ollama"), { target: { value: "3" } });
+    await waitFor(() => expect(window.moss.provider.listModels).toHaveBeenCalledTimes(2));
+
+    const key = screen.getByLabelText("API key");
+    fireEvent.change(key, { target: { value: "sk-or-test" } });
+    fireEvent.blur(key, { target: { value: "sk-or-test" } });
+    await waitFor(() => expect(settings.saveProviderCredential).toHaveBeenCalledWith("sk-or-test"));
+    await waitFor(() => expect(window.moss.provider.listModels).toHaveBeenCalledTimes(3));
   });
 
   it("applies a preset when the select changes", async () => {

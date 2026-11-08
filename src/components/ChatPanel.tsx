@@ -42,6 +42,7 @@ import { modelsStore, readinessItems, toEmailConfig, toEmbedConfig, toProviderCo
 import { explainToolFailure, providerErrorGuidance, type ProviderErrorGuidance, type SettingsCategoryId } from "../lib/guidance";
 import { currentNotifyContext, shouldNotify, showDesktopNotification } from "../lib/notifications";
 import { type ToolStatus, toolStatusColor } from "../lib/toolStatus";
+import { ModelPicker } from "./ModelPicker";
 import { MossFace } from "./MossFace";
 import { ChatComposer } from "./ChatComposer";
 import { ClarificationForm } from "./ClarificationForm";
@@ -1766,19 +1767,13 @@ export function ChatPanel({ busy, setBusy, onOpenChats, onOpenSettings }: ChatPa
           <span className="font-semibold tracking-tight text-neutral-800 dark:text-neutral-200">Moss</span>
         )}
         {models.length > 0 ? (
-          <select
-            className="w-40 min-w-0 rounded-md border border-neutral-300 dark:border-neutral-700/60 bg-white dark:bg-neutral-800 px-2 py-1 transition focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)] sm:w-56"
-            aria-label="Model"
+          <ModelPicker
+            className="w-full rounded-md border border-neutral-300 dark:border-neutral-700/60 bg-white dark:bg-neutral-800 px-2 py-1 transition focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]"
+            wrapperClassName="w-40 min-w-0 sm:w-56"
+            models={models}
             value={settings.model}
-            onChange={(e) => updateSettings({ model: e.target.value })}
-          >
-            <option value="">Select model…</option>
-            {models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+            onChange={(model) => updateSettings({ model })}
+          />
         ) : (
           // Without a loaded model list, still name the model in use rather than
           // suggest that nothing is set up.
